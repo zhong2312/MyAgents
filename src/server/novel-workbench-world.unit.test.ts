@@ -804,6 +804,20 @@ describe("novel world draft validation", () => {
       canvas?: Record<string, unknown>;
       layers?: Array<Record<string, unknown>>;
     };
+    if (generatedFeatures.length > 0) {
+      expect(
+        generatedFeatures.some((feature) =>
+          /[\u3400-\u9fff]/u.test(String(feature.name ?? "")),
+        ),
+      ).toBe(true);
+      expect(
+        generatedFeatures.every(
+          (feature) =>
+            (feature.props as Record<string, unknown> | undefined)
+              ?.fantasyStyle === "xuanhuan-zh",
+        ),
+      ).toBe(true);
+    }
     if (generated.runtime === "compatibility-adapter") {
       expect(
         generatedFeatures.some(
@@ -840,7 +854,7 @@ describe("novel world draft validation", () => {
           expect.objectContaining({ id: "layer-main", name: "作者要素" }),
           expect.objectContaining({
             id: "layer-azgaar-boundaries",
-            name: "Azgaar 可编辑边界",
+            name: "玄幻地图 · 可编辑边界",
           }),
         ]),
       );

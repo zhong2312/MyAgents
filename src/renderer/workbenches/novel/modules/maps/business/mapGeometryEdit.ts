@@ -1,3 +1,4 @@
+import { isMapFeatureFreeformArea } from "../entities/mapSchema";
 import type {
   MapFeature,
   MapFeatureKind,
@@ -82,7 +83,7 @@ function pointInPolygon(
 
 /** 只有可由多个控制点定义的要素才提供顶点级编辑。 */
 export function isMapFeatureVertexEditable(kind: MapFeatureKind): boolean {
-  return kind === "route" || kind === "polygon" || kind === "area";
+  return kind === "route" || isMapFeatureFreeformArea(kind);
 }
 
 /**
@@ -104,7 +105,7 @@ export function hitMapFeatureGeometry(
   ) {
     return distance(target, feature.points[0]!) <= radius;
   }
-  if (feature.kind === "polygon" || feature.kind === "area") {
+  if (isMapFeatureFreeformArea(feature.kind)) {
     return (
       pointInPolygon(target, feature.points) ||
       distanceToClosedPath(target, feature.points) <= radius

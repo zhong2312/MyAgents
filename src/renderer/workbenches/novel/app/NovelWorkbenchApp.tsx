@@ -82,14 +82,9 @@ import type { DomainEntityRef } from "../domainIndex";
 import { useDomainIndex } from "../useDomainIndex";
 import CommandPalette, { type QuickCreateKind } from "../CommandPalette";
 import SearchPage from "../SearchPage";
-import ManuscriptStudio, {
-  type ManuscriptAiAgentRequest,
-} from "../ManuscriptStudio";
-import { createManuscriptAiSettingsRepository } from "../manuscriptAiSettingsRepository";
+import ManuscriptStudio from "../ManuscriptStudio";
 import MapEditor, { type MapAgentGenerationRequest } from "../MapEditor";
-import WorldSimulationWorkbench, {
-  type WorldSimulationView,
-} from "../WorldSimulationWorkbench";
+import WorldSimulationWorkbench from "../WorldSimulationWorkbench";
 import WorldProposalReview from "../WorldProposalReview";
 import { buildWorldProposalAgentInstructions } from "../worldProposalSchema";
 import { useNovelProject } from "../useNovelProject";
@@ -1111,6 +1106,26 @@ export default function NovelWorkbenchRenderer({
       context.navigate("timeline");
     } else if (source.path.startsWith("research/")) {
       context.navigate("research");
+    } else if (source.path.startsWith("characters/")) {
+      context.navigate("characters");
+    } else if (source.path.startsWith("world/items/")) {
+      context.navigate("items");
+    } else if (source.path.startsWith("world/factions/")) {
+      context.navigate("factions");
+    } else if (source.path.startsWith("world/cultivation/")) {
+      context.navigate("powers");
+    } else if (source.path.startsWith("world/maps/")) {
+      context.navigate("map");
+    } else if (source.path.startsWith("inspiration/")) {
+      context.navigate("inspiration");
+    } else if (source.path.startsWith("narrative/")) {
+      context.navigate("narrative");
+    } else if (source.path.startsWith("knowledge/")) {
+      context.navigate("knowledge");
+    } else if (source.path.startsWith("simulation/")) {
+      context.navigate("simulation");
+    } else if (source.path.startsWith("world/locations/")) {
+      context.navigate("lore");
     } else if (source.path === "world/setting-library/meta.json") {
       context.navigate("lore-config");
     } else {
@@ -1146,35 +1161,39 @@ export default function NovelWorkbenchRenderer({
       });
       return;
     }
+    if (path.startsWith("manuscript/")) {
+      context.navigate("manuscript");
+      return;
+    }
     const route = path.startsWith("timeline/")
       ? "timeline"
       : path.startsWith("characters/")
         ? "characters"
         : path.startsWith("world/factions/")
           ? "factions"
-        : path.startsWith("world/items/")
-          ? "items"
-          : path.startsWith("world/cultivation/") ||
-              path.startsWith("world/cultivation-proposals/")
-            ? "powers"
-          : path.startsWith("world/maps/")
-            ? "map"
-            : path.startsWith("world/locations/") ||
-                path.startsWith("world/setting-library/")
-              ? "lore"
-            : path.startsWith("inspiration/")
-              ? "inspiration"
-              : path.startsWith("narrative/")
-                ? "narrative"
-                : path.startsWith("knowledge/")
-                  ? "knowledge"
-                  : path.startsWith("prompts/")
-                    ? "ai-prompts"
-                    : path.startsWith("settings/")
-                      ? "model-scenes"
-                      : path.startsWith("simulation/")
-                        ? "simulation-console"
-                        : "lore";
+          : path.startsWith("world/items/")
+            ? "items"
+            : path.startsWith("world/cultivation/") ||
+                path.startsWith("world/cultivation-proposals/")
+              ? "powers"
+              : path.startsWith("world/maps/")
+                ? "map"
+                : path.startsWith("world/locations/") ||
+                    path.startsWith("world/setting-library/")
+                  ? "lore"
+                  : path.startsWith("inspiration/")
+                    ? "inspiration"
+                    : path.startsWith("narrative/")
+                      ? "narrative"
+                      : path.startsWith("knowledge/")
+                        ? "knowledge"
+                        : path.startsWith("prompts/")
+                          ? "ai-prompts"
+                          : path.startsWith("settings/")
+                            ? "model-scenes"
+                            : path.startsWith("simulation/")
+                              ? "simulation"
+                              : "lore";
     context.navigate(route);
   };
 
@@ -1419,7 +1438,7 @@ export default function NovelWorkbenchRenderer({
     setOperationError(null);
     setIsMapAgentLaunching(true);
     try {
-      const systemPrompt = `## 小说工作台 Agent + Azgaar 地图生成任务
+      const systemPrompt = `## 小说工作台 Agent + 中文玄幻地图生成任务
 
 你正在为小说《${project.metadata.title}》生成世界地图提案。正式世界事实不在提示词中展开，必须通过小说工作台内置工具读取；不得依据常识补写或跳过世界架构。
 
@@ -1432,10 +1451,16 @@ export default function NovelWorkbenchRenderer({
 - 世界架构范围：${request.worldNodePath}（稳定 ID：${request.worldNodeId}）
 - 生成层级：${request.generationLevelName}（类型 ID：${request.generationLevelTypeId}）
 
+视觉与命名规范（必须遵守）：
+- 最终目标是中文奇幻/玄幻世界地图，不是默认的西式政治地图。使用 xuanhuan-zh 风格：羊皮纸底色、赭石边界、靛青水域、古典中文衬线字体。
+- 优先读取并复用世界架构中已有的中文实体名；新增地名、势力、山川、水系、秘境、灵脉、宗门、王朝、城池和关隘名称必须使用中文，不得保留 Azgaar 英文随机名。
+- 地图语义应体现九州、仙域、魔域、神朝、圣地、灵脉、龙脉、秘境、禁地、天门或古战场等玄幻设定；山脉、河流、湖泊、荒原、雪原、森林和聚落应服务于世界架构，而不是生成现实世界式国家图。
+- Azgaar 只负责地形和几何候选，工具返回后必须经过 xuanhuan-zh 中文玄幻样式适配；即使 runtime=compatibility-adapter，也要保持同一视觉与命名规范。
+
 执行协议：
 1. 首先调用 novel_world_get_context，读取已保存的世界架构空间树、设定索引、Markdown 正文、词条、地点和势力，并取得 sourceHash。确认稳定 ID ${request.worldNodeId} 对应“${request.worldNodeName}”，只将该节点及其后代视为本次地图的生成范围。不得根据本提示词臆造设定，也不得跳过这一步。
 2. 依据该范围内的地理、气候、文明、地点、势力与设定正文，自己作出完整的成图决定。调用 novel_maps_generate_fantasy_map 时，必须原样传入上一步 sourceHash 作为 worldSourceHash，并传入 worldNodeId=${request.worldNodeId}、generationLevelTypeId=${request.generationLevelTypeId}、地图名称、画布尺寸、图层与种子。以下参数全部必填且必须由你根据已读事实决定：landmassCount、regionCount、riverCount、azgaarTemplate、azgaarStates、azgaarCultures、azgaarReligions、azgaarPrecipitation。高度图模板只能选：africa-centric、arabia、atlantics、britain、caribbean、east-asia、eurasia、europe-accented、europe-and-central-asia、europe-central、europe-north、europe、greenland、hellenica、iceland、indian-ocean、mediterranean-sea、middle-east、north-america、us-centric、us-mainland、world-from-pacific 或 world。陆块意图通过模板落实：群岛优先 caribbean，冰雪极地优先 iceland，荒漠优先 arabia，内海优先 mediterranean-sea，多陆块优先 world-from-pacific；国家、文化、宗教和降水是 Azgaar 的实际原生参数。温度参数只在气候设定确有明确约束时传入。这些参数不由作者在界面中指定，也不得省略后让工具猜测。
-3. 检查工具返回的 runtime 和 generatorAdapter。只有 runtime=azgaar-http 时才可称为 Azgaar 核心生成；若返回 compatibility-adapter，必须明确说明本次已降级，不能伪称使用了 Azgaar。
+3. 检查工具返回的 runtime 和 generatorAdapter。只有 runtime=azgaar-http 时才可称为 Azgaar 核心生成；若返回 compatibility-adapter，必须明确说明本次已降级，不能伪称使用了 Azgaar。无论运行时是哪一种，都要确认结果采用 xuanhuan-zh，并且地图文字为中文。
 4. 使用生成工具返回的 draftId 调用 novel_maps_validate_draft；校验失败时修正同一草稿，不得绕过校验或直接修改正式地图文件。
 5. 校验通过后，使用 validationToken 调用 novel_maps_submit_draft。只有工具返回 submitted=true 才算完成。
 6. 提交成功后告诉作者生成器、读取到的设定范围和降级状态，并提示到“世界地图 -> 审阅提案”中确认。不得直接覆盖当前地图。
@@ -1447,10 +1472,10 @@ export default function NovelWorkbenchRenderer({
       const modelSelection = await resolveSceneModelSelection("maps.fantasy");
       await openNovelAgentSession({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
-        title: `Agent + Azgaar · ${request.mapName}`,
+        title: `Agent + 玄幻地图 · ${request.mapName}`,
         promptId: "novel.maps.fantasy",
         systemPrompt,
-        initialMessage: "请按协议读取世界架构并生成地图提案。",
+        initialMessage: "请读取世界架构，按中文玄幻地图规范生成地图提案。",
         presentation: "dialog",
         conversationKey: `novel.maps.fantasy:${request.mapId}:${runId}`,
         forceNew: true,
@@ -1855,6 +1880,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
                         executionProfile: request.executionProfile,
                         timeoutMs: request.timeoutMs,
                         maxTurns: request.maxTurns,
+                        streamOutput: request.streamOutput,
                         ...(request.usesNovelContextTools
                           ? {
                               toolset: {
@@ -1883,65 +1909,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
                 }
               : undefined
           }
-          onOpenAiAgent={
-            context.agentSessions.isAvailable
-              ? async (request: ManuscriptAiAgentRequest) => {
-                  const [modelSelection, manuscriptAiSettings] =
-                    await Promise.all([
-                      resolveSceneModelSelection(request.sceneId),
-                      createManuscriptAiSettingsRepository(
-                        context.storage,
-                      ).load(),
-                    ]);
-                  await openNovelAgentSession({
-                    version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
-                    title: request.title,
-                    promptId: `novel.${request.sceneId}`,
-                    systemPrompt: await applyScenePromptOverride(
-                      `novel.${request.sceneId}`,
-                      {
-                        projectName: project.metadata.title,
-                        genres: project.metadata.genres.join("、") || "未设置",
-                        requirement: request.title,
-                      },
-                      async () => request.initialMessage,
-                    ),
-                    initialMessage: request.initialMessage,
-                    presentation:
-                      request.presentation ??
-                      (manuscriptAiSettings.settings.presentation ===
-                      "compact-review"
-                        ? "compact-review"
-                        : "dialog"),
-                    embeddedSurfaceId: request.embeddedSurfaceId,
-                    conversationKey: request.conversationKey,
-                    historyGroupPath: ["正文", request.chapterTitle],
-                    forceNew: true,
-                    toolset: {
-                      id: "novel-world",
-                      context: {
-                        mode: "manuscript",
-                        promptId: `novel.${request.sceneId}`,
-                        promptVersion: "1.0.0",
-                        runId: request.runId,
-                        chapterId: request.chapterId,
-                        sceneId: request.sceneId,
-                      },
-                    },
-                    companion: {
-                      id: "manuscript-review",
-                      context: {
-                        runId: request.runId,
-                        chapterId: request.chapterId,
-                        sceneId: request.sceneId,
-                        ...request.companionContext,
-                      },
-                    },
-                    ...(modelSelection ? { modelSelection } : {}),
-                  });
-                }
-              : undefined
-          }
+          onCancelAiRun={context.aiRuns.cancel}
           onOpenNarrative={() => context.navigate("narrative")}
           onOpenModelSettings={() => context.navigate("model-scenes")}
           registerNavigationGuard={context.registerNavigationGuard}
@@ -2234,31 +2202,11 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
         />
       );
       break;
-    case "simulation":
-    case "simulation-console":
-    case "simulation-lab":
-    case "simulation-council": {
-      const simulationView: WorldSimulationView =
-        context.route === "simulation-lab"
-          ? "lab"
-          : context.route === "simulation-council"
-            ? "council"
-            : "console";
+    case "simulation": {
       content = (
         <WorldSimulationWorkbench
           storage={context.storage}
           isActive={context.isActive}
-          view={simulationView}
-          onNavigate={(view) =>
-            context.navigate(
-              view === "lab"
-                ? "simulation-lab"
-                : view === "council"
-                  ? "simulation-council"
-                  : "simulation-console",
-            )
-          }
-          onOpenSetup={(route) => context.navigate(route)}
           onRunModelScene={
             context.aiRuns.isAvailable
               ? async (scene, prompt) => {
@@ -2269,7 +2217,6 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
                 }
               : undefined
           }
-          registerNavigationGuard={context.registerNavigationGuard}
         />
       );
       break;
@@ -2373,9 +2320,6 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
     "knowledge",
     "map",
     "simulation",
-    "simulation-lab",
-    "simulation-console",
-    "simulation-council",
     "timeline",
     "narrative",
     "inspiration",

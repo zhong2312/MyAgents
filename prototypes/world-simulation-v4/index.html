@@ -1,0 +1,1062 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>世界推演 V4 原型</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        --paper: #faf6ee;
+        --paper-elevated: #fffcf7;
+        --paper-inset: #f1e9df;
+        --line: #e3d8ca;
+        --ink: #241b16;
+        --ink-2: #6f6156;
+        --ink-3: #9a8d81;
+        --accent: #b45e32;
+        --accent-soft: #f3dfd2;
+        --success: #2e765e;
+        --success-soft: #e2eee8;
+        --info: #477aa1;
+        --info-soft: #e4edf4;
+        --warn: #b47b2c;
+        --warn-soft: #f5ead3;
+        --danger: #a65345;
+        --shadow: 0 16px 40px rgba(70, 50, 35, .08);
+        --radius: 6px;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; background: var(--paper); color: var(--ink); }
+      body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px; letter-spacing: 0; }
+      button, input, select { font: inherit; color: inherit; }
+      button { border: 0; cursor: pointer; }
+      button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .app-shell { min-height: 100vh; display: flex; }
+      .app-rail { width: 68px; flex: 0 0 68px; background: #efe6db; border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 18px 0; gap: 10px; }
+      .brand { width: 32px; height: 32px; border-radius: 8px; background: var(--ink); color: var(--paper); display: grid; place-items: center; font-size: 12px; font-weight: 700; letter-spacing: .06em; }
+      .rail-rule { width: 22px; border-top: 1px solid #d4c5b5; margin: 8px 0; }
+      .rail-item { width: 42px; min-height: 42px; border-radius: 6px; display: grid; place-items: center; color: var(--ink-3); background: transparent; position: relative; }
+      .rail-item span { font-size: 18px; line-height: 1; }
+      .rail-item small { display: block; font-size: 10px; margin-top: 2px; }
+      .rail-item.is-active { color: var(--accent); background: var(--paper); box-shadow: 0 0 0 1px rgba(180, 94, 50, .12); }
+      .rail-item.is-active::before { content: ""; position: absolute; left: -13px; top: 11px; bottom: 11px; width: 2px; background: var(--accent); }
+      .sim-app { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+      .topbar { height: 64px; flex: 0 0 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 28px; border-bottom: 1px solid var(--line); background: var(--paper-elevated); }
+      .topbar-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+      .crumb { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+      .crumb strong { color: var(--ink-2); font-weight: 500; }
+      .top-title { border-left: 1px solid var(--line); padding-left: 14px; font-size: 16px; font-weight: 600; white-space: nowrap; }
+      .topbar-right { display: flex; align-items: center; gap: 9px; }
+      .status-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--success); font-size: 12px; }
+      .status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+      .btn { min-height: 34px; padding: 0 13px; border-radius: var(--radius); background: transparent; border: 1px solid var(--line); font-size: 13px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; white-space: nowrap; }
+      .btn:hover { background: var(--paper-inset); }
+      .btn-primary { background: var(--accent); border-color: var(--accent); color: white; }
+      .btn-primary:hover { background: #9e4e29; }
+      .btn-quiet { color: var(--ink-2); border-color: transparent; }
+      .btn-icon { width: 34px; padding: 0; font-size: 18px; }
+      .content-wrap { min-height: 0; flex: 1; display: flex; flex-direction: column; }
+      .view { display: none; min-height: 0; flex: 1; }
+      .view.is-active { display: flex; }
+
+      .setup-shell { width: min(1180px, 100%); margin: 0 auto; padding: 30px 34px 48px; display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 28px; }
+      .section-kicker { color: var(--ink-3); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+      .setup-intro h1 { font-size: 28px; line-height: 1.25; margin: 8px 0 10px; font-weight: 600; }
+      .setup-intro p { margin: 0; color: var(--ink-2); line-height: 1.65; }
+      .run-library { margin-top: 26px; border-top: 1px solid var(--line); }
+      .library-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 0 10px; color: var(--ink-2); font-size: 12px; }
+      .run-row { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; padding: 11px 10px; margin: 2px 0; border-radius: var(--radius); background: transparent; }
+      .run-row:hover, .run-row.is-selected { background: var(--paper-inset); }
+      .run-row.is-selected { box-shadow: inset 2px 0 0 var(--accent); }
+      .run-mark { width: 9px; height: 9px; border: 2px solid var(--accent); border-radius: 50%; flex: 0 0 auto; }
+      .run-row.is-selected .run-mark { background: var(--accent); }
+      .run-row strong { display: block; font-size: 13px; font-weight: 600; }
+      .run-row small { display: block; color: var(--ink-3); margin-top: 3px; font-size: 12px; }
+      .run-row em { margin-left: auto; color: var(--success); font-style: normal; font-size: 11px; }
+      .setup-panel { background: var(--paper-elevated); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); padding: 26px 28px; }
+      .panel-head { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
+      .panel-head h2 { margin: 0; font-size: 20px; font-weight: 600; }
+      .panel-head p { margin: 6px 0 0; color: var(--ink-2); font-size: 13px; }
+      .setup-form { padding-top: 20px; }
+      .form-section { padding: 18px 0; border-bottom: 1px solid var(--line); }
+      .form-section:first-child { padding-top: 0; }
+      .form-section:last-child { border-bottom: 0; }
+      .form-section h3 { margin: 0 0 14px; font-size: 14px; font-weight: 600; }
+      .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; }
+      .field { display: flex; flex-direction: column; gap: 7px; }
+      .field.full { grid-column: 1 / -1; }
+      .field label { font-size: 12px; color: var(--ink-2); }
+      .field input, .field select { width: 100%; min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper); }
+      .field input:focus, .field select:focus { border-color: var(--accent); }
+      .field-help { font-size: 12px; color: var(--ink-3); line-height: 1.5; }
+      .scope-line { display: flex; gap: 8px; flex-wrap: wrap; }
+      .scope-tag { padding: 6px 9px; border-radius: 4px; background: var(--paper-inset); color: var(--ink-2); font-size: 12px; }
+      .rule-line { display: grid; gap: 8px; }
+      .rule-line .scope-tag { border-left: 2px solid var(--accent); }
+      .rule-note { color: var(--ink-3); font-size: 12px; line-height: 1.55; }
+      .diagnostics { display: grid; gap: 7px; }
+      .diagnostic { display: flex; gap: 8px; align-items: baseline; padding: 9px 10px; background: var(--success-soft); color: var(--success); border-left: 2px solid var(--success); font-size: 12px; }
+      .diagnostic.warn { background: var(--warn-soft); color: #896021; border-color: var(--warn); }
+      .setup-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding-top: 21px; }
+      .created-note { display: none; margin-top: 18px; padding: 15px 16px; border-left: 3px solid var(--success); background: var(--success-soft); }
+      .created-note.is-visible { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+      .created-note strong { display: block; font-size: 14px; }
+      .created-note span { display: block; color: var(--ink-2); font-size: 12px; margin-top: 4px; }
+
+      .workspace-shell { min-height: 0; flex: 1; display: flex; flex-direction: column; }
+      .workspace-head { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 24px; border-bottom: 1px solid var(--line); background: var(--paper-elevated); }
+      .workspace-context { min-width: 0; display: flex; align-items: center; gap: 18px; }
+      .workspace-title { min-width: 0; position: relative; }
+      .workspace-title h1 { margin: 0; font-size: 18px; font-weight: 600; }
+      .workspace-title p { margin: 5px 0 0; color: var(--ink-2); font-size: 12px; }
+      .simulation-switcher { max-width: 100%; padding: 0; display: inline-flex; align-items: center; gap: 7px; background: transparent; color: var(--ink); font: inherit; text-align: left; }
+      .simulation-switcher:hover { color: var(--accent); }
+      .simulation-switcher span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .switcher-caret { flex: 0 0 auto; color: var(--ink-3); font-size: 16px; line-height: 1; transition: transform .16s ease; }
+      .simulation-switcher[aria-expanded="true"] .switcher-caret { transform: rotate(180deg); color: var(--accent); }
+      .run-switcher { display: none; position: absolute; top: calc(100% + 10px); left: 0; z-index: 7; width: 360px; max-width: min(360px, calc(100vw - 32px)); padding: 12px; background: var(--paper-elevated); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+      .run-switcher.is-open { display: block; animation: switcher-in .14s ease-out; }
+      .run-switcher-head { display: flex; align-items: center; justify-content: space-between; padding: 3px 4px 9px; color: var(--ink-2); font-size: 12px; }
+      .run-switcher-head strong { color: var(--ink); font-size: 13px; }
+      .run-switcher-list { display: grid; gap: 2px; }
+      .run-option { width: 100%; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 9px; align-items: center; padding: 10px 8px; background: transparent; border-radius: 5px; text-align: left; }
+      .run-option:hover { background: var(--paper-inset); }
+      .run-option.is-active { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+      .run-option.branch { margin-left: 18px; width: calc(100% - 18px); }
+      .run-option.branch .run-option-mark { width: 7px; height: 7px; border-color: var(--info); }
+      .run-option-mark { width: 8px; height: 8px; border: 2px solid var(--ink-3); border-radius: 50%; }
+      .run-option.is-active .run-option-mark { border-color: var(--accent); background: var(--accent); }
+      .run-option-copy { min-width: 0; }
+      .run-option strong, .run-option small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .run-option strong { font-size: 13px; font-weight: 600; }
+      .run-option small { margin-top: 3px; color: var(--ink-3); font-size: 11px; }
+      .run-option em { color: var(--success); font-size: 11px; font-style: normal; white-space: nowrap; }
+      .run-option.branch em { color: var(--info); }
+      .run-switcher-footer { margin-top: 8px; padding-top: 9px; border-top: 1px solid var(--line); }
+      .run-switcher-footer .btn { width: 100%; justify-content: flex-start; color: var(--accent); }
+      @keyframes switcher-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+      .round-meta { padding-left: 18px; border-left: 1px solid var(--line); display: flex; gap: 16px; }
+      .meta-block small { display: block; color: var(--ink-3); font-size: 11px; }
+      .meta-block strong { display: block; margin-top: 3px; font-size: 14px; }
+      .workspace-actions { display: flex; align-items: center; gap: 8px; position: relative; }
+      .round-count { width: 45px; text-align: center; min-height: 34px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper); }
+      .popover { display: none; position: absolute; top: calc(100% + 9px); right: 42px; z-index: 5; width: 248px; padding: 15px; background: var(--paper-elevated); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+      .popover.is-open { display: block; }
+      .popover strong { display: block; font-size: 13px; }
+      .popover p { color: var(--ink-2); font-size: 12px; line-height: 1.5; margin: 6px 0 12px; }
+      .popover-row { display: flex; align-items: center; gap: 8px; }
+      .popover-row input { width: 56px; min-height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+      .workspace-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: 260px minmax(0, 1fr) 340px; }
+      .timeline-pane, .stage-pane, .inspector-pane { min-width: 0; min-height: 0; overflow: auto; }
+      .timeline-pane { border-right: 1px solid var(--line); background: #f5eee5; padding: 18px 12px; }
+      .stage-pane { background: var(--paper); padding: 22px 26px 38px; }
+      .inspector-pane { border-left: 1px solid var(--line); background: var(--paper-elevated); padding: 20px 18px 30px; }
+      .pane-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0 4px 13px; }
+      .pane-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
+      .pane-title span { color: var(--ink-3); font-size: 11px; }
+      .timeline { position: relative; padding-left: 18px; }
+      .timeline::before { content: ""; position: absolute; left: 7px; top: 5px; bottom: 5px; width: 1px; background: #d5c5b5; }
+      .round-item { width: 100%; position: relative; display: block; text-align: left; background: transparent; border-radius: var(--radius); padding: 10px 10px 11px 15px; margin-bottom: 3px; }
+      .round-item::before { content: ""; position: absolute; left: -15px; top: 16px; width: 7px; height: 7px; border: 2px solid #c3b09e; border-radius: 50%; background: #f5eee5; z-index: 1; }
+      .round-item:hover { background: rgba(255, 252, 247, .65); }
+      .round-item.is-selected { background: var(--paper-elevated); box-shadow: 0 0 0 1px var(--line); }
+      .round-item.is-selected::before { border-color: var(--accent); background: var(--accent); }
+      .round-item.is-running::before { border-color: var(--warn); background: var(--warn-soft); }
+      .round-main { display: flex; justify-content: space-between; gap: 7px; align-items: center; }
+      .round-main strong { font-size: 13px; font-weight: 600; }
+      .round-main em { font-size: 11px; font-style: normal; color: var(--success); }
+      .round-item small { display: block; color: var(--ink-3); font-size: 11px; margin-top: 4px; }
+      .round-item .round-alert { color: var(--warn); }
+      .stage-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; padding-bottom: 17px; border-bottom: 1px solid var(--line); }
+      .stage-head h2 { margin: 0; font-size: 21px; font-weight: 600; }
+      .stage-head p { color: var(--ink-2); margin: 7px 0 0; font-size: 13px; }
+      .stage-tools { display: flex; gap: 7px; }
+      .stage-summary { display: flex; gap: 18px; align-items: center; padding: 13px 0; color: var(--ink-2); font-size: 12px; }
+      .stage-summary strong { color: var(--ink); font-size: 13px; }
+      .stage-pane { display: flex; flex-direction: column; overflow: auto; }
+      .narrative-stage { min-height: 0; flex: 1; display: grid; grid-template-rows: auto auto minmax(280px, 1fr) auto; gap: 12px; }
+      .scene-bar { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 0 2px 10px; border-bottom: 1px solid var(--line); color: var(--ink-2); font-size: 12px; }
+      .scene-label { color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: .04em; }
+      .scene-live { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--success); font-size: 11px; }
+      .pulse-panel { padding: 2px 0 12px; border-bottom: 1px solid var(--line); }
+      .pulse-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 0 0 8px; }
+      .pulse-head strong { font-size: 12px; }
+      .pulse-head span { color: var(--ink-3); font-size: 11px; }
+      .pulse-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+      .pulse { min-width: 0; padding: 9px 10px; border-top: 2px solid var(--line); background: rgba(255, 252, 247, .7); }
+      .pulse.world { border-top-color: var(--success); }
+      .pulse.people { border-top-color: var(--info); }
+      .pulse.factions { border-top-color: var(--warn); }
+      .pulse.life { border-top-color: var(--accent); }
+      .pulse-title { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+      .pulse-title span { color: var(--ink-3); font-size: 10px; }
+      .pulse-title strong { font-size: 11px; }
+      .pulse p { display: -webkit-box; min-height: 31px; overflow: hidden; margin: 6px 0 0; color: var(--ink-2); font-size: 10px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+      .pulse button { display: inline-flex; align-items: center; gap: 3px; margin: 7px 0 0; padding: 0; border: 0; background: transparent; color: var(--accent); font-size: 10px; }
+      .next-window { display: none; align-items: flex-start; gap: 10px; padding: 11px 12px; border-left: 2px solid var(--accent); background: var(--paper-inset); }
+      .next-window.is-visible { display: flex; }
+      .next-window-mark { display: grid; place-items: center; width: 25px; height: 25px; flex: 0 0 auto; color: var(--accent); font-size: 18px; }
+      .next-window strong { display: block; font-size: 12px; }
+      .next-window p { margin: 4px 0 7px; color: var(--ink-3); font-size: 10px; line-height: 1.45; }
+      .next-window ul { display: flex; flex-wrap: wrap; gap: 4px 15px; margin: 0; padding: 0 0 0 15px; color: var(--ink-2); font-size: 10px; line-height: 1.45; }
+      .story-panel { min-height: 280px; overflow: auto; padding: clamp(20px, 4vw, 42px) clamp(18px, 6vw, 66px); border: 1px solid var(--line); border-radius: 7px; background: #fbf6ef; box-shadow: inset 0 0 0 4px rgba(255, 252, 247, .5); }
+      .story-eyebrow { color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: .05em; }
+      .story-panel h3 { max-width: 680px; margin: 14px 0 0; font-family: Georgia, "Songti SC", serif; font-size: clamp(22px, 3vw, 31px); font-weight: 600; line-height: 1.3; }
+      .story-panel > p { max-width: 680px; margin: 14px 0 0; color: var(--ink-2); font-family: Georgia, "Songti SC", serif; font-size: 15px; line-height: 1.85; }
+      .story-facts { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 18px; }
+      .story-fact { padding: 5px 8px; border: 1px solid #dccdbd; border-radius: 3px; color: var(--ink-2); font-size: 11px; background: rgba(255, 252, 247, .7); }
+      .choice-heading { display: flex; align-items: baseline; gap: 10px; max-width: 680px; margin-top: 26px; padding-top: 16px; border-top: 1px solid #e2d7cb; }
+      .choice-heading span { font-size: 13px; font-weight: 600; }
+      .choice-heading small { color: var(--ink-3); font-size: 10px; }
+      .choice-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; max-width: 680px; margin-top: 10px; }
+      .choice-button { min-height: 66px; padding: 10px 11px; border: 1px solid #d9cabc; border-radius: 4px; background: rgba(255, 252, 247, .72); color: var(--ink); text-align: left; transition: border-color .16s ease, background .16s ease, transform .16s ease; }
+      .choice-button:hover, .choice-button.is-selected { border-color: var(--accent); background: var(--accent-soft); transform: translateY(-1px); }
+      .choice-button strong, .choice-button small { display: block; }
+      .choice-button strong { font-size: 12px; }
+      .choice-button small { margin-top: 5px; color: var(--ink-2); font-size: 11px; line-height: 1.4; }
+      .choice-feedback { min-height: 18px; max-width: 680px; margin: 10px 0 0 !important; color: var(--accent) !important; font-family: inherit !important; font-size: 11px !important; line-height: 1.5 !important; }
+      .activity-panel { min-height: 0; border-top: 1px solid var(--line); }
+      .activity-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 11px 0 7px; }
+      .activity-head strong { font-size: 13px; }
+      .activity-head span { color: var(--ink-3); font-size: 11px; }
+      .event-stream { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; padding: 0; }
+      .event-card { min-width: 0; display: grid; grid-template-columns: 19px minmax(0, 1fr); gap: 7px; align-items: start; padding: 9px 7px; background: transparent; border-left: 1px solid var(--line); text-align: left; }
+      .event-card:first-child { border-left: 0; }
+      .event-card:hover { background: var(--paper-inset); }
+      .event-card.is-selected { background: var(--accent-soft); box-shadow: inset 0 2px 0 var(--accent); }
+      .event-seq { display: grid; place-items: center; width: 19px; height: 19px; border-radius: 50%; background: var(--paper-inset); color: var(--ink-3); font-size: 10px; }
+      .event-card.is-selected .event-seq { background: var(--accent); color: white; }
+      .event-copy { min-width: 0; }
+      .event-top { display: block; color: var(--ink-3); font-size: 10px; line-height: 1.35; }
+      .event-kind { display: block; margin-top: 2px; color: var(--accent); font-weight: 600; }
+      .event-card h3 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 5px 0 0; font-size: 12px; line-height: 1.35; font-weight: 600; }
+      .event-card p, .event-footer { display: none; }
+      .entity-links { display: none; }
+      .inspector-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+      .inspector-head p { color: var(--ink-2); font-size: 12px; line-height: 1.5; margin: 6px 0 0; }
+      .state-time { margin: 16px 0; padding: 11px 12px; background: var(--paper-inset); border-left: 2px solid var(--accent); }
+      .state-time small { color: var(--ink-3); display: block; font-size: 11px; }
+      .state-time strong { display: block; margin-top: 3px; font-size: 14px; }
+      .inspector-focus { padding: 0 0 13px; border-bottom: 1px solid var(--line); }
+      .inspector-focus small { display: block; color: var(--ink-3); font-size: 10px; }
+      .inspector-focus strong { display: block; margin-top: 4px; font-size: 13px; }
+      .inspector-focus span { display: block; margin-top: 4px; color: var(--ink-2); font-size: 11px; line-height: 1.45; }
+      .inspector-tabs { display: flex; gap: 2px; overflow-x: auto; border-bottom: 1px solid var(--line); }
+      .inspector-tab { flex: 0 0 auto; padding: 9px 7px 10px; background: transparent; color: var(--ink-3); font-size: 12px; border-bottom: 2px solid transparent; }
+      .inspector-tab.is-active { color: var(--accent); border-color: var(--accent); }
+      .entity-block { padding: 17px 0 15px; border-bottom: 1px solid var(--line); }
+      .entity-block:last-child { border-bottom: 0; }
+      .entity-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+      .entity-heading strong { font-size: 14px; }
+      .entity-heading span { color: var(--success); font-size: 11px; }
+      .entity-sub { margin-top: 5px; color: var(--ink-2); font-size: 12px; }
+      .stat-list { display: grid; gap: 7px; margin: 13px 0 0; }
+      .stat-row { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 8px; font-size: 12px; }
+      .stat-row dt { color: var(--ink-3); }
+      .stat-row dd { margin: 0; color: var(--ink-2); }
+      .meter { height: 5px; background: var(--paper-inset); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+      .meter i { display: block; height: 100%; background: var(--accent); }
+      .mobile-switch { display: none; }
+      .drawer-backdrop { display: none; position: fixed; inset: 0; z-index: 8; background: rgba(36, 27, 22, .25); }
+      .drawer-backdrop.is-open { display: block; }
+      .drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 9; width: min(420px, 100vw); background: var(--paper-elevated); box-shadow: -18px 0 45px rgba(70, 50, 35, .14); transform: translateX(100%); transition: transform .2s ease; padding: 22px; overflow: auto; }
+      .drawer.is-open { transform: translateX(0); }
+      .drawer-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 15px; border-bottom: 1px solid var(--line); }
+      .drawer-head h2 { margin: 0; font-size: 17px; }
+      .drawer p { color: var(--ink-2); line-height: 1.6; font-size: 13px; }
+      .cause { padding: 12px 0; border-bottom: 1px solid var(--line); }
+      .cause small { color: var(--ink-3); font-size: 11px; }
+      .cause strong { display: block; margin-top: 4px; font-size: 13px; }
+      .cause span { display: block; margin-top: 5px; color: var(--ink-2); font-size: 12px; }
+      .toast { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 15px); opacity: 0; pointer-events: none; z-index: 15; padding: 10px 14px; border-radius: 5px; background: var(--ink); color: white; font-size: 13px; transition: opacity .18s ease, transform .18s ease; }
+      .toast.is-visible { opacity: 1; transform: translate(-50%, 0); }
+      .hidden { display: none !important; }
+      body.modal-open { overflow: hidden; }
+      .modal-backdrop { display: none; position: fixed; inset: 0; z-index: 12; align-items: center; justify-content: center; padding: 24px; background: rgba(36, 27, 22, .32); }
+      .modal-backdrop.is-open { display: flex; }
+      .setup-modal { width: min(720px, 100%); max-height: min(860px, calc(100vh - 48px)); overflow: auto; background: var(--paper-elevated); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 24px 70px rgba(70, 50, 35, .22); }
+      .setup-modal .setup-panel { border: 0; border-radius: 0; box-shadow: none; padding: 26px 28px 24px; }
+      .setup-modal .panel-head { align-items: center; }
+      .modal-close { flex: 0 0 auto; }
+      .auto-settings-note { display: flex; gap: 8px; margin-top: 18px; padding: 11px 12px; border-left: 2px solid var(--accent); background: var(--accent-soft); color: var(--ink-2); font-size: 12px; line-height: 1.55; }
+      .auto-settings-note b { color: var(--accent); }
+
+      @media (max-width: 1100px) {
+        .workspace-grid { grid-template-columns: 175px minmax(0, 1fr) 245px; }
+        .workspace-head { padding-inline: 18px; }
+        .stage-pane { padding-inline: 20px; }
+        .timeline-pane { padding-inline: 10px; }
+        .round-item { padding-right: 6px; }
+        .event-stream { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .story-panel { padding-inline: 28px; }
+        .choice-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+      @media (max-width: 820px) {
+        .app-rail { width: 54px; flex-basis: 54px; }
+        .rail-item.is-active::before { left: -7px; }
+        .setup-shell { grid-template-columns: 1fr; padding: 22px 20px 34px; }
+        .setup-intro h1 { font-size: 24px; }
+        .workspace-grid { grid-template-columns: 225px minmax(0, 1fr); }
+        .inspector-pane { display: none; }
+        .inspector-pane.is-mobile-open { display: block; position: fixed; inset: 64px 0 0 auto; width: min(340px, 88vw); z-index: 4; box-shadow: -10px 0 25px rgba(70, 50, 35, .1); }
+        .mobile-switch { display: flex; gap: 5px; padding: 9px 12px; border-bottom: 1px solid var(--line); background: var(--paper-elevated); }
+        .mobile-switch button { flex: 1; min-height: 31px; background: transparent; border-radius: 4px; color: var(--ink-2); font-size: 12px; }
+        .mobile-switch button.is-active { background: var(--paper-inset); color: var(--accent); font-weight: 600; }
+      }
+      @media (max-width: 560px) {
+        .app-rail { display: none; }
+        .topbar { height: 56px; flex-basis: 56px; padding: 0 14px; }
+        .crumb { display: none; }
+        .top-title { border-left: 0; padding-left: 0; font-size: 15px; }
+        .topbar-right .status-chip { display: none; }
+        .topbar-right .btn:not(.btn-icon) { display: none; }
+        .topbar-right .btn[data-action="open-setup"] { display: inline-flex; padding-inline: 9px; }
+        .setup-shell { padding: 18px 14px 30px; }
+        .setup-panel { padding: 20px 16px; border-radius: 6px; }
+        .field-grid { grid-template-columns: 1fr; }
+        .field.full { grid-column: auto; }
+        .created-note.is-visible { align-items: flex-start; flex-direction: column; }
+        .workspace-head { min-height: auto; align-items: flex-start; flex-direction: column; padding: 14px; gap: 12px; }
+        .workspace-context { width: 100%; justify-content: space-between; gap: 10px; }
+        .workspace-title { max-width: calc(100% - 2px); }
+        .simulation-switcher { max-width: 100%; }
+        .workspace-title p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 210px; }
+        .run-switcher { position: fixed; top: 65px; left: 12px; right: 12px; width: auto; max-width: none; max-height: min(480px, calc(100vh - 82px)); overflow: auto; }
+        .round-meta { display: none; }
+        .workspace-actions { width: 100%; }
+        .workspace-actions .btn-primary { flex: 1; }
+        .workspace-grid { display: block; }
+        .timeline-pane, .stage-pane, .inspector-pane { display: none; overflow: auto; min-height: calc(100vh - 112px); }
+        .workspace-grid[data-mobile-panel="timeline"] .timeline-pane, .workspace-grid[data-mobile-panel="stage"] .stage-pane, .workspace-grid[data-mobile-panel="inspector"] .inspector-pane { display: block; }
+        .timeline-pane { border-right: 0; padding: 15px 12px 26px; }
+        .stage-pane { padding: 17px 14px 30px; }
+        .inspector-pane { border-left: 0; padding: 17px 14px 30px; }
+        .mobile-switch { display: flex; }
+        .stage-head { flex-direction: column; }
+        .stage-tools { width: 100%; }
+        .stage-tools .btn { flex: 1; }
+        .popover { right: 0; top: calc(100% + 8px); }
+        .modal-backdrop { align-items: flex-end; padding: 10px 0 0; }
+        .setup-modal { width: 100%; max-height: calc(100vh - 10px); border-radius: 8px 8px 0 0; }
+        .setup-modal .setup-panel { padding: 20px 16px 22px; }
+        .narrative-stage { grid-template-rows: auto auto minmax(420px, 1fr) auto; }
+        .pulse-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .event-stream { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .story-panel { padding: 22px 16px; }
+        .story-panel h3 { font-size: 24px; }
+        .story-panel > p { font-size: 14px; }
+        .choice-heading { display: block; }
+        .choice-heading small { display: block; margin-top: 5px; }
+        .choice-list { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="app-rail" aria-label="主导航">
+        <div class="brand">MA</div>
+        <div class="rail-rule"></div>
+        <button class="rail-item" aria-label="正文"><span>▤</span><small>正文</small></button>
+        <button class="rail-item" aria-label="设定"><span>◇</span><small>设定</small></button>
+        <button class="rail-item is-active" aria-label="辅助"><span>◌</span><small>辅助</small></button>
+        <div class="rail-rule"></div>
+        <button class="rail-item" aria-label="设置"><span>⚙</span><small>设置</small></button>
+      </aside>
+      <main class="sim-app">
+        <header class="topbar">
+          <div class="topbar-left">
+            <div class="crumb">辅助 <span> / </span> <strong>世界推演</strong></div>
+            <div class="top-title">世界推演</div>
+          </div>
+          <div class="topbar-right">
+            <div class="status-chip"><i class="status-dot"></i><span id="globalStatus">运行已就绪</span></div>
+            <button class="btn btn-quiet" data-action="open-setup">新建推演</button>
+            <button class="btn btn-icon" aria-label="更多" data-action="more">⋯</button>
+          </div>
+        </header>
+        <div class="content-wrap">
+          <section class="view is-active" id="workspaceView">
+            <div class="workspace-shell">
+              <div class="workspace-head">
+                <div class="workspace-context"><div class="workspace-title"><h1><button class="simulation-switcher" id="simulationSwitcher" data-action="toggle-run-switcher" aria-haspopup="true" aria-expanded="false"><span id="workspaceTitle">北境灵脉演化</span><span class="switcher-caret" aria-hidden="true">⌄</span></button></h1><p id="workspaceSubtitle">主推演分支 · 基线：卷一北山封印事件之后</p><div class="run-switcher" id="runSwitcher" aria-label="推演运行列表"><div class="run-switcher-head"><strong>推演运行</strong><span id="runSwitcherCount">3 个运行</span></div><div class="run-switcher-list" id="runSwitcherList"></div><div class="run-switcher-footer"><button class="btn btn-quiet" data-action="open-setup">＋ 新建推演</button></div></div></div><div class="round-meta"><div class="meta-block"><small>当前时间</small><strong id="currentTime">第 7 年 · 秋末</strong></div><div class="meta-block"><small>轮次跨度</small><strong id="workspaceSpan">三个月</strong></div></div></div>
+                <div class="workspace-actions"><button class="btn btn-primary" data-action="advance">推演 1 轮</button><button class="btn" data-action="continuous">连续推演</button><input class="round-count" id="roundCount" type="number" min="1" max="9" value="3" aria-label="连续推演轮数" /><button class="btn btn-icon" aria-label="更多运行操作" data-action="more">⋯</button><div class="popover" id="continuousPopover"><strong>连续推演</strong><p>将按每轮三个月的跨度顺序执行，完成一轮就保存一次。</p><div class="popover-row"><input id="continuousCount" type="number" min="1" max="9" value="3" /><span>轮</span><button class="btn btn-primary" data-action="confirm-continuous">开始</button></div></div></div>
+              </div>
+              <div class="mobile-switch" role="tablist" aria-label="移动端工作台视图"><button class="is-active" data-mobile="timeline">轮次</button><button data-mobile="stage">舞台</button><button data-mobile="inspector">状态</button></div>
+              <div class="workspace-grid" id="workspaceGrid" data-mobile-panel="timeline">
+                <aside class="timeline-pane"><div class="pane-title"><h2>推演时间线</h2><span id="timelineCount">8 轮</span></div><div class="timeline" id="timeline"></div></aside>
+                <main class="stage-pane"><div class="stage-head"><div><div class="section-kicker">narrative stage · round <span id="stageRoundKicker">07</span></div><h2 id="stageTitle">第 7 轮 · 封印裂隙扩散</h2><p id="stagePeriod">第 7 年 · 初秋 — 第 7 年 · 秋末</p></div><div class="stage-tools"><button class="btn" data-action="causal">因果链</button><button class="btn" data-action="adopt">生成提案</button></div></div><div class="stage-summary"><strong id="stageSummary">5 个事件</strong><span id="stageCoverage">世界时钟 · 叙事观察 · 主体行动</span><span id="stageState" class="status-chip"><i class="status-dot"></i>已完成</span></div><section class="narrative-stage" aria-label="文字推演舞台"><div class="scene-bar"><span class="scene-label">当前场景</span><strong id="sceneClock">第 7 年 · 秋末</strong><span class="scene-live" id="sceneLive"><i class="status-dot"></i>检查点已保存</span></div><section class="pulse-panel" aria-label="本轮世界脉动"><div class="pulse-head"><strong>本轮世界脉动</strong><span id="pulseCount">5 条已接受变化</span></div><div class="pulse-grid" id="pulseGrid"></div></section><section class="next-window" id="nextWindow" aria-label="下一轮结算范围"><div class="next-window-mark">◷</div><div><strong id="nextWindowTitle"></strong><p>世界会按已编译规则同步结算，作者无需逐项设置。</p><ul id="nextWindowChecks"></ul></div></section><article class="story-panel" id="storyPanel"><div class="story-eyebrow" id="storyEyebrow">世界过程 · 内核裁定</div><h3 id="storyTitle">北山封印破裂</h3><p id="storyText">第二道裂隙在旧阵眼西侧出现，灵气开始向山村低地扩散。</p><div class="story-facts" id="storyFacts"></div><div class="choice-heading"><span>你要如何处理这一刻？</span><small>选择会记录为当前运行的作者干预候选</small></div><div class="choice-list" id="choiceList"></div><p class="choice-feedback" id="choiceFeedback"></p></article><div class="activity-panel"><div class="activity-head"><strong>本轮行动记录</strong><span id="activityCount">5 个结果 · 按世界时间结算</span></div><div class="event-stream" id="eventStream"></div></div></section></main>
+                <aside class="inspector-pane" id="inspectorPane"><div class="inspector-head"><h2>当前时间点</h2><p>选择轮次或事件，查看该时刻可追溯的实体状态。</p></div><div class="state-time"><small>状态快照</small><strong id="inspectorTime">第 7 年 · 秋末 · 第 7 轮结束</strong></div><section class="inspector-focus" id="inspectorFocus"></section><div class="inspector-tabs" id="inspectorTabs"><button class="inspector-tab is-active" data-type="characters">人物</button><button class="inspector-tab" data-type="factions">势力</button><button class="inspector-tab" data-type="regions">地域</button><button class="inspector-tab" data-type="world">世界</button></div><div id="inspectorBody"></div></aside>
+              </div>
+            </div>
+          </section>
+          <div class="modal-backdrop" id="setupModalBackdrop">
+            <section class="setup-modal" id="setupModal" role="dialog" aria-modal="true" aria-labelledby="setupModalTitle">
+              <div class="setup-panel">
+                <div class="panel-head">
+                  <div><h2 id="setupModalTitle">新建推演</h2><p>创建后会按当前资料自动建立基线，并直接进入文字舞台。</p></div>
+                  <button class="btn btn-icon modal-close" aria-label="关闭推演设置" data-action="close-setup">×</button>
+                </div>
+                <form class="setup-form" id="setupForm">
+                  <div class="form-section">
+                    <h3>基本信息</h3>
+                    <div class="field-grid">
+                      <div class="field full"><label for="simName">推演名称</label><input id="simName" value="北境灵脉演化" /></div>
+                    </div>
+                  </div>
+                  <div class="form-section">
+                    <h3>时间与轮次</h3>
+                    <div class="field-grid">
+                      <div class="field"><label for="horizon">总推演范围</label><select id="horizon"><option value="十二年">十二年</option><option value="三十年">三十年</option><option value="一百年">一百年</option><option value="一千年">一千年</option><option value="一万年">一万年</option><option value="一亿年">一亿年</option><option value="一百亿年">一百亿年</option></select></div>
+                      <div class="field"><label for="roundSpan">每轮时间跨度</label><select id="roundSpan"><option value="一天">一天</option><option value="十天">十天</option><option value="一个月">一个月</option><option value="一季度">一季度</option><option value="三个月">三个月</option><option value="一年">一年</option><option value="十年">十年</option><option value="一百年">一百年</option><option value="一千年">一千年</option><option value="一万年">一万年</option><option value="一百万年">一百万年</option><option value="一亿年">一亿年</option><option value="一百亿年">一百亿年</option></select></div>
+                      <div class="field full"><span class="field-help">每轮推进到固定时间跨度的终点。短跨度展开日常行动，长跨度自动处理寿命、代际、势力更替和世界级过程。</span></div>
+                    </div>
+                  </div>
+                  <div class="form-section">
+                    <h3>叙事镜头</h3>
+                    <div class="field-grid">
+                      <div class="field"><label for="observer">叙事镜头</label><select id="observer"><option value="ensemble">多主体世界切片</option><option value="mortal-zhangsan">普通凡人 · 张三</option><option value="shen">人物 · 沈照夜</option><option value="redcloud">势力 · 赤霄宗</option></select></div>
+                      <div class="field"><span class="field-help">选择普通凡人时，跨度超过其寿命会输出完整人生结局，而不是继续假设他永远存在。</span></div>
+                    </div>
+                  </div>
+                  <div class="auto-settings-note"><b>自动推导</b><span>事实起点、观察范围、人物地点、周期规则、战争与资源响应、修炼条件和推演预算会从当前世界架构自动编译。没有完整资料也可以先开始推演。</span></div>
+                  <div class="setup-actions"><button type="button" class="btn btn-quiet" data-action="close-setup">取消</button><button type="button" class="btn btn-primary" data-action="create">创建并进入舞台</button></div>
+                </form>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+    <div class="drawer-backdrop" id="drawerBackdrop"></div><aside class="drawer" id="drawer"><div class="drawer-head"><h2 id="drawerTitle">本轮因果链</h2><button class="btn btn-icon" aria-label="关闭" data-action="close-drawer">×</button></div><div id="drawerBody"></div></aside><div class="toast" id="toast"></div>
+    <script>
+      const rounds = [
+        { index: 0, label: "事实基线", period: "卷一 · 北山封印之后", events: 0, status: "基线", time: "第 0 年 · 春" },
+        { index: 1, label: "封印余波", period: "第 0 年 · 春 — 夏", events: 3, status: "已完成", time: "第 0 年 · 夏" },
+        { index: 2, label: "灵气异常", period: "第 0 年 · 夏 — 秋", events: 4, status: "已完成", time: "第 0 年 · 秋" },
+        { index: 3, label: "山村传闻", period: "第 0 年 · 秋 — 冬", events: 2, status: "已完成", time: "第 0 年 · 冬" },
+        { index: 4, label: "宗门窥探", period: "第 1 年 · 春 — 夏", events: 4, status: "已完成", time: "第 1 年 · 夏" },
+        { index: 5, label: "边界试探", period: "第 5 年 · 夏 — 秋", events: 6, status: "已完成", time: "第 5 年 · 秋" },
+        { index: 6, label: "封印失稳", period: "第 7 年 · 春 — 初秋", events: 5, status: "已完成", time: "第 7 年 · 初秋" },
+        { index: 7, label: "裂隙扩散", period: "第 7 年 · 初秋 — 秋末", events: 5, status: "已完成", time: "第 7 年 · 秋末" },
+        { index: 8, label: "下一轮", period: "等待推演", events: 0, status: "待推演", time: "第 8 年 · 冬" }
+      ];
+      const eventSets = {
+        0: [],
+        6: [
+          { time: "第 7 年 · 春末", kind: "世界过程", title: "北山灵脉进入低潮", summary: "法则稳定度下降，封印维护窗口缩短。", entity: "地域", status: "内核裁定", tags: ["北山", "灵脉"] },
+          { time: "第 7 年 · 盛夏", kind: "人物行动", title: "陆沉提前返回守阵台", summary: "守阵人放弃南线调查，将剩余灵石投入临时阵眼。", entity: "陆沉", status: "状态已提交", tags: ["陆沉", "北山"] }
+        ],
+        7: [
+          { time: "第 7 年 · 初秋", kind: "世界过程", title: "北山封印破裂", summary: "第二道裂隙在旧阵眼西侧出现，灵气开始向山村低地扩散。", entity: "北山", status: "内核裁定", tags: ["北山", "封印"] },
+          { time: "第 7 年 · 初秋", kind: "人物行动", title: "沈照夜收留传闻中的引路人", summary: "他依据有限记忆选择暂时合作，关系信任上升但资源消耗增加。", entity: "沈照夜", status: "模型候选已采纳", tags: ["沈照夜", "山村"] },
+          { time: "第 7 年 · 仲秋", kind: "势力策略", title: "赤霄宗封锁北境商路", summary: "宗门试图延迟消息外泄，北境与外界的贸易容量下降。", entity: "赤霄宗", status: "状态已提交", tags: ["赤霄宗", "商路"] },
+          { time: "第 7 年 · 仲秋", kind: "传播", title: "山村传闻抵达南岭", summary: "消息沿两段信息连接传播，内容出现一处可追溯的失真。", entity: "南岭", status: "传播已排程", tags: ["传闻", "南岭"] },
+          { time: "第 7 年 · 秋末", kind: "冲突", title: "守阵人与赤霄宗使者冲突", summary: "双方对封印归属产生分歧，暂未造成伤亡，下一轮将触发会商候选。", entity: "陆沉", status: "等待下一轮", tags: ["陆沉", "赤霄宗"] }
+        ],
+        8: [
+          { time: "第 8 年 · 冬", kind: "运行中", title: "正在计算主体候选", summary: "时间已推进到本轮边界，正在等待模型候选裁定。", entity: "沈照夜", status: "运行中", tags: ["第 8 轮"] }
+        ]
+      };
+      const entitySets = {
+        characters: [
+          { name: "沈照夜", meta: "人物 · 北山南麓", state: "存活 · 观望", stats: [["意图", "寻找裂隙来源"], ["资源", "灵石 38 / 60"], ["关系", "对陆沉：谨慎信任"], ["记忆", "已知封印破裂"]], meter: 63 },
+          { name: "陆沉", meta: "人物 · 北山守阵台", state: "存活 · 守阵", stats: [["意图", "维持第三阵眼"], ["资源", "阵材 12 / 20"], ["关系", "对赤霄宗：紧张"], ["记忆", "已知第二裂隙"]], meter: 78 }
+        ],
+        factions: [
+          { name: "赤霄宗", meta: "势力 · 北境东部", state: "扩张中", stats: [["策略", "封锁消息，控制商路"], ["军力", "68 / 100"], ["民望", "51 / 100"], ["领土完整度", "73 / 100"]], meter: 68 },
+          { name: "青岚商盟", meta: "势力 · 南岭通道", state: "观望", stats: [["策略", "等待北境价格变化"], ["经济", "62 / 100"], ["外交", "对赤霄宗保持距离"], ["影响范围", "南岭三城"]], meter: 52 }
+        ],
+        regions: [
+          { name: "北山", meta: "地域 · 高危封印区", state: "压力升高", stats: [["稳定", "34 / 100"], ["灵脉", "41 / 100"], ["生态", "57 / 100"], ["待到达影响", "2 条传播载荷"]], meter: 34 },
+          { name: "南岭", meta: "地域 · 信息连接终点", state: "传闻进入", stats: [["稳定", "76 / 100"], ["经济", "69 / 100"], ["人口", "58 / 100"], ["连接衰减", "0.64"]], meter: 76 }
+        ],
+        world: [
+          { name: "当前纪元", meta: "区域阶段 · 第 7 轮结束", state: "区域演化", stats: [["世界时间", "第 7 年 · 秋末"], ["文明指数", "52 / 100"], ["法则稳定度", "71 / 100"], ["事件账本", "29 条已接受事件"]], meter: 71 },
+          { name: "推演边界", meta: "总范围 · 十二年", state: "仍可继续", stats: [["剩余跨度", "五年"], ["每轮跨度", "三个月"], ["已用预算", "事件 29 / 120"], ["降级原因", "北境外部势力近似响应"]], meter: 24 }
+        ]
+      };
+      const cloneData = (value) => JSON.parse(JSON.stringify(value));
+      const tradeRounds = [
+        { index: 0, label: "事实基线", period: "卷二 · 南岭商路重启", events: 0, status: "基线", time: "第 0 年 · 春" },
+        { index: 1, label: "关税上调", period: "第 0 年 · 春 — 夏", events: 3, status: "已完成", time: "第 0 年 · 夏" },
+        { index: 2, label: "商盟会谈", period: "第 0 年 · 夏 — 秋", events: 4, status: "已完成", time: "第 0 年 · 秋" },
+        { index: 3, label: "暗线流通", period: "第 0 年 · 秋 — 冬", events: 3, status: "已完成", time: "第 0 年 · 冬" },
+        { index: 4, label: "下一轮", period: "等待推演", events: 0, status: "待推演", time: "第 1 年 · 春" }
+      ];
+      const tradeEventSets = {
+        0: [],
+        3: [
+          { time: "第 0 年 · 秋初", kind: "势力策略", title: "青岚商盟重启北境贸易", summary: "商盟绕开赤霄宗的封锁，开放一条低风险水路。", entity: "青岚商盟", status: "内核裁定", tags: ["青岚商盟", "水路"] },
+          { time: "第 0 年 · 仲秋", kind: "传播", title: "商路价格传入北山", summary: "价格变化沿商队网络扩散，沈照夜获得一份不完整的货单。", entity: "北山", status: "传播已排程", tags: ["北山", "货单"] },
+          { time: "第 0 年 · 冬", kind: "冲突", title: "赤霄宗截查商队", summary: "截查没有造成伤亡，但南岭通道的信任度继续下降。", entity: "赤霄宗", status: "等待下一轮", tags: ["赤霄宗", "南岭"] }
+        ]
+      };
+      const tradeEntitySets = {
+        characters: [
+          { name: "沈照夜", meta: "人物 · 南岭渡口", state: "存活 · 追查货单", stats: [["意图", "确认商路背后势力"], ["资源", "灵石 26 / 60"], ["关系", "对商盟：试探"], ["记忆", "已知价格异常"]], meter: 54 },
+          { name: "陆沉", meta: "人物 · 北山守阵台", state: "存活 · 等待", stats: [["意图", "维持封印补给"], ["资源", "阵材 9 / 20"], ["关系", "对商盟：中立"], ["记忆", "未接触商路"]], meter: 46 }
+        ],
+        factions: [
+          { name: "青岚商盟", meta: "势力 · 南岭通道", state: "主动扩张", stats: [["策略", "重启水路，规避截查"], ["经济", "74 / 100"], ["外交", "对赤霄宗：疏远"], ["影响范围", "南岭五城"]], meter: 74 },
+          { name: "赤霄宗", meta: "势力 · 北境东部", state: "封锁中", stats: [["策略", "截查商队，压低消息流速"], ["军力", "71 / 100"], ["民望", "46 / 100"], ["领土完整度", "73 / 100"]], meter: 71 }
+        ],
+        regions: [
+          { name: "南岭", meta: "地域 · 商路网络中心", state: "流量上升", stats: [["稳定", "68 / 100"], ["经济", "79 / 100"], ["人口", "61 / 100"], ["连接衰减", "0.42"]], meter: 68 },
+          { name: "北山", meta: "地域 · 补给终点", state: "补给紧张", stats: [["稳定", "41 / 100"], ["灵脉", "39 / 100"], ["生态", "57 / 100"], ["待到达影响", "1 条货运载荷"]], meter: 41 }
+        ],
+        world: [
+          { name: "当前纪元", meta: "区域阶段 · 第 3 轮结束", state: "商路演化", stats: [["世界时间", "第 0 年 · 冬"], ["文明指数", "49 / 100"], ["法则稳定度", "71 / 100"], ["事件账本", "18 条已接受事件"]], meter: 71 },
+          { name: "推演边界", meta: "总范围 · 五年", state: "仍可继续", stats: [["剩余跨度", "四年"], ["每轮跨度", "三个月"], ["已用预算", "事件 18 / 80"], ["降级原因", "北境外部势力近似响应"]], meter: 23 }
+        ]
+      };
+      const branchRounds = cloneData(rounds);
+      branchRounds[7] = { ...branchRounds[7], label: "封印假设裁定", status: "已暂停" };
+      const branchEventSets = cloneData(eventSets);
+      branchEventSets[7] = [branchEventSets[7][0], { time: "第 7 年 · 初秋", kind: "模型候选", title: "沈照夜选择封存裂隙", summary: "分支假设要求暂不传播裂隙信息，等待下一轮验证后果。", entity: "沈照夜", status: "候选待审", tags: ["沈照夜", "封印"] }];
+      const simulations = [
+        { id: "north", name: "北境灵脉演化", anchor: "卷一北山封印事件之后", horizon: "十二年", span: "三个月", observer: "ensemble", roundLimit: 48, status: "运行中", statusLabel: "运行已就绪", currentTime: "第 7 年 · 秋末", selectedRound: 7, rounds, eventSets, entitySets },
+        { id: "trade", name: "南岭商路震荡", anchor: "卷二南岭商路重启之后", horizon: "五年", span: "三个月", observer: "ensemble", roundLimit: 20, status: "已暂停", statusLabel: "已暂停", currentTime: "第 0 年 · 冬", selectedRound: 3, rounds: tradeRounds, eventSets: tradeEventSets, entitySets: tradeEntitySets },
+        { id: "north-branch", parentId: "north", name: "封印假设分支", anchor: "从第 6 轮创建", horizon: "十二年", span: "三个月", observer: "ensemble", roundLimit: 48, status: "已暂停", statusLabel: "分支 · 已暂停", currentTime: "第 7 年 · 秋末", selectedRound: 7, rounds: branchRounds, eventSets: branchEventSets, entitySets: cloneData(entitySets) }
+      ];
+      let activeSimulationId = "north";
+      let selectedRound = 7;
+      let selectedType = "characters";
+      let selectedEvent = 0;
+      let selectedChoice = "";
+      let isSettling = false;
+      const $ = (id) => document.getElementById(id);
+      const toast = (message) => { $("toast").textContent = message; $("toast").classList.add("is-visible"); setTimeout(() => $("toast").classList.remove("is-visible"), 2200); };
+      const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
+      const currentSimulation = () => simulations.find((simulation) => simulation.id === activeSimulationId) || simulations[0];
+      function typeForEvent(event) {
+        if (!event) return "world";
+        if (["势力策略", "势力行动", "新势力", "王朝战争", "资源争夺"].includes(event.kind)) return "factions";
+        if (["世界过程", "传播", "民间生活", "特殊情况", "秘境开启", "北境灯节"].includes(event.kind)) return "regions";
+        return "characters";
+      }
+      function choicesFor(event, round) {
+        if (!event) return [{ id: "wait", label: "等待下一轮", detail: "保持观察，交给世界过程继续演化。" }];
+        if (["势力策略", "势力行动", "新势力"].includes(event.kind)) return [
+          { id: "observe", label: "旁观局势", detail: "不做干预，记录势力策略的自然后果。" },
+          { id: "negotiate", label: "发起会商", detail: "把当前冲突转为立场会商候选。" },
+          { id: "counter", label: "准备反制", detail: "为下一轮建立一个可审阅的反制方案。" }
+        ];
+        if (["人物行动", "人物命运", "代际变化"].includes(event.kind)) return [
+          { id: "follow", label: "跟随行动", detail: "沿人物当前意图继续观察，不改变其选择。" },
+          { id: "warn", label: "投递线索", detail: "提供一条作者候选线索，等待后续裁定。" },
+          { id: "hold", label: "保持沉默", detail: "不介入人物知识边界，让误判自然发生。" }
+        ];
+        return [
+          { id: "study", label: "继续观测", detail: "记录世界过程，让影响在下一轮自然扩散。" },
+          { id: "intervene", label: "设置护栏", detail: "创建一条需要作者确认的规则护栏。" },
+          { id: "branch", label: "创建分支", detail: "从这个时间点保存一个对照假设。" }
+        ];
+      }
+      function renderRunSwitcher() {
+        const renderOption = (simulation) => `<button class="run-option ${simulation.id === activeSimulationId ? "is-active" : ""} ${simulation.parentId ? "branch" : ""}" data-run-id="${escapeHtml(simulation.id)}"><i class="run-option-mark"></i><span class="run-option-copy"><strong>${escapeHtml(simulation.name)}</strong><small>${escapeHtml(simulation.horizon)} · ${escapeHtml(simulation.span)}一轮 · ${escapeHtml(simulation.currentTime)}</small></span><em>${escapeHtml(simulation.statusLabel)}</em></button>`;
+        const roots = simulations.filter((simulation) => !simulation.parentId);
+        $("runSwitcherList").innerHTML = roots.map((root) => `${renderOption(root)}${simulations.filter((simulation) => simulation.parentId === root.id).map(renderOption).join("")}`).join("");
+        $("runSwitcherCount").textContent = `${simulations.length} 个运行`;
+        document.querySelectorAll("[data-run-id]").forEach((button) => button.addEventListener("click", () => switchSimulation(button.dataset.runId)));
+      }
+      function renderWorkspaceContext() {
+        const simulation = currentSimulation();
+        const round = simulation.rounds.find((item) => item.index === selectedRound) || simulation.rounds[0];
+        simulation.currentTime = round.time;
+        $("workspaceTitle").textContent = simulation.name;
+        $("workspaceSubtitle").textContent = `${simulation.parentId ? `分支 · ${simulation.anchor}` : `主推演分支 · 基线：${simulation.anchor}`}`;
+        $("workspaceSpan").textContent = simulation.span;
+        $("currentTime").textContent = simulation.currentTime;
+        $("globalStatus").textContent = simulation.statusLabel;
+      }
+      function openRunSwitcher() { renderRunSwitcher(); $("runSwitcher").classList.add("is-open"); $("simulationSwitcher").setAttribute("aria-expanded", "true"); }
+      function closeRunSwitcher() { $("runSwitcher").classList.remove("is-open"); $("simulationSwitcher").setAttribute("aria-expanded", "false"); }
+      function switchSimulation(id) {
+        const next = simulations.find((simulation) => simulation.id === id);
+        if (!next || next.id === activeSimulationId) { closeRunSwitcher(); return; }
+        const current = currentSimulation();
+        current.selectedRound = selectedRound;
+        activeSimulationId = next.id;
+        selectedRound = next.selectedRound;
+        selectedType = "characters";
+        selectedEvent = 0;
+        selectedChoice = "";
+        closeRunSwitcher();
+        renderAll();
+        toast(`已切换到“${next.name}”`);
+      }
+      function renderTimeline() {
+        const simulation = currentSimulation();
+        $("timeline").innerHTML = simulation.rounds.map((round) => `<button class="round-item ${round.index === selectedRound ? "is-selected" : ""} ${round.status === "运行中" ? "is-running" : ""}" data-round="${round.index}"><span class="round-main"><strong>第 ${round.index} 轮</strong><em>${round.status}</em></span><small>${round.period}</small><small>${round.events ? `${round.events} 个事件 · ${round.time}` : round.time}</small></button>`).join("");
+        document.querySelectorAll("[data-round]").forEach((button) => button.addEventListener("click", () => {
+          selectedRound = Number(button.dataset.round);
+          simulation.selectedRound = selectedRound;
+          selectedEvent = 0;
+          selectedChoice = "";
+          const firstEvent = (simulation.eventSets[selectedRound] || [])[0];
+          if (firstEvent) selectedType = typeForEvent(firstEvent);
+          renderAll();
+        }));
+        $("timelineCount").textContent = `${simulation.rounds.filter((round) => round.status !== "待推演").length} 轮已记录`;
+      }
+      function pulseKindFor(event) {
+        if (["人物行动", "人物命运", "境界升级", "修炼"].includes(event.kind)) return "people";
+        if (["势力策略", "势力行动", "王朝战争", "资源争夺", "新势力"].includes(event.kind)) return "factions";
+        if (["代际变化", "生命结局", "新人物", "特殊情况"].includes(event.kind)) return "life";
+        return "world";
+      }
+      function renderWorldPulse(simulation, round, events) {
+        const pulseDefinitions = [
+          { id: "world", title: "世界与民生", type: "regions", empty: "周期规则、地域稳定与民生变化将在结算后汇总。" },
+          { id: "people", title: "人物行动", type: "characters", empty: "人物会按记忆、处境和当前意图自行回应世界。" },
+          { id: "factions", title: "势力博弈", type: "factions", empty: "势力策略、战争与资源争夺由规则快照裁定。" },
+          { id: "life", title: "生命与代际", type: "characters", empty: "寿命、死亡、继承与新生主体会随跨度自动处理。" }
+        ];
+        const acceptedEvents = events.filter((event) => event.status !== "运行中");
+        const grouped = Object.fromEntries(pulseDefinitions.map((item) => [item.id, acceptedEvents.filter((event) => pulseKindFor(event) === item.id)]));
+        $("pulseCount").textContent = round.status === "待推演" ? "结算后将生成" : `${acceptedEvents.length} 条已接受变化`;
+        $("pulseGrid").innerHTML = pulseDefinitions.map((item) => {
+          const matches = grouped[item.id] || [];
+          const summary = matches[0]?.summary || item.empty;
+          return `<section class="pulse ${item.id}"><div class="pulse-title"><strong>${item.title}</strong><span>${matches.length ? `${matches.length} 条` : round.status === "待推演" ? "待结算" : "无显著变化"}</span></div><p>${escapeHtml(summary)}</p><button type="button" data-pulse-type="${item.type}">查看状态 ›</button></section>`;
+        }).join("");
+        document.querySelectorAll("[data-pulse-type]").forEach((button) => button.addEventListener("click", () => { selectedType = button.dataset.pulseType; renderInspector(); }));
+      }
+      function renderNextWindow(simulation, round) {
+        const visible = round.status === "待推演" || round.status === "运行中";
+        $("nextWindow").classList.toggle("is-visible", visible);
+        if (!visible) return;
+        const periodic = (simulation.worldRules || worldRules).filter((rule) => rule.type === "periodic").map((rule) => rule.name);
+        const checks = [
+          periodic.length ? `周期命中：${periodic.join("、")}` : "周期规则：按当前世界架构检查",
+          "人物寿命、关系与可行动状态",
+          "势力策略、战争和资源争夺条件",
+          "民生、传播与地域静默过程",
+          "继承、出生与新势力形成"
+        ];
+        $("nextWindowTitle").textContent = `第 ${round.index} 轮将自动结算`;
+        $("nextWindowChecks").innerHTML = checks.map((check) => `<li>${escapeHtml(check)}</li>`).join("");
+      }
+      function renderStoryStage() {
+        const simulation = currentSimulation();
+        const round = simulation.rounds.find((item) => item.index === selectedRound) || simulation.rounds[0];
+        const events = simulation.eventSets[selectedRound] || [];
+        const event = events[selectedEvent];
+        const choices = choicesFor(event, round);
+        $("stageCoverage").textContent = `跨度 ${simulation.span} · 观察 ${observerLabel(simulation.observer)} · ${roundRange(round, simulation)}`;
+        $("sceneClock").textContent = `${round.time} · 第 ${selectedRound} 轮`;
+        $("sceneLive").innerHTML = `<i class="status-dot"></i>${round.status === "运行中" ? "正在结算世界状态" : "检查点已保存"}`;
+        renderWorldPulse(simulation, round, events);
+        renderNextWindow(simulation, round);
+        $("storyEyebrow").textContent = event ? `${event.kind} · ${event.status}` : round.status === "基线" ? "事实基线 · 已锁定" : "等待下一次结算 · 未开始";
+        $("storyTitle").textContent = event?.title || (round.status === "基线" ? "故事从这里开始" : "这一轮尚未发生");
+        $("storyText").textContent = event?.summary || (round.status === "基线" ? "你可以从这个时间点出发，让人物、势力和世界过程自行做出下一步选择。" : "点击“推演 1 轮”，让世界推进到下一个时间边界。");
+        $("storyFacts").innerHTML = event ? [`本轮跨度：${simulation.span}`, `观察对象：${observerLabel(simulation.observer)}`, `发生时间：${event.time}`, `行动主体：${event.entity}`, `裁定状态：${event.status}`, event.tags?.[0] && worldRules.some((rule) => rule.id === event.tags[0]) ? `触发规则：${ruleLabel(event.tags[0])}` : ""].filter(Boolean).map((fact) => `<span class="story-fact">${escapeHtml(fact)}</span>`).join("") : `<span class="story-fact">本轮跨度：${escapeHtml(simulation.span)}</span><span class="story-fact">观察对象：${escapeHtml(observerLabel(simulation.observer))}</span><span class="story-fact">状态：${escapeHtml(round.status)}</span>`;
+        $("choiceList").innerHTML = choices.map((choice) => `<button class="choice-button ${choice.id === selectedChoice ? "is-selected" : ""}" data-choice="${choice.id}"><strong>${escapeHtml(choice.label)}</strong><small>${escapeHtml(choice.detail)}</small></button>`).join("");
+        $("choiceFeedback").textContent = selectedChoice ? `已记录候选行动：“${choices.find((choice) => choice.id === selectedChoice)?.label || selectedChoice}”。它不会直接改写正式事实。` : "";
+        document.querySelectorAll("[data-choice]").forEach((button) => button.addEventListener("click", () => {
+          selectedChoice = button.dataset.choice;
+          simulation.interventions = simulation.interventions || [];
+          simulation.interventions.push({ round: selectedRound, eventIndex: selectedEvent, choice: selectedChoice, time: round.time });
+          simulation.statusLabel = `已记录第 ${selectedRound} 轮作者候选`;
+          renderAll();
+          toast("作者干预候选已记录，等待下一轮裁定");
+        }));
+      }
+      function renderEvents() {
+        const simulation = currentSimulation();
+        const round = simulation.rounds.find((item) => item.index === selectedRound) || simulation.rounds[0];
+        const events = simulation.eventSets[selectedRound] || [];
+        $("stageRoundKicker").textContent = String(selectedRound).padStart(2, "0");
+        $("stageTitle").textContent = `第 ${selectedRound} 轮 · ${round.label}`;
+        $("stagePeriod").textContent = round.period;
+        $("stageSummary").textContent = `${events.length || round.events} 个事件`;
+        $("activityCount").textContent = `${events.length || round.events} 个结果 · ${simulation.span}后结算`;
+        $("stageState").innerHTML = `<i class="status-dot"></i>${round.status}`;
+        $("eventStream").innerHTML = events.length ? events.map((event, index) => `<button class="event-card ${index === selectedEvent ? "is-selected" : ""}" data-event="${index}"><span class="event-seq">${String(index + 1).padStart(2, "0")}</span><span class="event-copy"><span class="event-top">${escapeHtml(event.time)}</span><span class="event-kind">${escapeHtml(event.kind)}</span><h3>${escapeHtml(event.title)}</h3></span></button>`).join("") : `<div class="event-card"><span class="event-seq">--</span><span class="event-copy"><span class="event-top">等待下一边界</span><span class="event-kind">未结算</span><h3>这一轮尚未开始</h3></span></div>`;
+        document.querySelectorAll("[data-event]").forEach((button) => button.addEventListener("click", () => {
+          selectedEvent = Number(button.dataset.event);
+          const event = (simulation.eventSets[selectedRound] || [])[selectedEvent];
+          selectedChoice = "";
+          if (event) selectedType = typeForEvent(event);
+          renderAll();
+        }));
+      }
+      function renderInspector() {
+        const simulation = currentSimulation();
+        document.querySelectorAll(".inspector-tab").forEach((tab) => tab.classList.toggle("is-active", tab.dataset.type === selectedType));
+        const round = simulation.rounds.find((item) => item.index === selectedRound) || simulation.rounds[0];
+        const activeEvent = (simulation.eventSets[selectedRound] || [])[selectedEvent];
+        $("inspectorTime").textContent = `${round.time} · 第 ${selectedRound} 轮结束`;
+        const focusType = typeForEvent(activeEvent);
+        const focusLabel = focusType === "characters" ? "人物" : focusType === "factions" ? "势力" : focusType === "regions" ? "世界过程" : "世界";
+        $("inspectorFocus").innerHTML = `<small>当前焦点 · ${focusLabel}</small><strong>${escapeHtml(activeEvent?.entity || "世界状态")}</strong><span>${escapeHtml(activeEvent ? `${activeEvent.kind}：${activeEvent.status}` : "选择行动记录，查看这个时间点的可追溯状态。")}</span>`;
+        $("inspectorBody").innerHTML = (simulation.entitySets[selectedType] || []).map((entity) => `<section class="entity-block"><div class="entity-heading"><strong>${entity.name}</strong><span>${entity.state}</span></div><div class="entity-sub">${entity.meta}</div><dl class="stat-list">${entity.stats.map(([label, value]) => `<div class="stat-row"><dt>${label}</dt><dd>${value}</dd></div>`).join("")}</dl><div class="meter"><i style="width:${entity.meter}%"></i></div></section>`).join("");
+      }
+      function renderAll() { renderWorkspaceContext(); renderTimeline(); renderStoryStage(); renderEvents(); renderInspector(); renderRunSwitcher(); }
+      function openDrawer(title, body) { $("drawerTitle").textContent = title; $("drawerBody").innerHTML = body; $("drawer").classList.add("is-open"); $("drawerBackdrop").classList.add("is-open"); }
+      function closeDrawer() { $("drawer").classList.remove("is-open"); $("drawerBackdrop").classList.remove("is-open"); }
+      function openSetup() { closeRunSwitcher(); $("setupForm").reset(); $("simName").value = `推演 ${simulations.filter((simulation) => !simulation.parentId).length + 1}`; $("setupModalBackdrop").classList.add("is-open"); document.body.classList.add("modal-open"); $("simName").focus(); }
+      function closeSetup() { $("setupModalBackdrop").classList.remove("is-open"); document.body.classList.remove("modal-open"); }
+      const horizonYears = { "五年": 5, "十二年": 12, "三十年": 30, "一百年": 100, "一千年": 1000, "一万年": 10000, "一亿年": 100000000, "一百亿年": 10000000000 };
+      const spanProfiles = {
+        "一天": { days: 1, kind: "day", label: "一天" },
+        "十天": { days: 10, kind: "ten-day", label: "十天" },
+        "一个月": { days: 30, kind: "month", label: "一个月" },
+        "一季度": { days: 90, kind: "quarter", label: "一季度" },
+        "三个月": { days: 90, kind: "quarter", label: "三个月" },
+        "一年": { days: 365, kind: "year", label: "一年" },
+        "十年": { days: 3650, kind: "years", label: "十年" },
+        "一百年": { days: 36500, kind: "years", label: "一百年" },
+        "一千年": { days: 365000, kind: "years", label: "一千年" },
+        "一万年": { days: 3650000, kind: "years", label: "一万年" },
+        "一百万年": { days: 365000000, kind: "years", label: "一百万年" },
+        "一亿年": { days: 36500000000, kind: "years", label: "一亿年" },
+        "一百亿年": { days: 3650000000000, kind: "years", label: "一百亿年" }
+      };
+      function spanProfileFor(span) { return spanProfiles[span] || spanProfiles["三个月"]; }
+      function spanDaysFor(span) { return spanProfileFor(span).days; }
+      function formatLargeNumber(value) {
+        const number = Math.max(0, Math.round(value));
+        if (number >= 100000000) return `${(number / 100000000).toFixed(number % 100000000 ? 1 : 0).replace(/\.0$/, "")}亿`;
+        if (number >= 10000) return `${(number / 10000).toFixed(number % 10000 ? 1 : 0).replace(/\.0$/, "")}万`;
+        return String(number);
+      }
+      function formatWorldTime(totalDays, span) {
+        const profile = spanProfileFor(span);
+        const safeDays = Math.max(0, Math.floor(totalDays));
+        const year = Math.floor(safeDays / 365);
+        const dayOfYear = safeDays % 365 + 1;
+        if (profile.kind === "day") return `第 ${formatLargeNumber(year)} 年 · 第 ${dayOfYear} 天`;
+        if (profile.kind === "ten-day") return `第 ${formatLargeNumber(year)} 年 · 第 ${Math.ceil(dayOfYear / 10)} 旬`;
+        if (profile.kind === "month") return `第 ${formatLargeNumber(year)} 年 · 第 ${Math.ceil(dayOfYear / 30)} 月`;
+        if (profile.kind === "quarter") return `第 ${formatLargeNumber(year)} 年 · ${["春", "夏", "秋", "冬"][Math.floor((dayOfYear - 1) / 91)] || "冬"}`;
+        return `第 ${formatLargeNumber(year)} 年`;
+      }
+      function roundEndDays(round, simulation) { return round.index * spanDaysFor(simulation.span); }
+      function roundStartDays(round, simulation) { return Math.max(0, (round.index - 1) * spanDaysFor(simulation.span)); }
+      function roundRange(round, simulation) { return `${formatWorldTime(roundStartDays(round, simulation), simulation.span)} — ${formatWorldTime(roundEndDays(round, simulation), simulation.span)}`; }
+      function elapsedYears(round, simulation) { return roundEndDays(round, simulation) / 365; }
+      function observerLabel(observer) { return ({ ensemble: "多主体世界", "mortal-zhangsan": "普通凡人 · 张三", shen: "人物 · 沈照夜", redcloud: "势力 · 赤霄宗" })[observer] || "多主体世界"; }
+      const roundLabels = ["余波扩散", "主体响应", "势力调度", "信息传播", "资源重分配", "边界冲突"];
+      function roundLimitFor(horizon, span) { return Math.max(1, Math.ceil(((horizonYears[horizon] || 12) * 365) / spanDaysFor(span))); }
+      function timeForRound(index, span) {
+        return formatWorldTime(index * spanDaysFor(span), span);
+      }
+      function createPendingRound(simulation) {
+        const last = simulation.rounds[simulation.rounds.length - 1];
+        if (last.index >= simulation.roundLimit) return null;
+        const index = last.index + 1;
+        const time = timeForRound(index, simulation.span);
+        simulation.rounds.push({ index, label: roundLabels[(index - 1) % roundLabels.length], period: `${last.time} — ${time}`, events: 0, status: "待推演", time });
+        simulation.eventSets[index] = [];
+        return simulation.rounds[simulation.rounds.length - 1];
+      }
+      function collectPendingRounds(simulation, count) {
+        const queue = [];
+        let afterIndex = selectedRound;
+        while (queue.length < count) {
+          let next = simulation.rounds.find((round) => round.index > afterIndex && round.status === "待推演");
+          if (!next) next = createPendingRound(simulation);
+          if (!next) break;
+          queue.push(next);
+          afterIndex = next.index;
+        }
+        return queue;
+      }
+      function ensureObserverEntity(simulation) {
+        if (simulation.observer !== "mortal-zhangsan") return;
+        const characters = simulation.entitySets.characters || (simulation.entitySets.characters = []);
+        if (!characters.some((entity) => entity.name === "张三")) characters.push({ name: "张三", meta: "人物 · 北山外城普通居民", state: "存活 · 劳作", stats: [["身份", "城南杂役"], ["家庭", "未婚"], ["生计", "靠零工维持"], ["寿命", "预计 68 年"]], meter: 48 });
+      }
+      // 世界架构规则是推演内核的输入；文字舞台只呈现规则裁定后的结果。
+      const worldRules = [
+        { id: "secret-realm-cycle", name: "秘境开启", type: "periodic", intervalDays: 365000, firstAtDay: 365000, priority: 90 },
+        { id: "annual-festival", name: "北境灯节", type: "periodic", intervalDays: 365, firstAtDay: 180, priority: 20 },
+        { id: "dynasty-war", name: "王朝战争", type: "conditional", priority: 80 },
+        { id: "resource-contest", name: "资源争夺", type: "conditional", priority: 70 },
+        { id: "character-encounter", name: "人物遭遇战", type: "conditional", priority: 60 },
+        { id: "realm-breakthrough", name: "境界升级", type: "lifecycle", priority: 50 }
+      ];
+      const ruleLabel = (id) => worldRules.find((rule) => rule.id === id)?.name || id;
+      function ensureRuntimeState(simulation) {
+        if (simulation.runtime) return simulation.runtime;
+        simulation.runtime = { resourcePressure: 48, warActive: false, warCount: 0, warLastDay: -1, festivalCount: 0, realmOpenings: 0, resourceContests: 0, encounters: 0, breakthroughs: 0, character: { "张三": { alive: true, age: 0 }, "沈照夜": { alive: true, realm: "筑基", cultivationProgress: 72 }, "陆沉": { alive: true } } };
+        ensureObserverEntity(simulation);
+        return simulation.runtime;
+      }
+      function countPeriodic(startDay, endDay, firstAtDay, intervalDays) {
+        const before = Math.floor((startDay - firstAtDay) / intervalDays);
+        const through = Math.floor((endDay - firstAtDay) / intervalDays);
+        return Math.max(0, through - before);
+      }
+      function entityNamed(simulation, type, name) { return (simulation.entitySets[type] || []).find((entity) => entity.name === name); }
+      function upsertStat(entity, label, value) {
+        if (!entity) return;
+        const index = entity.stats.findIndex(([statLabel]) => statLabel === label);
+        if (index >= 0) entity.stats[index] = [label, value]; else entity.stats.push([label, value]);
+      }
+      function addRuleEvent(events, time, rule, title, summary, entity, status, tags) {
+        events.push(eventFor(time, ruleLabel(rule.id), title, summary, entity, status || "规则裁定", [rule.id, ...(tags || [])]));
+      }
+      function updateRuntimeEntities(simulation, runtime, round, yearsThisRound) {
+        const zhang = entityNamed(simulation, "characters", "张三");
+        if (zhang) {
+          const zhangState = runtime.character["张三"];
+          zhang.state = zhangState.alive ? `存活 · ${zhangState.age >= 55 ? "迟暮" : "劳作"}` : "已故 · 留在地方记忆中";
+          zhang.stats = zhang.stats.map(([label, value]) => label === "年龄" ? [label, `${Math.floor(zhangState.age)} 岁`] : label === "寿命" ? [label, zhangState.alive ? "预计 68 年" : "已结算"] : [label, value]);
+          zhang.meter = zhangState.alive ? Math.max(12, 100 - Math.round(zhangState.age)) : 0;
+        }
+        const shen = entityNamed(simulation, "characters", "沈照夜");
+        if (shen) {
+          const cultivation = runtime.character["沈照夜"];
+          shen.state = cultivation.alive === false ? "已故 · 记忆留存" : `存活 · ${cultivation.realm}`;
+          upsertStat(shen, "境界", cultivation.realm);
+          upsertStat(shen, "突破进度", `${Math.round(cultivation.cultivationProgress)} / 100`);
+          shen.meter = Math.round(cultivation.cultivationProgress);
+        }
+        const redcloud = entityNamed(simulation, "factions", "赤霄宗");
+        if (redcloud) {
+          redcloud.state = runtime.warActive ? "战争动员" : runtime.resourcePressure >= 65 ? "争夺资源" : "维持秩序";
+          redcloud.stats = redcloud.stats.map(([label, value]) => label === "策略" ? [label, runtime.warActive ? "动员王朝战争" : runtime.resourcePressure >= 65 ? "争夺灵石矿脉" : value] : label === "军力" ? [label, `${Math.min(100, 68 + runtime.warCount * 4)} / 100`] : [label, value]);
+          redcloud.meter = Math.min(100, 68 + runtime.warCount * 4);
+        }
+        const world = simulation.entitySets.world?.[0];
+        if (world) {
+          world.meta = `规则结算 · 第 ${round.index} 轮结束`;
+          upsertStat(world, "世界时间", round.time);
+          upsertStat(world, "规则触发", `${runtime.festivalCount + runtime.realmOpenings + runtime.warCount + runtime.resourceContests + runtime.encounters + runtime.breakthroughs} 次`);
+          upsertStat(world, "资源压力", `${runtime.resourcePressure} / 100`);
+          world.meter = Math.max(10, 100 - runtime.resourcePressure);
+        }
+        const boundary = simulation.entitySets.world?.[1];
+        if (boundary) {
+          const totalYears = horizonYears[simulation.horizon] || 12;
+          const remainingYears = Math.max(0, totalYears - roundEndDays(round, simulation) / 365);
+          const ledgerCount = Object.values(simulation.eventSets).reduce((total, events) => total + events.length, 0);
+          boundary.meta = `总范围 · ${simulation.horizon}`;
+          boundary.state = remainingYears > 0 ? "仍可继续" : "已到达终点";
+          upsertStat(boundary, "剩余跨度", remainingYears > 0 ? `${formatLargeNumber(remainingYears)} 年` : "0 年");
+          upsertStat(boundary, "每轮跨度", simulation.span);
+          upsertStat(boundary, "已用预算", `事件 ${ledgerCount} / ${simulation.roundLimit}`);
+          boundary.meter = Math.min(100, Math.round((roundEndDays(round, simulation) / Math.max(1, totalYears * 365)) * 100));
+        }
+      }
+      function eventFor(time, kind, title, summary, entity, status = "内核裁定", tags = []) {
+        return { time, kind, title, summary, entity, status, tags };
+      }
+      function generatedEventsFor(simulation, round) {
+        const span = spanProfileFor(simulation.span);
+        const years = elapsedYears(round, simulation);
+        const previousYears = roundStartDays(round, simulation) / 365;
+        const yearsThisRound = Math.max(0, years - previousYears);
+        const range = roundRange(round, simulation);
+        const time = formatWorldTime(roundEndDays(round, simulation), simulation.span);
+        const events = [];
+        const observer = simulation.observer || "ensemble";
+        const observerName = observer === "mortal-zhangsan" ? "张三" : observer === "shen" ? "沈照夜" : observer === "redcloud" ? "赤霄宗" : "沈照夜";
+        const runtime = ensureRuntimeState(simulation);
+        runtime.character["张三"].age += yearsThisRound;
+        runtime.resourcePressure = Math.min(100, runtime.resourcePressure + Math.max(0, Math.round(yearsThisRound * 7)));
+        const startDay = roundStartDays(round, simulation);
+        const endDay = roundEndDays(round, simulation);
+        const periodic = worldRules.filter((rule) => rule.type === "periodic").sort((a, b) => b.priority - a.priority);
+        periodic.forEach((rule) => {
+          const count = countPeriodic(startDay, endDay, rule.firstAtDay, rule.intervalDays);
+          if (!count) return;
+          const countLabel = formatLargeNumber(count);
+          if (rule.id === "secret-realm-cycle") {
+            runtime.realmOpenings += count;
+            addRuleEvent(events, time, rule, `秘境在本轮开启 ${countLabel} 次`, `按照世界架构设定，秘境每 1000 年开启一次。本轮跨越 ${formatLargeNumber(yearsThisRound)} 年，已将 ${countLabel} 次开启聚合为一个可追溯节点。`, "北境秘境", "周期规则触发", ["1000年周期", "聚合"]);
+          } else {
+            runtime.festivalCount += count;
+            addRuleEvent(events, time, rule, `北境灯节举行 ${countLabel} 次`, `一年一次的灯节在本轮共举行 ${countLabel} 次；${count > 1 ? "其中大部分平稳举行，异常年份只以影响摘要记录。" : "城镇照常点灯，民间生活出现短暂的团聚与交易高峰。"}`, "北境城镇居民", "周期规则触发", ["年度节日", "民间生活"]);
+          }
+        });
+        if (observer === "mortal-zhangsan" && runtime.character["张三"].alive && runtime.character["张三"].age >= 68) {
+          const outcome = [["张三安稳终老", "张三后来娶妻生子，在城南经营一间小铺，子女成年后守着旧屋。他没有成为传奇，只是完整地过完了自己的一生。", "寿终正寝"], ["张三死于城镇劫难", "张三所在的城镇被邪修势力突袭，火焰越过外城。救援抵达时，只找到他留下的木牌，普通人的一生被时代的暴力截断。", "灾变遇害"], ["张三颠沛流离，孤独终老", "张三在战乱中离开故乡，辗转多个城镇，以短工和零碎记忆度日，最后在一场冬病中安静离世。", "漂泊病逝"]][round.index % 3];
+          runtime.character["张三"].alive = false;
+          simulation.observerTerminal = { outcome: outcome[2], round: round.index, time };
+          events.push(eventFor(time, "人物命运", outcome[0], outcome[1], "张三", outcome[2], ["张三", "寿命", "人生结局"]));
+        } else if (observer === "mortal-zhangsan" && !runtime.character["张三"].alive) {
+          events.push(eventFor(time, "代际变化", "张三已经成为一段旧日记忆", `这一轮跨过了 ${simulation.span}。张三的生命早已结束，城里的人只从他的后代、旧屋或一则传闻中记得他。`, "张三", "生命周期已结算", ["张三", "后代", "记忆"]));
+        }
+        if (runtime.resourcePressure >= 70 && endDay - runtime.warLastDay > 365 && !runtime.warActive) {
+          const rule = worldRules.find((item) => item.id === "dynasty-war");
+          const pressureAtTrigger = runtime.resourcePressure;
+          runtime.warActive = true; runtime.warCount += 1; runtime.warLastDay = endDay; runtime.resourcePressure = Math.max(42, runtime.resourcePressure - 24);
+          addRuleEvent(events, time, rule, "王朝战争爆发", `资源压力达到 ${pressureAtTrigger} / 100，两个王朝为争夺北境补给线进入战争动员。战争以阶段结果记录，不把每场战斗伪装成已知事实。`, "北境两大王朝", "冲突裁定", ["战争", "资源压力"]);
+        } else if (runtime.warActive && (yearsThisRound >= 1 || round.index - (runtime.warRound || round.index) >= 2)) {
+          const rule = worldRules.find((item) => item.id === "dynasty-war");
+          runtime.warActive = false; runtime.warRound = round.index;
+          addRuleEvent(events, time, rule, "王朝战争阶段性停火", `经过 ${formatLargeNumber(yearsThisRound)} 年，战争以边界重划、人口迁移和补给线重建告一段落，双方留下未解决的资源争端。`, "北境两大王朝", "冲突结算", ["战争", "后果"]);
+        }
+        if (runtime.resourcePressure >= 55) {
+          const rule = worldRules.find((item) => item.id === "resource-contest");
+          runtime.resourceContests += 1; runtime.resourcePressure = Math.max(40, runtime.resourcePressure - 10);
+          addRuleEvent(events, time, rule, "灵石矿脉争夺升级", "赤霄宗与青岚商盟同时发现补给短缺，双方把北山矿脉列为优先目标，商路价格和民间囤积随之变化。", "赤霄宗 / 青岚商盟", "资源裁定", ["灵石矿脉", "商路"]);
+        }
+        const zhangAlive = runtime.character["张三"].alive;
+        if (zhangAlive && (runtime.resourcePressure >= 60 || yearsThisRound >= 1) && round.index % 2 === 0) {
+          const rule = worldRules.find((item) => item.id === "character-encounter");
+          runtime.encounters += 1;
+          addRuleEvent(events, time, rule, "人物遭遇战在北山外城发生", `${observerName}与敌对势力的行动路线在同一时间窗口重叠。遭遇战造成轻伤与资源损耗，未越过人物当前能力边界。`, `${observerName} / 赤霄宗使者`, "遭遇裁定", ["遭遇战", "知识边界"]);
+        }
+        const cultivation = runtime.character["沈照夜"];
+        if (cultivation.alive !== false) {
+          cultivation.cultivationProgress = Math.min(100, cultivation.cultivationProgress + Math.max(4, Math.round(yearsThisRound * 14)));
+          if (cultivation.cultivationProgress >= 100) {
+            const rule = worldRules.find((item) => item.id === "realm-breakthrough");
+            const nextRealm = cultivation.realm === "筑基" ? "金丹" : cultivation.realm === "金丹" ? "元婴" : "化神";
+            cultivation.realm = nextRealm; cultivation.cultivationProgress = 16; runtime.breakthroughs += 1;
+            addRuleEvent(events, time, rule, `沈照夜突破至${nextRealm}`, `修炼进度、突破资源和瓶颈条件在本轮同时满足，境界升级已由内核提交；后续寿命与行动能力将按新境界重新计算。`, "沈照夜", "修炼裁定", ["修炼", nextRealm]);
+          }
+        }
+        if (span.days <= 10) {
+          events.push(eventFor(time, "世界过程", "北山的灵气出现短促潮汐", `从 ${range}，封印附近的灵气只发生了局部波动，尚未改变区域格局。`, "北山", "内核裁定", ["北山", "灵气"]));
+          events.push(eventFor(time, "人物行动", `${observerName}处理眼前的小事`, `${observerName}在这 ${span.label} 里完成了一次具体选择：绕开危险路段，接下临时差事，或把消息留在自己手里。`, observerName, "状态已提交", [observerName, "日常"]));
+          events.push(eventFor(time, "民间生活", "城南的日子照常运转", "集市开门、米价轻微波动，居民更关心柴米和家人的病痛，远处的裂隙还只是茶摊上的一句闲话。", "城南居民", "生活切片", ["民间", "市集"]));
+        } else if (years < 1) {
+          events.push(eventFor(time, "世界过程", "封印余波重新分配到相邻地域", `从 ${range}，灵气、消息和补给沿既有连接缓慢移动，北山仍是影响源头。`, "北山", "内核裁定", ["北山", "传播"]));
+          events.push(eventFor(time, "人物行动", `${observerName}在不完整信息下做出选择`, `${observerName}根据自己能知道的事实调整路线或资源，选择没有改变世界规则，却改变了下一轮的可能性。`, observerName, "状态已提交", [observerName, "知识边界"]));
+          events.push(eventFor(time, "民间生活", "传闻先于真相抵达村镇", "人们把几种不同的说法混在一起，商贩提高了风险报价，普通家庭开始囤积盐和灯油。", "北境民间", "生活切片", ["民间", "传闻"]));
+        } else if (years < 10) {
+          events.push(eventFor(time, "世界过程", "北境形成新的稳定边界", `经过 ${formatLargeNumber(years)} 年，裂隙影响从突发事件变成需要长期管理的区域条件。`, "北境", "内核裁定", ["北境", "长期过程"]));
+          events.push(eventFor(time, "人物行动", `${observerName}的目标开始改变`, `${observerName}不再只处理眼前危机，而是围绕家庭、资源、声望或势力位置重新安排人生。`, observerName, "生命周期推进", [observerName, "目标"]));
+          events.push(eventFor(time, "民间生活", "城镇生活出现一代人的习惯", "孩子在封锁后的秩序里长大，新的节日、价格和婚姻选择逐渐取代了旧日传闻。", "北境民间", "生活切片", ["民间", "代际"]));
+        } else if (years < 1000) {
+          events.push(eventFor(time, "世界过程", `${formatLargeNumber(years)} 年后的北境进入新纪元`, "这不是一次事件，而是一段过程的压缩结果：旧阵法、道路和权力中心都已被新的环境条件重写。", "北境", "尺度聚合", ["纪元", "区域"]));
+          events.push(eventFor(time, "代际变化", "新的守阵人已经不认识最初的见证者", "几代人出生、成长、死亡，人物的选择只以家谱、歌谣或遗址的形式留下痕迹。", "北境居民", "代际结算", ["代际", "人物"]));
+          events.push(eventFor(time, "新势力", "一个依赖新灵脉成长的势力崛起", "新势力掌握了旧秩序没有的资源和组织方式，开始与赤霄宗争夺解释世界的权力。", "新兴势力", "势力生成", ["新势力", "权力"]));
+          events.push(eventFor(time, "民间生活", "普通人的生活被新制度重新编排", "户籍、税制、教育和迁徙规则已经换过几轮，民间仍在用自己的方式适应变化。", "北境民间", "生活聚合", ["民间", "制度"]));
+          events.push(eventFor(time, "特殊情况", "一次无法预先排除的灾变改变了人口分布", "灾变可能来自邪修、疫病、饥荒或灵脉反噬。内核只保留它造成的可解释后果，不把未知强行写成预言。", "北境", "特殊情况", ["灾变", "不确定性"]));
+        } else if (years < 1000000) {
+          events.push(eventFor(time, "世界过程", `文明跨越 ${formatLargeNumber(years)} 年后完成一次重构`, "山河、气候和修行规则都已经过多轮变化，当前结果只展示仍能追溯到基线的长期链条。", "世界", "长尺度聚合", ["文明", "长尺度"]));
+          events.push(eventFor(time, "新势力", "旧势力的名字成为新文明的古典称谓", "赤霄宗和青岚商盟的组织已经消亡或融合，新的共同体从废墟、迁徙和知识继承中出现。", "新文明", "势力生成", ["文明", "新势力"]));
+          events.push(eventFor(time, "代际变化", "新人物与新家族接过未完成的故事", "个体寿命被一次次结算，只有血缘、门徒、制度和被采纳的记忆让故事继续。", "新人物", "生命周期聚合", ["人物", "家族"]));
+          events.push(eventFor(time, "民间生活", "民间生活已无法用最初城镇的尺度描述", "新的语言、信仰、职业和迁徙路径成为日常；普通人仍在出生、谋生、相爱和失去。", "新世界居民", "生活聚合", ["民间", "文明"]));
+        } else {
+          events.push(eventFor(time, `第 ${formatLargeNumber(years)} 年后的世界只剩尺度级结果`, "世界进入不可逆的终局过程", "超长跨度跳过了无法逐人展开的中间历史，只保留规则、文明和世界边界仍然成立的结论。", "世界", "终局聚合", ["终局", "长尺度"]));
+          events.push(eventFor(time, "新势力", "新的世界共同体诞生又消散", "在这样的尺度上，势力不再以单一王朝存在，而以文明周期、迁徙网络和规则共同体反复出现。", "世界共同体", "尺度聚合", ["文明", "共同体"]));
+          events.push(eventFor(time, "特殊情况", "世界边界开始衰退", "法则稳定性进入不可逆变化，后续结果只能作为候选纪元叙事，不能伪装成逐年事实。", "世界", "终局预警", ["边界", "终局"]));
+        }
+        updateRuntimeEntities(simulation, runtime, round, yearsThisRound);
+        simulation.lastRoundReport = { range, years, eventKinds: [...new Set(events.map((event) => event.kind))] };
+        return events;
+      }
+      function updateEntitySnapshot(simulation, round) {
+        const ledgerCount = Object.values(simulation.eventSets).reduce((total, events) => total + events.length, 0);
+        const world = simulation.entitySets.world?.[0];
+        if (world) {
+          world.meta = `区域阶段 · 第 ${round.index} 轮结束`;
+          world.state = round.status === "已完成" ? "持续演化" : "等待结算";
+          world.stats = world.stats.map(([label, value]) => label === "世界时间" ? [label, round.time] : label === "事件账本" ? [label, `${ledgerCount} 条已接受事件`] : [label, value]);
+        }
+      }
+      function runRounds(count) {
+        if (isSettling) { toast("当前运行正在结算，请等待这一轮检查点保存"); return; }
+        const simulation = currentSimulation();
+        const queue = collectPendingRounds(simulation, count);
+        if (!queue.length) { toast("当前推演已到达设置的时间终点"); return; }
+        isSettling = true;
+        simulation.status = "运行中";
+        const settleNext = (position) => {
+          const round = queue[position];
+          round.status = "运行中";
+          round.events = 1;
+          simulation.eventSets[round.index] = [{ time: round.time, kind: "内核结算", title: "正在裁定主体行动与传播路径", summary: "旅行、信息、资源和规则约束正在按当前时间边界共同结算。", entity: "世界", status: "运行中", tags: ["世界"] }];
+          selectedRound = round.index;
+          simulation.selectedRound = selectedRound;
+          selectedEvent = 0;
+          selectedChoice = "";
+          simulation.statusLabel = `正在结算第 ${round.index} 轮（${position + 1} / ${queue.length}）`;
+          renderAll();
+          setTimeout(() => {
+            const results = generatedEventsFor(simulation, round);
+            simulation.eventSets[round.index] = results;
+            round.events = results.length;
+            round.status = "已完成";
+            simulation.currentTime = round.time;
+            selectedEvent = 0;
+            selectedChoice = "";
+            selectedType = typeForEvent(results[0]);
+            updateEntitySnapshot(simulation, round);
+            if (position + 1 < queue.length) {
+              simulation.statusLabel = `第 ${round.index} 轮检查点已保存，继续推进`;
+              renderAll();
+              setTimeout(() => settleNext(position + 1), 220);
+              return;
+            }
+            simulation.status = "运行中";
+            simulation.statusLabel = `已结算至第 ${round.index} 轮`;
+            isSettling = false;
+            renderAll();
+            toast(`${queue.length} 轮已完成，事件账本与状态快照已保存`);
+          }, 760);
+        };
+        settleNext(0);
+      }
+      function advanceRound() { runRounds(1); }
+      function createSimulation() {
+        const name = $("simName").value.trim() || "未命名推演";
+        const horizon = $("horizon").value;
+        const span = $("roundSpan").value;
+        const anchor = "当前已确认事实之后";
+        const observer = $("observer").value;
+        const id = `run-${Date.now()}`;
+        const firstRoundTime = timeForRound(1, span);
+        const freshRounds = [
+          { index: 0, label: "事实基线", period: anchor, events: 0, status: "基线", time: "第 0 年 · 春" },
+          { index: 1, label: "下一轮", period: `第 0 年 · 春 — ${firstRoundTime}`, events: 0, status: "待推演", time: firstRoundTime }
+        ];
+        const freshEvents = { 0: [], 1: [] };
+        const freshSimulation = { id, name, anchor, horizon, span, observer, roundLimit: roundLimitFor(horizon, span), status: "未开始", statusLabel: "未开始", currentTime: "第 0 年 · 春", selectedRound: 0, rounds: freshRounds, eventSets: freshEvents, entitySets: cloneData(entitySets), worldRules: cloneData(worldRules), runtime: null };
+        simulations.push(freshSimulation);
+        ensureRuntimeState(freshSimulation);
+        activeSimulationId = id;
+        selectedRound = 0;
+        selectedType = "characters";
+        selectedEvent = 0;
+        selectedChoice = "";
+        closeSetup();
+        renderAll();
+        toast(`“${name}”已创建并切换到当前舞台`);
+      }
+      document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => {
+        const action = button.dataset.action;
+        if (action === "open-setup") openSetup();
+        if (action === "toggle-run-switcher") { if ($("runSwitcher").classList.contains("is-open")) closeRunSwitcher(); else openRunSwitcher(); }
+        if (action === "close-setup") closeSetup();
+        if (action === "create") createSimulation();
+        if (action === "advance") advanceRound();
+        if (action === "continuous") { $("continuousCount").value = $("roundCount").value || 3; $("continuousPopover").classList.toggle("is-open"); }
+        if (action === "confirm-continuous") { const count = Math.min(9, Math.max(1, Number($("continuousCount").value) || 1)); $("continuousPopover").classList.remove("is-open"); runRounds(count); }
+        if (action === "more") openDrawer("运行操作", `<p>高级分析不改变当前轮次状态，只读取已接受事件和检查点。</p><button class="btn" data-drawer-action="branch">从第 6 轮创建分支</button><button class="btn" data-drawer-action="report">生成当前报告</button><button class="btn" data-drawer-action="close">关闭</button>`);
+        if (action === "causal") openDrawer("第 7 轮 · 因果链", `<div class="cause"><small>前置状态</small><strong>法则稳定度下降</strong><span>北山灵脉进入低潮，缩短了维护窗口。</span></div><div class="cause"><small>本轮事件</small><strong>北山封印破裂</strong><span>第二道裂隙在旧阵眼西侧出现。</span></div><div class="cause"><small>后续影响</small><strong>传闻抵达南岭</strong><span>空间传播已排程，下一轮可被相关主体感知。</span></div>`);
+        if (action === "adopt") openDrawer("生成采纳提案", `<p>将选中的事件转换为候选提案。正式人物、势力、时间线和正文不会被直接改写。</p><div class="cause"><small>候选事件</small><strong>北山封印破裂</strong><span>目标：时间线候选 · 计划权威</span></div><button class="btn btn-primary" data-drawer-action="proposal">生成候选</button>`);
+        if (action === "close-drawer") closeDrawer();
+        if (action === "reset") { $("setupForm").reset(); $("simName").value = `推演 ${simulations.filter((simulation) => !simulation.parentId).length + 1}`; toast("设置已重置"); }
+      }));
+      document.querySelectorAll("[data-type]").forEach((tab) => tab.addEventListener("click", () => { selectedType = tab.dataset.type; renderInspector(); }));
+      document.querySelectorAll("[data-mobile]").forEach((tab) => tab.addEventListener("click", () => { document.querySelectorAll("[data-mobile]").forEach((item) => item.classList.remove("is-active")); tab.classList.add("is-active"); $("workspaceGrid").dataset.mobilePanel = tab.dataset.mobile; }));
+      $("drawerBackdrop").addEventListener("click", closeDrawer);
+      $("setupModalBackdrop").addEventListener("click", (event) => { if (event.target === $("setupModalBackdrop")) closeSetup(); });
+      document.addEventListener("keydown", (event) => { if (event.key === "Escape") { closeDrawer(); closeSetup(); closeRunSwitcher(); } });
+      document.addEventListener("click", (event) => {
+        if (!event.target.closest("#runSwitcher") && !event.target.closest("#simulationSwitcher")) closeRunSwitcher();
+        const action = event.target.closest("[data-drawer-action]")?.dataset.drawerAction;
+        if (!action) return;
+        if (action === "close") closeDrawer(); else if (action === "branch") { closeDrawer(); toast("已从第 6 轮创建“北境封印假设分支"); } else if (action === "proposal") { closeDrawer(); toast("候选提案已生成，等待作者审阅"); } else { toast("报告任务已加入队列"); }
+      });
+      window.render_game_to_text = () => {
+        const simulation = currentSimulation();
+        const round = simulation.rounds.find((item) => item.index === selectedRound) || simulation.rounds[0];
+        return JSON.stringify({ simulation: simulation.name, observer: observerLabel(simulation.observer), round: selectedRound, time: round.time, span: simulation.span, status: round.status, events: (simulation.eventSets[selectedRound] || []).map((event) => ({ kind: event.kind, title: event.title, entity: event.entity, status: event.status })), runtime: simulation.runtime ? { resourcePressure: simulation.runtime.resourcePressure, warActive: simulation.runtime.warActive, realmOpenings: simulation.runtime.realmOpenings, festivalCount: simulation.runtime.festivalCount, encounters: simulation.runtime.encounters, breakthroughs: simulation.runtime.breakthroughs, zhangsanAlive: simulation.runtime.character["张三"]?.alive } : null });
+      };
+      window.advanceTime = (milliseconds) => { const roundsToAdvance = Math.max(1, Math.round(Number(milliseconds || 0) / 1000)); runRounds(Math.min(9, roundsToAdvance)); };
+      renderAll();
+    </script>
+  </body>
+</html>

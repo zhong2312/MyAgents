@@ -32,6 +32,8 @@ export interface WorkbenchAgentSessions {
 export interface WorkbenchAiRuns {
   readonly isAvailable: boolean;
   run(request: WorkbenchAiRunRequest): Promise<WorkbenchAiRunResult>;
+  /** Stop one explicitly identified in-flight run. */
+  cancel(runId: string): Promise<void>;
   /** Subscribe to a compact status projection for one explicitly identified run. */
   subscribeProgress(
     runId: string,

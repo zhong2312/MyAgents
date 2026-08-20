@@ -1,6 +1,11 @@
 import type { WorkbenchStorage } from "@/workbench-sdk";
 
-import { expandMapCanvasToContent } from "../business/mapCanvasBounds";
+import {
+  expandMapCanvasToContent,
+  fitMapCanvasToGeneratedContent,
+  fitMapCanvasToContentWhenEmpty,
+  mapDocumentHasGeneratedContent,
+} from "../business/mapCanvasBounds";
 import {
   MAP_LIBRARY_PATH,
   createEmptyMapDocument,
@@ -207,10 +212,18 @@ export function createNovelMapRepository(
       ) {
         throw new Error(`地图索引中不存在记录：${map.id}`);
       }
-      const next: MapDocument = expandMapCanvasToContent({
+      const withTimestamp: MapDocument = {
         ...map,
         updatedAt: new Date().toISOString(),
-      });
+      };
+      const initialContentFitted = fitMapCanvasToContentWhenEmpty(
+        current.map,
+        withTimestamp,
+      );
+      const normalized = mapDocumentHasGeneratedContent(initialContentFitted)
+        ? fitMapCanvasToGeneratedContent(initialContentFitted)
+        : initialContentFitted;
+      const next: MapDocument = expandMapCanvasToContent(normalized);
       const recordContent = serializeMapDocument(persistedMap(next));
       await storage.writeText(mapRecordPath(map.id), recordContent, {
         expectedContent: current.content,

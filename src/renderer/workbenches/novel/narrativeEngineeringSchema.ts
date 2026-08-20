@@ -26,6 +26,146 @@ const uniqueIdsSchema = z.array(idSchema).superRefine((ids, context) => {
   });
 });
 
+const integerSortKeySchema = z.string().regex(/^-?\d+$/u);
+
+export const narrativeEntityTypeSchema = z.enum([
+  "character",
+  "faction",
+  "region",
+  "item",
+]);
+export type NarrativeEntityType = z.infer<typeof narrativeEntityTypeSchema>;
+
+const narrativeEventKindSchema = z.enum([
+  "character-action",
+  "faction-strategy",
+  "conflict",
+  "diplomacy",
+  "cultivation",
+  "lifecycle",
+  "propagation",
+  "world-process",
+  "epoch",
+]);
+
+const narrativeCommandTypeSchema = z.enum([
+  "character.intent",
+  "character.move",
+  "character.arrive",
+  "character.cultivate",
+  "character.resource",
+  "character.relation",
+  "character.life",
+  "character.knowledge",
+  "faction.strategy",
+  "faction.metric",
+  "faction.relation",
+  "region.metric",
+  "region.control",
+  "item.transfer",
+  "effect.schedule",
+  "effect.consume",
+]);
+
+const narrativeOutcomeValueSchema = z.union([
+  z.string(),
+  z.number().finite(),
+  z.boolean(),
+]);
+
+const narrativeEventOutcomeSchema = z
+  .object({
+    id: idSchema,
+    kind: z.literal("event"),
+    eventKind: narrativeEventKindSchema,
+    entityIds: uniqueIdsSchema,
+    regionIds: uniqueIdsSchema,
+  })
+  .strict();
+
+const narrativeCommandOutcomeSchema = z
+  .object({
+    id: idSchema,
+    kind: z.literal("command"),
+    commandType: narrativeCommandTypeSchema,
+    entityType: narrativeEntityTypeSchema.nullable(),
+    entityId: idSchema.nullable(),
+    field: z.string().trim().min(1).nullable(),
+    operator: z.enum(["exists", "equals", "contains"]),
+    value: narrativeOutcomeValueSchema.nullable(),
+  })
+  .strict()
+  .superRefine((outcome, context) => {
+    if (outcome.entityType && !outcome.entityId) {
+      context.addIssue({
+        code: "custom",
+        path: ["entityId"],
+        message: "指定实体类型时必须提供实体 id",
+      });
+    }
+    if (!outcome.entityType && outcome.entityId) {
+      context.addIssue({
+        code: "custom",
+        path: ["entityType"],
+        message: "指定实体 id 时必须同时指定实体类型",
+      });
+    }
+    if (
+      outcome.operator !== "exists" &&
+      (!outcome.field || outcome.value === null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["value"],
+        message: "equals/contains 谓词必须同时提供字段和值",
+      });
+    }
+  });
+
+export const narrativeOutcomeSchema = z.discriminatedUnion("kind", [
+  narrativeEventOutcomeSchema,
+  narrativeCommandOutcomeSchema,
+]);
+export type NarrativeOutcome = z.infer<typeof narrativeOutcomeSchema>;
+
+export const narrativeSimulationConstraintSchema = z
+  .object({
+    timeWindow: z
+      .object({
+        startSortKey: integerSortKeySchema.nullable(),
+        endSortKey: integerSortKeySchema.nullable(),
+      })
+      .strict()
+      .optional(),
+    requiredActorIds: uniqueIdsSchema.optional(),
+    requiredRegionIds: uniqueIdsSchema.optional(),
+    requiredOutcomes: z.array(narrativeOutcomeSchema).max(32).optional(),
+    forbiddenOutcomes: z.array(narrativeOutcomeSchema).max(32).optional(),
+    flexibility: z.number().int().min(0).max(100).optional(),
+  })
+  .strict()
+  .superRefine((constraint, context) => {
+    const start = constraint.timeWindow?.startSortKey;
+    const end = constraint.timeWindow?.endSortKey;
+    if (
+      start !== null &&
+      start !== undefined &&
+      end !== null &&
+      end !== undefined
+    ) {
+      if (BigInt(start) > BigInt(end)) {
+        context.addIssue({
+          code: "custom",
+          path: ["timeWindow", "endSortKey"],
+          message: "时间窗结束坐标不能早于开始坐标",
+        });
+      }
+    }
+  });
+export type NarrativeSimulationConstraint = z.infer<
+  typeof narrativeSimulationConstraintSchema
+>;
+
 export const plotLineKindSchema = z.enum([
   "main",
   "emotion",
@@ -96,6 +236,7 @@ export const plotLineSchema = z
     protagonistCharacterId: idSchema.nullable(),
     keyNodes: z.array(narrativeKeyNodeSchema),
     content: textSchema,
+    simulationConstraint: narrativeSimulationConstraintSchema.optional(),
   })
   .strict();
 
@@ -149,6 +290,7 @@ export const storyArcSchema = z
     lineIds: uniqueIdsSchema,
     keyNodes: z.array(narrativeKeyNodeSchema),
     content: textSchema,
+    simulationConstraint: narrativeSimulationConstraintSchema.optional(),
   })
   .strict();
 
@@ -176,6 +318,7 @@ export const narrativeDirectorySchema = z
     description: textSchema,
     status: narrativePlanStatusSchema,
     order: z.number().int().nonnegative(),
+    simulationConstraint: narrativeSimulationConstraintSchema.optional(),
   })
   .strict();
 
@@ -221,6 +364,7 @@ export const narrativeChapterPlanSchema = z
     lineIds: uniqueIdsSchema,
     arcIds: uniqueIdsSchema,
     sections: z.array(narrativeSectionPlanSchema),
+    simulationConstraint: narrativeSimulationConstraintSchema.optional(),
   })
   .strict();
 

@@ -7,6 +7,63 @@ export type MapTerrainMaterialTextureSample = {
   readonly highlight: number;
 };
 
+export type MapTerrainMaterialVisualProfile = {
+  /** 材质细节色的最大混合强度。 */
+  readonly detailStrength: number;
+  /** 材质高光纹理的最大混合强度。 */
+  readonly highlightStrength: number;
+  /** 材质贴近其它材质或裸地时保留的最低覆盖比例。 */
+  readonly edgeBlend: number;
+};
+
+const MATERIAL_VISUAL_PROFILES: Readonly<
+  Record<MapTerrainMaterial, MapTerrainMaterialVisualProfile>
+> = Object.freeze({
+  grassland: { detailStrength: 0.78, highlightStrength: 0.72, edgeBlend: 0.42 },
+  forest: { detailStrength: 0.96, highlightStrength: 0.62, edgeBlend: 0.52 },
+  desert: { detailStrength: 0.88, highlightStrength: 0.98, edgeBlend: 0.6 },
+  beach: { detailStrength: 0.64, highlightStrength: 0.92, edgeBlend: 0.78 },
+  "gravel-beach": {
+    detailStrength: 0.92,
+    highlightStrength: 0.48,
+    edgeBlend: 0.76,
+  },
+  "salt-flat": {
+    detailStrength: 0.78,
+    highlightStrength: 0.96,
+    edgeBlend: 0.58,
+  },
+  badlands: { detailStrength: 1, highlightStrength: 0.72, edgeBlend: 0.7 },
+  tundra: { detailStrength: 0.72, highlightStrength: 0.7, edgeBlend: 0.44 },
+  snow: { detailStrength: 0.62, highlightStrength: 0.94, edgeBlend: 0.34 },
+  "snow-cover": {
+    detailStrength: 0.52,
+    highlightStrength: 1,
+    edgeBlend: 0.28,
+  },
+  swamp: { detailStrength: 0.84, highlightStrength: 0.58, edgeBlend: 0.46 },
+  volcanic: { detailStrength: 1, highlightStrength: 0.65, edgeBlend: 0.76 },
+  "volcanic-ash": {
+    detailStrength: 0.9,
+    highlightStrength: 0.4,
+    edgeBlend: 0.72,
+  },
+  lava: { detailStrength: 0.95, highlightStrength: 0.86, edgeBlend: 0.82 },
+  karst: { detailStrength: 0.88, highlightStrength: 0.68, edgeBlend: 0.62 },
+  "shallow-sea": {
+    detailStrength: 0.42,
+    highlightStrength: 0.96,
+    edgeBlend: 0.52,
+  },
+  "deep-sea": { detailStrength: 0.7, highlightStrength: 0.7, edgeBlend: 0.44 },
+});
+
+export function getMapTerrainMaterialVisualProfile(
+  material: MapTerrainMaterial,
+): MapTerrainMaterialVisualProfile {
+  return MATERIAL_VISUAL_PROFILES[material];
+}
+
 function clamp(value: number, minimum = 0, maximum = 1): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
@@ -82,6 +139,50 @@ function desertTexture(x: number, y: number): MapTerrainMaterialTextureSample {
   };
 }
 
+/**
+ * 沙滩以细密、近似平行的潮痕为主，并混入少量贝壳和砾石颗粒。它与荒漠的
+ * 大尺度风蚀沙丘分开，避免海岸材质放大后仍像内陆沙漠。
+ */
+function beachTexture(x: number, y: number): MapTerrainMaterialTextureSample {
+  const tideY =
+    y + Math.sin(x * 0.045) * 5 + Math.sin(x * 0.011 + y * 0.028) * 3;
+  const tide = (Math.sin(tideY * 0.39) + 1) / 2;
+  const ripple = ridge(tide, 0.91, 0.09);
+  const pebbles = ridge(hash(x / 8, y / 8, 53), 0.965, 0.035);
+  return {
+    detail: clamp(ridge(0.17 - tide, 0, 0.17) * 0.31 + pebbles * 0.32),
+    highlight: clamp(
+      ripple * 0.52 + ridge(hash(x / 17, y / 17, 59), 0.985, 0.015) * 0.18,
+    ),
+  };
+}
+
+function gravelBeachTexture(
+  x: number,
+  y: number,
+): MapTerrainMaterialTextureSample {
+  const pebble = hash(x / 7, y / 7, 61);
+  const wetness = (Math.sin(y * 0.18 + Math.sin(x * 0.03)) + 1) / 2;
+  return {
+    detail: ridge(pebble, 0.72, 0.28) * 0.86,
+    highlight: ridge(wetness, 0.8, 0.2) * 0.36,
+  };
+}
+
+function saltFlatTexture(
+  x: number,
+  y: number,
+): MapTerrainMaterialTextureSample {
+  const crack = Math.abs(
+    Math.sin(x * 0.08 + Math.sin(y * 0.03)) *
+      Math.sin(y * 0.11 - Math.sin(x * 0.04)),
+  );
+  return {
+    detail: ridge(0.16 - crack, 0, 0.16) * 0.82,
+    highlight: ridge(hash(x / 23, y / 23, 67), 0.7, 0.3) * 0.55,
+  };
+}
+
 function badlandsTexture(
   x: number,
   y: number,
@@ -122,6 +223,18 @@ function snowTexture(x: number, y: number): MapTerrainMaterialTextureSample {
   };
 }
 
+function snowCoverTexture(
+  x: number,
+  y: number,
+): MapTerrainMaterialTextureSample {
+  const drift =
+    (Math.sin((y + x * 0.42 + Math.sin(x * 0.04) * 11) * 0.16) + 1) / 2;
+  return {
+    detail: ridge(0.22 - drift, 0, 0.22) * 0.18,
+    highlight: ridge(drift, 0.72, 0.28) * 0.82,
+  };
+}
+
 function swampTexture(x: number, y: number): MapTerrainMaterialTextureSample {
   const cellWidth = 31;
   const cellHeight = 24;
@@ -155,11 +268,67 @@ function volcanicTexture(
   };
 }
 
+function volcanicAshTexture(
+  x: number,
+  y: number,
+): MapTerrainMaterialTextureSample {
+  const ash = hash(x / 12, y / 12, 71);
+  const gust = (Math.sin(x * 0.09 + y * 0.04) + 1) / 2;
+  return {
+    detail: ridge(ash, 0.66, 0.34) * 0.62,
+    highlight: ridge(gust, 0.9, 0.1) * 0.15,
+  };
+}
+
+function lavaTexture(x: number, y: number): MapTerrainMaterialTextureSample {
+  const crack = Math.min(
+    Math.abs(Math.sin(x * 0.14 + y * 0.07)),
+    Math.abs(Math.sin(x * 0.05 - y * 0.19)),
+  );
+  const heat = hash(x / 25, y / 25, 73);
+  return {
+    detail: ridge(0.12 - crack, 0, 0.12) * 0.92,
+    highlight: ridge(heat, 0.82, 0.18) * 0.62,
+  };
+}
+
+function karstTexture(x: number, y: number): MapTerrainMaterialTextureSample {
+  const sinkhole = hash(x / 17, y / 17, 79);
+  const ridgeBand = (Math.sin(x * 0.12 + y * 0.08) + 1) / 2;
+  return {
+    detail: ridge(sinkhole, 0.76, 0.24) * 0.58,
+    highlight: ridge(ridgeBand, 0.84, 0.16) * 0.3,
+  };
+}
+
+function shallowSeaTexture(
+  x: number,
+  y: number,
+): MapTerrainMaterialTextureSample {
+  const wave = (Math.sin(y * 0.18 + x * 0.035) + 1) / 2;
+  return {
+    detail: ridge(0.18 - wave, 0, 0.18) * 0.2,
+    highlight: ridge(wave, 0.78, 0.22) * 0.82,
+  };
+}
+
+function deepSeaTexture(
+  x: number,
+  y: number,
+): MapTerrainMaterialTextureSample {
+  const current = (Math.sin(x * 0.05 - y * 0.09) + 1) / 2;
+  return {
+    detail: ridge(0.23 - current, 0, 0.23) * 0.42,
+    highlight: ridge(current, 0.88, 0.12) * 0.42,
+  };
+}
+
 /**
  * 为地貌材质派生稳定、可缩放的图案强度。
  *
- * 坐标使用合成器栅格坐标，而不是屏幕坐标；因此同一份 `MapSceneStroke`
- * 在画布缩放、重新打开和 PNG 导出时都能获得相同的纹理结构。
+ * 坐标使用地图世界坐标，而不是屏幕或下采样栅格坐标；因此同一份
+ * `MapSceneStroke` 在画布缩放、自动扩展、重新打开和 PNG 导出时都能获得
+ * 相同的纹理结构。
  */
 export function sampleMapTerrainMaterialTexture(
   material: MapTerrainMaterial,
@@ -173,15 +342,33 @@ export function sampleMapTerrainMaterialTexture(
       return forestTexture(x, y);
     case "desert":
       return desertTexture(x, y);
+    case "beach":
+      return beachTexture(x, y);
+    case "gravel-beach":
+      return gravelBeachTexture(x, y);
+    case "salt-flat":
+      return saltFlatTexture(x, y);
     case "badlands":
       return badlandsTexture(x, y);
     case "tundra":
       return tundraTexture(x, y);
     case "snow":
       return snowTexture(x, y);
+    case "snow-cover":
+      return snowCoverTexture(x, y);
     case "swamp":
       return swampTexture(x, y);
     case "volcanic":
       return volcanicTexture(x, y);
+    case "volcanic-ash":
+      return volcanicAshTexture(x, y);
+    case "lava":
+      return lavaTexture(x, y);
+    case "karst":
+      return karstTexture(x, y);
+    case "shallow-sea":
+      return shallowSeaTexture(x, y);
+    case "deep-sea":
+      return deepSeaTexture(x, y);
   }
 }

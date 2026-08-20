@@ -13,9 +13,7 @@ import {
   type ItemBatchProposalCandidate,
   type ItemBatchProposalManifest,
 } from "../entities/itemBatchProposalSchema";
-import {
-  createNovelItemBatchProposalRepository,
-} from "./itemBatchProposalRepository";
+import { createNovelItemBatchProposalRepository } from "./itemBatchProposalRepository";
 import {
   createNovelItemLibraryRepository,
   ITEM_LIBRARY_PATHS,
@@ -24,6 +22,10 @@ import type { ItemRecord } from "../entities/itemLibrarySchema";
 
 function json(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function targetPath(candidateId: string): string {
@@ -155,9 +157,12 @@ export function createItemFileProposalRepository(
     },
     async deleteProposals(proposalIds) {
       for (const proposalId of new Set(proposalIds)) {
-        await storage.remove(`${ITEM_BATCH_PROPOSALS_DIRECTORY}/${proposalId}`, {
-          permanent: true,
-        });
+        await storage.remove(
+          `${ITEM_BATCH_PROPOSALS_DIRECTORY}/${proposalId}`,
+          {
+            permanent: true,
+          },
+        );
       }
     },
     async apply(proposalId, changeIds, projectTitle) {
@@ -168,7 +173,9 @@ export function createItemFileProposalRepository(
         (change) => selected.has(change.id) && change.conflict,
       );
       if (conflicted) {
-        throw new Error(`正式物品记录已变化，不能直接应用：${conflicted.targetPath}`);
+        throw new Error(
+          `正式物品记录已变化，不能直接应用：${conflicted.targetPath}`,
+        );
       }
       await domain.apply(proposalId, changeIds);
       return materialize(proposalId);
@@ -196,9 +203,12 @@ export function createItemFileProposalRepository(
         throw new Error("没有可删除的物品提案变更");
       }
       if (remaining.length === 0) {
-        await storage.remove(`${ITEM_BATCH_PROPOSALS_DIRECTORY}/${proposalId}`, {
-          permanent: true,
-        });
+        await storage.remove(
+          `${ITEM_BATCH_PROPOSALS_DIRECTORY}/${proposalId}`,
+          {
+            permanent: true,
+          },
+        );
         return null;
       }
       await storage.writeText(
@@ -239,19 +249,20 @@ export function createItemFileProposalRepository(
         const record: ItemRecord = {
           ...currentItem.record,
           id: currentItem.record.id,
-          name:
-            typeof object.name === "string"
-              ? object.name
-              : candidate.name,
+          name: typeof object.name === "string" ? object.name : candidate.name,
           categoryId:
             typeof object.categoryId === "string"
               ? object.categoryId
               : loaded.manifest.categoryId,
           aliases: Array.isArray(object.aliases)
-            ? object.aliases.filter((value): value is string => typeof value === "string")
+            ? object.aliases.filter(
+                (value): value is string => typeof value === "string",
+              )
             : candidate.aliases,
           tags: Array.isArray(object.tags)
-            ? object.tags.filter((value): value is string => typeof value === "string")
+            ? object.tags.filter(
+                (value): value is string => typeof value === "string",
+              )
             : candidate.tags,
           summary:
             typeof object.summary === "string"
@@ -286,12 +297,18 @@ export function createItemFileProposalRepository(
             { expectedContent: loaded.content },
           );
         } catch (error) {
-          await itemRepository.saveItem(
-            saved.library,
-            saved.item,
-            currentItem.record,
-            currentItem.pageContent,
-          ).catch(() => undefined);
+          try {
+            await itemRepository.saveItem(
+              saved.library,
+              saved.item,
+              currentItem.record,
+              currentItem.pageContent,
+            );
+          } catch (rollbackError) {
+            throw new Error(
+              `物品提案冲突解决失败，且物品正式内容回滚失败：${errorMessage(error)}；${errorMessage(rollbackError)}`,
+            );
+          }
           throw error;
         }
         return materialize(proposalId);

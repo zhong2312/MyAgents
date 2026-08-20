@@ -12,6 +12,7 @@ import {
 } from "./modules/factions/entities/factionLibrarySchema";
 import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
+import { createNovelLocationLibraryRepository } from "./modules/locations/data-access/locationLibraryRepository";
 import { MAIN_TIMELINE_BRANCH_ID } from "./timelineLibrarySchema";
 import { createNovelTimelineLibraryRepository } from "./timelineLibraryRepository";
 import { createEmptyNovelStorage } from "./testStorage";
@@ -398,6 +399,7 @@ describe("WorldSimulationAdoptionV2", () => {
     expect(proposal?.changes.map((change) => change.targetPath)).toEqual([
       "characters/records/character-1.json",
       "characters/records/character-2.json",
+      "world/items/records/item-1.json",
       "world/factions/index.json",
       "timeline/index.json",
     ]);
@@ -415,6 +417,10 @@ describe("WorldSimulationAdoptionV2", () => {
       characterLibrary,
     );
     const factions = await createNovelFactionLibraryRepository(storage).load();
+    const items = await createNovelItemLibraryRepository(storage).load();
+    const itemEntry = items.index.items.find((item) => item.id === "item-1")!;
+    const item =
+      await createNovelItemLibraryRepository(storage).loadItem(itemEntry);
     expect(
       characters.find((item) => item.id === "character-1")?.inventory,
     ).toEqual([]);
@@ -422,6 +428,138 @@ describe("WorldSimulationAdoptionV2", () => {
       characters.find((item) => item.id === "character-2")?.inventory,
     ).toMatchObject([{ itemId: "item-1", name: "镇界印", quantity: 1 }]);
     expect(factions.library.factions[0]?.resources).toEqual([]);
+    expect(item.record.status).toBe("active");
+  });
+
+  it("将人物关系与势力外交关系采纳回正式资料契约", async () => {
+    const { storage, run } = await seedRun();
+    const characterRepository = createNovelCharacterLibraryRepository(storage);
+    const characterLibrary = await characterRepository.load();
+    const characterEntry = characterLibrary.index.characters.find(
+      (entry) => entry.id === "character-1",
+    )!;
+    const loadedCharacter =
+      await characterRepository.loadCharacter(characterEntry);
+    await characterRepository.saveCharacter(characterLibrary, {
+      ...loadedCharacter.record,
+      relations: [
+        {
+          targetId: "character-2",
+          type: "同门",
+          tone: "neutral",
+          summary: "原有关系",
+        },
+      ],
+    });
+
+    const factionRepository = createNovelFactionLibraryRepository(storage);
+    const factionLibrary = await factionRepository.load();
+    const factionTwo: FactionRecord = {
+      ...faction(),
+      id: "faction-2",
+      name: "南境盟",
+    };
+    await factionRepository.save(factionLibrary, {
+      ...factionLibrary.library,
+      factions: [
+        {
+          ...factionLibrary.library.factions[0]!,
+          relations: [
+            {
+              id: "relation-faction-2",
+              targetFactionId: "faction-2",
+              kind: "hostile",
+              direction: "outbound",
+              status: "active",
+              startedAt: "第 0 日",
+              endedAt: "",
+              description: "原有敌对关系",
+            },
+          ],
+        },
+        factionTwo,
+      ],
+    });
+
+    const event: SimulationEvent = {
+      ...transferEvent("event-relations", 3, null, null),
+      kind: "diplomacy",
+      title: "关系缓和",
+      summary: "人物与势力的关系发生变化。",
+      characterIds: ["character-1"],
+      factionIds: ["faction-1"],
+      itemIds: [],
+      commands: [
+        {
+          type: "character.relation",
+          characterId: "character-1",
+          targetCharacterId: "character-2",
+          affinityDelta: 20,
+          trustDelta: 20,
+          status: "active",
+        },
+        {
+          type: "faction.relation",
+          factionId: "faction-1",
+          targetFactionId: "faction-2",
+          sentimentDelta: 10,
+          status: "suspended",
+        },
+      ],
+    };
+    const runWithEvent: WorldSimulationRun = {
+      ...run,
+      branches: run.branches.map((branch) => ({
+        ...branch,
+        ledger: [...branch.ledger, event],
+      })),
+    };
+    const proposalId = await createWorldSimulationAdoptionProposal(
+      storage,
+      runWithEvent,
+      [event.id],
+      "actual",
+    );
+    const proposalRepository =
+      createWorldSimulationAdoptionFileProposalRepository(storage);
+    const proposal = (await proposalRepository.list()).proposals.find(
+      (item) => item.manifest.proposalId === proposalId,
+    )!;
+    await proposalRepository.apply(
+      proposalId,
+      proposal.changes.map((change) => change.id),
+      "测试小说",
+    );
+
+    const savedCharacterLibrary = await characterRepository.load();
+    const savedCharacters = await loadCharacterRecords(
+      characterRepository,
+      savedCharacterLibrary,
+    );
+    const savedCharacter = savedCharacters.find(
+      (item) => item.id === "character-1",
+    )!;
+    expect(savedCharacter.relations).toContainEqual(
+      expect.objectContaining({
+        targetId: "character-2",
+        type: "同门",
+        tone: "positive",
+      }),
+    );
+    expect(savedCharacter.relations[0]?.summary).toContain("信任 20");
+
+    const savedFactions = await factionRepository.load();
+    const savedFaction = savedFactions.library.factions.find(
+      (item) => item.id === "faction-1",
+    )!;
+    expect(savedFaction.relations).toContainEqual(
+      expect.objectContaining({
+        targetFactionId: "faction-2",
+        kind: "hostile",
+        status: "suspended",
+      }),
+    );
+    expect(savedFaction.relations[0]?.description).toContain("外交态度 10");
   });
 
   it("将未来计划或作者秘密采纳时不预先修改当前人物和势力状态", async () => {
@@ -434,9 +572,9 @@ describe("WorldSimulationAdoptionV2", () => {
     );
     const repository =
       createWorldSimulationAdoptionFileProposalRepository(storage);
-    const proposal = (
-      await repository.list()
-    ).proposals.find((item) => item.manifest.proposalId === proposalId)!;
+    const proposal = (await repository.list()).proposals.find(
+      (item) => item.manifest.proposalId === proposalId,
+    )!;
 
     expect(proposal.changes.map((change) => change.targetPath)).toEqual([
       "timeline/index.json",
@@ -508,5 +646,93 @@ describe("WorldSimulationAdoptionV2", () => {
     expect(storage.getText("characters/index.json")).toBe(beforeCharacters);
     expect(storage.getText("world/factions/index.json")).toBe(beforeFactions);
     expect(storage.getText("timeline/index.json")).toBe(beforeTimeline);
+  });
+
+  it("通过地点目录 Repository 采纳地域过程记录并保留地点层级", async () => {
+    const { storage, run } = await seedRun();
+    const locationRepository = createNovelLocationLibraryRepository(storage);
+    const currentLocations = await locationRepository.load();
+    await locationRepository.save(currentLocations, {
+      ...currentLocations.index,
+      locations: [
+        {
+          id: "location-1",
+          nodeId: "region-1",
+          parentLocationId: null,
+          name: "北山村",
+          aliases: [],
+          type: "村落",
+          status: "appeared",
+          summary: "北山脚下的村落。",
+          appearanceNote: "",
+          description: "",
+          order: 0,
+        },
+      ],
+    });
+    const event: SimulationEvent = {
+      id: "event-region-metric",
+      sequence: 3,
+      time: {
+        calendarId: "novel-calendar",
+        sortKey: "3",
+        precision: "exact",
+        displayText: "第 3 日",
+      },
+      scale: "day",
+      kind: "world-process",
+      title: "北山村生态恢复",
+      summary: "北山村周边生态逐步恢复。",
+      characterIds: [],
+      factionIds: [],
+      regionIds: ["region-1"],
+      itemIds: [],
+      causeEventIds: [],
+      evidence: [],
+      commands: [
+        {
+          type: "region.metric",
+          regionId: "region-1",
+          metric: "ecology",
+          delta: 3,
+        },
+      ],
+      narrativeConstraintIds: [],
+      generatedBy: "kernel",
+      confidence: 1,
+    };
+    const runWithEvent: WorldSimulationRun = {
+      ...run,
+      branches: run.branches.map((branch) => ({
+        ...branch,
+        ledger: [...branch.ledger, event],
+      })),
+    };
+    const proposalId = await createWorldSimulationAdoptionProposal(
+      storage,
+      runWithEvent,
+      [event.id],
+      "actual",
+    );
+    const proposal = (
+      await createWorldSimulationAdoptionFileProposalRepository(storage).list()
+    ).proposals.find((item) => item.manifest.proposalId === proposalId)!;
+    expect(proposal.changes.map((change) => change.targetPath)).toEqual([
+      "world/locations/records/location-1.json",
+      "timeline/index.json",
+    ]);
+
+    await createWorldSimulationAdoptionFileProposalRepository(storage).apply(
+      proposalId,
+      proposal.changes.map((change) => change.id),
+      "测试小说",
+    );
+    const savedLocations = await locationRepository.load();
+    const saved = savedLocations.index.locations.find(
+      (location) => location.id === "location-1",
+    )!;
+    expect(saved.nodeId).toBe("region-1");
+    expect(saved.parentLocationId).toBeNull();
+    expect(saved.appearanceNote).toContain("生态上升 3");
   });
 });

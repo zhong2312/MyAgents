@@ -55,6 +55,7 @@ export const MODEL_SCENE_IDS = [
   "simulation.resolve",
   "simulation.report",
   "simulation.council",
+  "simulation.epoch-narration",
 ] as const;
 
 export type NovelModelSceneId = (typeof MODEL_SCENE_IDS)[number];
@@ -340,6 +341,13 @@ export const NOVEL_MODEL_SCENES: readonly NovelModelSceneDefinition[] = [
     group: "世界推演",
     label: "圆桌会商",
     description: "多角色代表逐轮发言与投票",
+    execution: "run",
+  },
+  {
+    id: "simulation.epoch-narration",
+    group: "世界推演",
+    label: "纪元叙事",
+    description: "将长尺度聚合状态整理为可追溯叙事",
     execution: "run",
   },
 ] as const;

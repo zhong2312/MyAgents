@@ -2,10 +2,18 @@ import type {
   MapDocument,
   MapScenePoint,
   MapSceneRegion,
+  MapSceneRegionTexture,
   MapSceneStroke,
   MapTerrainStyle,
 } from "../entities/mapSchema";
 import {
+  mapSceneLayerSupportsRegion,
+  mapTerrainMaterialSurface,
+} from "../entities/mapSchema";
+import {
+  isMapTerrainWaterStroke,
+  mapSceneHasLandSurface,
+  mapSceneHasWaterSurface,
   isMapTerrainMaskStroke,
   isMapTerrainMaterialStroke,
 } from "../business/mapScene";
@@ -13,8 +21,15 @@ import {
   getMapTerrainMaterialPreset,
   MAP_TERRAIN_MATERIAL_PRESETS,
 } from "../business/mapTerrainMaterials";
-import { mapTerrainBrushDabs } from "../business/mapTerrainBrush";
-import { sampleMapTerrainMaterialTexture } from "../business/mapTerrainMaterialTexture";
+import {
+  mapTerrainBrushCoverageDabs,
+  mapTerrainBrushDabs,
+} from "../business/mapTerrainBrush";
+import { mapBrushCurvePoints } from "../business/mapFeatureShapes";
+import {
+  getMapTerrainMaterialVisualProfile,
+  sampleMapTerrainMaterialTexture,
+} from "../business/mapTerrainMaterialTexture";
 import { mapRegionTextureVariation } from "../business/mapTerrainTextures";
 
 const MAX_SURFACE_EDGE = 2_048;
@@ -26,14 +41,112 @@ type VisibleSceneRegion = {
   readonly opacity: number;
 };
 
+const REGION_TEXTURE_CODES: Readonly<Record<MapSceneRegionTexture, number>> =
+  Object.freeze({
+    "paper-land": 1,
+    "water-ripple": 2,
+    "territory-hatch": 3,
+    "administrative-grid": 4,
+    "stellar-domain": 5,
+  });
+
+function regionTextureFromCode(value: number): MapSceneRegionTexture {
+  switch (value) {
+    case 3:
+      return "territory-hatch";
+    case 4:
+      return "administrative-grid";
+    case 5:
+      return "stellar-domain";
+    case 2:
+      return "water-ripple";
+    default:
+      return "paper-land";
+  }
+}
+
 export interface MapTerrainComposite {
   readonly canvas: HTMLCanvasElement;
   readonly worldWidth: number;
   readonly worldHeight: number;
   /** 与合成画布一致的下采样陆地掩码，仅供当前渲染帧裁剪素材笔刷。 */
   readonly land: Uint8Array;
+  /** 与合成画布一致的显式水域掩码，用于浅海、深海等水面材质。 */
+  readonly water: Uint8Array;
   readonly rasterWidth: number;
   readonly rasterHeight: number;
+}
+
+/**
+ * 返回会实际改变地表合成结果的输入快照。
+ *
+ * `MapScene` 还承载山脉、植被、标注等覆盖内容；它们改变时不能让海陆、
+ * 纹理和距离场重新栅格化。图层被隐藏或完全透明时与合成器的筛选规则一致，
+ * 不把其内容纳入键值；恢复可见后内容会重新进入键值并触发重建。两个
+ * `has*Surface` 则保留合成器的空地表前置判定，避免透明图层首次拥有海陆
+ * 事实时错误复用透明缓存。
+ */
+export function mapTerrainCompositeSourceKey(mapDocument: MapDocument): string {
+  const scene = mapDocument.scene;
+  if (!scene) return "no-scene";
+
+  const layers = scene.layers.flatMap((layer) => {
+    const regions = layer.regions
+      .filter((region) => mapSceneLayerSupportsRegion(layer.kind, region.kind))
+      .map((region) => ({
+        kind: region.kind,
+        points: region.points,
+        // 区域曲线会改变实际海陆/材质遮罩的边界。它必须参与合成键，
+        // 否则检查器切换“直线/弧线”后只更新边线，填充层仍复用旧轮廓。
+        curve: region.curve ?? "arc",
+        fill: region.fill,
+        texture: region.texture,
+        opacity: region.opacity,
+        terrainMaterial: region.terrainMaterial ?? null,
+      }));
+    const strokes = layer.strokes
+      .filter(
+        (stroke) =>
+          isMapTerrainMaskStroke(layer.kind, stroke) ||
+          isMapTerrainWaterStroke(layer.kind, stroke) ||
+          isMapTerrainMaterialStroke(layer.kind, stroke),
+      )
+      .map((stroke) => ({
+        tool: stroke.tool,
+        terrainMaterial: stroke.terrainMaterial,
+        shape: stroke.shape,
+        // 曲线模式会改变地形掩码和材质覆盖的中心线，必须参与缓存键。
+        curve: stroke.curve ?? "line",
+        points: stroke.points,
+        color: stroke.color,
+        width: stroke.width,
+        opacity: stroke.opacity,
+        spacing: stroke.spacing,
+        scatter: stroke.scatter,
+      }));
+    if (
+      !layer.visible ||
+      layer.opacity <= 0 ||
+      (regions.length === 0 && strokes.length === 0)
+    ) {
+      return [];
+    }
+    return [
+      {
+        kind: layer.kind,
+        opacity: layer.opacity,
+        regions,
+        strokes,
+      },
+    ];
+  });
+
+  return JSON.stringify({
+    hasLandSurface: mapSceneHasLandSurface(scene),
+    hasWaterSurface: mapSceneHasWaterSurface(scene),
+    terrainStyle: scene.terrainStyle,
+    layers,
+  });
 }
 
 /**
@@ -69,6 +182,51 @@ export function mapTerrainCompositeHasLandAt(
   return composite.land[y * composite.rasterWidth + x] !== 0;
 }
 
+export function mapTerrainCompositeHasSurfaceAt(
+  composite: MapTerrainComposite,
+  point: MapScenePoint,
+  surface: "land" | "water",
+): boolean {
+  if (
+    point.x < 0 ||
+    point.y < 0 ||
+    point.x > composite.worldWidth ||
+    point.y > composite.worldHeight
+  ) {
+    return false;
+  }
+  const x = Math.min(
+    composite.rasterWidth - 1,
+    Math.max(
+      0,
+      Math.floor((point.x / composite.worldWidth) * composite.rasterWidth),
+    ),
+  );
+  const y = Math.min(
+    composite.rasterHeight - 1,
+    Math.max(
+      0,
+      Math.floor((point.y / composite.worldHeight) * composite.rasterHeight),
+    ),
+  );
+  const mask = surface === "land" ? composite.land : composite.water;
+  return mask[y * composite.rasterWidth + x] !== 0;
+}
+
+/**
+ * 使用与笔刷重绘一致的覆盖采样，判断一笔材质是否至少落在真实陆地。
+ * 完全落在海域时不写入 MapDocument，避免留下重新打开后不可见的笔触。
+ */
+export function mapTerrainCompositeIntersectsBrush(
+  composite: MapTerrainComposite,
+  input: Parameters<typeof mapTerrainBrushCoverageDabs>[0],
+  surface: "land" | "water" = "land",
+): boolean {
+  return mapTerrainBrushCoverageDabs(input).some((dab) =>
+    mapTerrainCompositeHasSurfaceAt(composite, dab, surface),
+  );
+}
+
 function hexToRgb(value: string, fallback: Rgb): Rgb {
   const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/iu.exec(value);
   if (!match) return fallback;
@@ -90,6 +248,20 @@ function mixColor(from: Rgb, to: Rgb, amount: number): Rgb {
     from[1] + (to[1] - from[1]) * ratio,
     from[2] + (to[2] - from[2]) * ratio,
   ];
+}
+
+/**
+ * 区域的遮罩几何始终完整，但其颜色可以按区域与图层的不透明度柔和叠加。
+ * 这里统一约束混合权重，避免透明区域仍以不透明颜色覆盖地表。
+ */
+export function mapTerrainRegionColorMix(
+  opacity: number,
+  maximumMix: number,
+): number {
+  const safeOpacity = Number.isFinite(opacity)
+    ? Math.max(0, Math.min(1, opacity))
+    : 0;
+  return safeOpacity * Math.max(0, Math.min(1, maximumMix));
 }
 
 function pixelNoise(x: number, y: number): number {
@@ -141,19 +313,67 @@ export function sampleMapTerrainRelief(
   };
 }
 
+export type MapTerrainSurfaceTextureSample = {
+  /** 纸张与水面的细颗粒，尚未乘以场景纹理强度。 */
+  readonly grain: number;
+  /** 低频纸张起伏，尚未乘以场景纹理强度。 */
+  readonly largeGrain: number;
+  /** 材质覆盖边缘的微小自然过渡，尚未乘以场景纹理强度。 */
+  readonly materialOpacityJitter: number;
+  /** 水面零星高光，尚未乘以场景纹理强度。 */
+  readonly waterWave: number;
+};
+
+/**
+ * 采样不属于任何单一地貌的底稿质感。
+ *
+ * 坐标只能来自 MapDocument 世界空间，不能使用当前合成器的下采样栅格。
+ * 因此画布自动扩展、交互帧降采样和 PNG 导出会保留同一片纸纹与水面细节。
+ */
+export function sampleMapTerrainSurfaceTexture(
+  worldX: number,
+  worldY: number,
+): MapTerrainSurfaceTextureSample {
+  const integerX = Math.floor(worldX);
+  const integerY = Math.floor(worldY);
+  return {
+    grain: (pixelNoise(integerX, integerY) - 0.5) * 22,
+    largeGrain: Math.sin(worldX * 0.035 + Math.sin(worldY * 0.021)) * 4,
+    materialOpacityJitter:
+      (pixelNoise(Math.floor(worldX / 3), Math.floor(worldY / 3)) - 0.5) * 0.12,
+    waterWave:
+      Math.sin(worldX * 0.16 + worldY * 0.045) > 0.94 &&
+      Math.sin(worldY * 0.11) > 0.2
+        ? 6
+        : 0,
+  };
+}
+
 function drawClosedRegion(
   context: CanvasRenderingContext2D,
   points: readonly MapScenePoint[],
   scale: number,
+  curve: MapSceneRegion["curve"] = "arc",
 ): void {
   if (points.length < 3) return;
-  const scaled = points.map((point) => ({
+  // 地表掩码、材质层和主画布必须消费同一条闭合曲线。直接对原始控制点
+  // 做一次 quadraticCurveTo 会与画布的弧线重采样产生边界偏差，尤其是
+  // 自由画笔只有少量触点时，视觉上会像弧线设置没有生效。
+  const sourcePoints =
+    curve === "arc" ? mapBrushCurvePoints(points, curve, true) : points;
+  const scaled = sourcePoints.map((point) => ({
     x: point.x * scale,
     y: point.y * scale,
   }));
   const first = scaled[0]!;
   const last = scaled[scaled.length - 1]!;
   context.beginPath();
+  if (curve === "line") {
+    context.moveTo(first.x, first.y);
+    scaled.slice(1).forEach((point) => context.lineTo(point.x, point.y));
+    context.closePath();
+    return;
+  }
   context.moveTo((last.x + first.x) / 2, (last.y + first.y) / 2);
   scaled.forEach((point, index) => {
     const next = scaled[(index + 1) % scaled.length]!;
@@ -173,10 +393,15 @@ function drawTerrainStroke(
   scale: number,
   widthMultiplier = 1,
 ): void {
-  const points = stroke.points;
+  // 场景笔触保存作者控制点，合成海陆与材质时先还原弧线中心线，
+  // 否则交互层虽能看到弧线，最终地表仍会按折线覆盖。
+  const points = mapBrushCurvePoints(stroke.points, stroke.curve);
   if (points.length === 0) return;
   if (stroke.shape === "organic") {
-    mapTerrainBrushDabs(stroke, widthMultiplier).forEach((dab) => {
+    mapTerrainBrushDabs(
+      { ...stroke, points },
+      widthMultiplier,
+    ).forEach((dab) => {
       context.beginPath();
       context.arc(
         dab.x * scale,
@@ -235,7 +460,7 @@ function setPixel(
 
 function applyRegionTexture(
   color: Rgb,
-  texture: "paper-land" | "water-ripple",
+  texture: MapSceneRegionTexture,
   x: number,
   y: number,
   opacity: number,
@@ -244,15 +469,19 @@ function applyRegionTexture(
   const variation = mapRegionTextureVariation(texture, x, y);
   if (variation === 0 || opacity <= 0 || textureStrength <= 0) return color;
   const amount = Math.min(
-    texture === "paper-land" ? 0.16 : 0.2,
+    texture === "water-ripple" ? 0.2 : 0.18,
     Math.abs(variation) * opacity * textureStrength,
   );
-  const tint: Rgb =
-    texture === "paper-land"
-      ? variation > 0
-        ? [250, 241, 207]
-        : [84, 69, 48]
-      : [219, 243, 238];
+  const tint: Rgb = (() => {
+    if (texture === "water-ripple") return [219, 243, 238];
+    if (texture === "territory-hatch")
+      return variation > 0 ? [247, 225, 188] : [111, 65, 56];
+    if (texture === "administrative-grid")
+      return variation > 0 ? [244, 224, 177] : [92, 76, 60];
+    if (texture === "stellar-domain")
+      return variation > 0 ? [221, 233, 255] : [62, 66, 105];
+    return variation > 0 ? [250, 241, 207] : [84, 69, 48];
+  })();
   return mixColor(color, tint, amount);
 }
 
@@ -350,20 +579,63 @@ function buildLandDistanceField(
   return distance;
 }
 
+/**
+ * 从材质 id 栅格估计当前像素是否位于材质边缘。
+ *
+ * 这里不做模糊或保存像素，只用相邻采样决定当前帧的混合比例。材质交界
+ * 会露出少量底层地表，避免森林、沙漠和湿地笔触像贴纸一样硬切。
+ */
+function materialBoundaryContinuity(
+  materialIds: Uint8ClampedArray,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  materialId: number,
+): number {
+  if (materialId === 0) return 0;
+  let same = 0;
+  let total = 0;
+  for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+    for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+      if (offsetX === 0 && offsetY === 0) continue;
+      const targetX = x + offsetX;
+      const targetY = y + offsetY;
+      if (targetX < 0 || targetY < 0 || targetX >= width || targetY >= height) {
+        continue;
+      }
+      total += 1;
+      if (materialIds[(targetY * width + targetX) * 4]! === materialId) {
+        same += 1;
+      }
+    }
+  }
+  return total > 0 ? same / total : 0;
+}
+
 export function createMapTerrainComposite(
   mapDocument: MapDocument,
 ): MapTerrainComposite | null {
   const scene = mapDocument.scene;
   if (!scene || typeof globalThis.document === "undefined") return null;
+  // 画布背景是空白区域的唯一来源。没有地表事实时不创建不透明底图，
+  // 否则新增一笔陆地会意外把其余所有区域渲染成海水。
+  if (!mapSceneHasLandSurface(scene) && !mapSceneHasWaterSurface(scene)) {
+    return null;
+  }
   const visibleLayers = scene.layers.filter(
     (layer) => layer.visible && layer.opacity > 0,
   );
   const visibleRegions: readonly VisibleSceneRegion[] = visibleLayers.flatMap(
     (layer) =>
-      layer.regions.map((region) => ({
-        region,
-        opacity: layer.opacity * region.opacity,
-      })),
+      layer.regions
+        .filter((region) =>
+          mapSceneLayerSupportsRegion(layer.kind, region.kind),
+        )
+        .map((region) => ({
+          region,
+          opacity: layer.opacity * region.opacity,
+        })),
   );
   const landRegions = visibleRegions.filter(
     ({ region }) => region.kind === "land",
@@ -373,6 +645,14 @@ export function createMapTerrainComposite(
       isMapTerrainMaskStroke(layer.kind, stroke),
     ),
   );
+  const waterStrokes = visibleLayers.flatMap((layer) =>
+    layer.strokes
+      .filter((stroke) => isMapTerrainWaterStroke(layer.kind, stroke))
+      .map((stroke) => ({
+        stroke,
+        opacity: layer.opacity * stroke.opacity,
+      })),
+  );
   const materialStrokes = visibleLayers.flatMap((layer) =>
     layer.strokes
       .filter((stroke) => isMapTerrainMaterialStroke(layer.kind, stroke))
@@ -381,12 +661,13 @@ export function createMapTerrainComposite(
         opacity: layer.opacity * stroke.opacity,
       })),
   );
-  const hasRaisedLand = terrainStrokes.some(
-    (stroke) => stroke.tool === "paint",
-  );
-  if (landRegions.length === 0 && !hasRaisedLand) return null;
   const waterRegions = visibleRegions.filter(
     ({ region }) => region.kind === "water",
+  );
+  const materialRegions = visibleRegions.filter(
+    ({ region }) =>
+      Boolean(region.terrainMaterial) &&
+      mapTerrainMaterialSurface(region.terrainMaterial!) === region.kind,
   );
   const worldWidth = mapDocument.canvas.width;
   const worldHeight = mapDocument.canvas.height;
@@ -400,6 +681,7 @@ export function createMapTerrainComposite(
   const colorCanvas = createSurface(width, height);
   const waterCanvas = createSurface(width, height);
   const landTextureCanvas = createSurface(width, height);
+  const landTextureKindCanvas = createSurface(width, height);
   const waterTextureCanvas = createSurface(width, height);
   const materialCanvas = createSurface(width, height);
   const materialIdCanvas = createSurface(width, height);
@@ -411,6 +693,9 @@ export function createMapTerrainComposite(
     willReadFrequently: true,
   });
   const landTextureContext = landTextureCanvas.getContext("2d", {
+    willReadFrequently: true,
+  });
+  const landTextureKindContext = landTextureKindCanvas.getContext("2d", {
     willReadFrequently: true,
   });
   const waterTextureContext = waterTextureCanvas.getContext("2d", {
@@ -427,6 +712,7 @@ export function createMapTerrainComposite(
     !colorContext ||
     !waterContext ||
     !landTextureContext ||
+    !landTextureKindContext ||
     !waterTextureContext ||
     !materialContext ||
     !materialIdContext
@@ -435,43 +721,73 @@ export function createMapTerrainComposite(
 
   maskContext.fillStyle = "#ffffff";
   landRegions.forEach(({ region, opacity }) => {
-    drawClosedRegion(maskContext, region.points, scale);
+    drawClosedRegion(maskContext, region.points, scale, region.curve);
     maskContext.fill();
-    drawClosedRegion(colorContext, region.points, scale);
+    colorContext.save();
+    colorContext.globalAlpha = opacity;
+    drawClosedRegion(colorContext, region.points, scale, region.curve);
     colorContext.fillStyle = region.fill || scene.terrainStyle.landColor;
     colorContext.fill();
-    if (region.texture === "paper-land") {
-      landTextureContext.save();
-      landTextureContext.globalAlpha = opacity;
-      landTextureContext.fillStyle = "#ffffff";
-      drawClosedRegion(landTextureContext, region.points, scale);
-      landTextureContext.fill();
-      landTextureContext.restore();
-    }
+    colorContext.restore();
+    landTextureContext.save();
+    landTextureContext.globalAlpha = opacity;
+    landTextureContext.fillStyle = "#ffffff";
+    drawClosedRegion(landTextureContext, region.points, scale, region.curve);
+    landTextureContext.fill();
+    landTextureContext.restore();
+    landTextureKindContext.save();
+    landTextureKindContext.fillStyle = `rgb(${REGION_TEXTURE_CODES[region.texture]} 0 0)`;
+    drawClosedRegion(landTextureKindContext, region.points, scale, region.curve);
+    landTextureKindContext.fill();
+    landTextureKindContext.restore();
   });
   waterRegions.forEach(({ region, opacity }) => {
-    drawClosedRegion(maskContext, region.points, scale);
+    drawClosedRegion(maskContext, region.points, scale, region.curve);
     maskContext.save();
     maskContext.globalCompositeOperation = "destination-out";
     maskContext.fill();
     maskContext.restore();
-    drawClosedRegion(colorContext, region.points, scale);
     colorContext.save();
+    drawClosedRegion(colorContext, region.points, scale, region.curve);
     colorContext.globalCompositeOperation = "destination-out";
     colorContext.fill();
     colorContext.restore();
-    drawClosedRegion(waterContext, region.points, scale);
+    colorContext.save();
+    colorContext.globalAlpha = opacity;
+    drawClosedRegion(waterContext, region.points, scale, region.curve);
     waterContext.fillStyle =
       region.fill || scene.terrainStyle.shallowWaterColor;
     waterContext.fill();
+    waterContext.restore();
     if (region.texture === "water-ripple") {
       waterTextureContext.save();
       waterTextureContext.globalAlpha = opacity;
       waterTextureContext.fillStyle = "#ffffff";
-      drawClosedRegion(waterTextureContext, region.points, scale);
+      drawClosedRegion(waterTextureContext, region.points, scale, region.curve);
       waterTextureContext.fill();
       waterTextureContext.restore();
     }
+  });
+  materialRegions.forEach(({ region, opacity }) => {
+    const material = region.terrainMaterial;
+    if (!material) return;
+    const preset = getMapTerrainMaterialPreset(material);
+    materialContext.save();
+    materialContext.globalAlpha = opacity * 0.9;
+    materialContext.fillStyle = preset.color;
+    drawClosedRegion(materialContext, region.points, scale, region.curve);
+    materialContext.fill();
+    materialContext.restore();
+
+    materialIdContext.save();
+    materialIdContext.globalAlpha = 1;
+    const materialIndex = MAP_TERRAIN_MATERIAL_PRESETS.findIndex(
+      (candidate) => candidate.id === material,
+    );
+    materialIdContext.fillStyle = `rgb(${materialIndex + 1}, 0, 0)`;
+    drawClosedRegion(materialIdContext, region.points, scale, region.curve);
+    materialIdContext.fill();
+    materialIdContext.restore();
   });
   terrainStrokes.forEach((stroke) => {
     const operation =
@@ -489,6 +805,23 @@ export function createMapTerrainComposite(
     colorContext.strokeStyle = stroke.color || scene.terrainStyle.landColor;
     drawTerrainStroke(colorContext, stroke, scale);
     colorContext.restore();
+  });
+  waterStrokes.forEach(({ stroke, opacity }) => {
+    waterContext.save();
+    waterContext.globalAlpha = opacity;
+    waterContext.fillStyle =
+      stroke.color || scene.terrainStyle.shallowWaterColor;
+    waterContext.strokeStyle =
+      stroke.color || scene.terrainStyle.shallowWaterColor;
+    drawTerrainStroke(waterContext, stroke, scale);
+    waterContext.restore();
+
+    waterTextureContext.save();
+    waterTextureContext.globalAlpha = opacity;
+    waterTextureContext.fillStyle = "#ffffff";
+    waterTextureContext.strokeStyle = "#ffffff";
+    drawTerrainStroke(waterTextureContext, stroke, scale);
+    waterTextureContext.restore();
   });
   materialStrokes.forEach(({ stroke, opacity }) => {
     const material = stroke.terrainMaterial;
@@ -528,6 +861,12 @@ export function createMapTerrainComposite(
     width,
     height,
   ).data;
+  const landTextureKindData = landTextureKindContext.getImageData(
+    0,
+    0,
+    width,
+    height,
+  ).data;
   const waterTextureData = waterTextureContext.getImageData(
     0,
     0,
@@ -547,8 +886,10 @@ export function createMapTerrainComposite(
     height,
   ).data;
   const land = new Uint8Array(width * height);
+  const water = new Uint8Array(width * height);
   for (let index = 0; index < land.length; index += 1) {
     land[index] = maskData[index * 4 + 3]! > 48 ? 1 : 0;
+    water[index] = lakeColorData[index * 4 + 3]! > 0 ? 1 : 0;
   }
   const { shelf, beach } = buildEdgeFields(
     land,
@@ -577,9 +918,9 @@ export function createMapTerrainComposite(
       const index = y * width + x;
       const worldX = x / scale;
       const worldY = y / scale;
-      const noise = (pixelNoise(x, y) - 0.5) * 22 * style.textureStrength;
-      const largeGrain =
-        Math.sin(x * 0.035 + Math.sin(y * 0.021)) * 4 * style.textureStrength;
+      const surfaceTexture = sampleMapTerrainSurfaceTexture(worldX, worldY);
+      const noise = surfaceTexture.grain * style.textureStrength;
+      const largeGrain = surfaceTexture.largeGrain * style.textureStrength;
       if (land[index] !== 0) {
         const offset = index * 4;
         const regionTint: Rgb =
@@ -590,22 +931,41 @@ export function createMapTerrainComposite(
                 landColorData[offset + 2]!,
               ]
             : fallbackLand;
-        let source = mixColor(fallbackLand, regionTint, 0.45);
+        const regionColorOpacity = landColorData[offset + 3]! / 255;
+        let source = mixColor(
+          fallbackLand,
+          regionTint,
+          mapTerrainRegionColorMix(regionColorOpacity, 0.45),
+        );
         const rawMaterialOpacity = materialColorData[offset + 3]! / 255;
+        const materialId = materialIdData[offset]!;
+        const materialPreset = MAP_TERRAIN_MATERIAL_PRESETS[materialId - 1];
+        const materialProfile = materialPreset
+          ? getMapTerrainMaterialVisualProfile(materialPreset.id)
+          : null;
+        const continuity = materialBoundaryContinuity(
+          materialIdData,
+          width,
+          height,
+          x,
+          y,
+          materialId,
+        );
+        const edgeBlend = materialProfile
+          ? materialProfile.edgeBlend +
+            continuity * (1 - materialProfile.edgeBlend)
+          : 1;
         const materialOpacity = Math.max(
           0,
           Math.min(
             1,
-            rawMaterialOpacity +
-              (pixelNoise(Math.floor(x / 3), Math.floor(y / 3)) - 0.5) *
-                0.12 *
-                (1 - rawMaterialOpacity),
+            (rawMaterialOpacity +
+              surfaceTexture.materialOpacityJitter * (1 - rawMaterialOpacity)) *
+              edgeBlend,
           ),
         );
         if (materialOpacity > 0) {
-          const materialPreset =
-            MAP_TERRAIN_MATERIAL_PRESETS[materialIdData[offset]! - 1];
-          if (materialPreset) {
+          if (materialPreset?.surface === "land") {
             const materialBase: Rgb = [
               materialColorData[offset]!,
               materialColorData[offset + 1]!,
@@ -617,23 +977,28 @@ export function createMapTerrainComposite(
             );
             const texture = sampleMapTerrainMaterialTexture(
               materialPreset.id,
-              x,
-              y,
+              worldX,
+              worldY,
             );
+            const materialTextureStrength = 0.72 + style.textureStrength * 0.42;
             const materialColor = mixColor(
               materialBase,
               materialDetail,
-              texture.detail,
+              texture.detail *
+                materialProfile!.detailStrength *
+                materialTextureStrength,
             );
             const texturedMaterial = mixColor(
               materialColor,
               [246, 239, 214],
-              texture.highlight,
+              texture.highlight *
+                materialProfile!.highlightStrength *
+                materialTextureStrength,
             );
             source = mixColor(
               source,
               texturedMaterial,
-              Math.min(0.88, materialOpacity * 0.86),
+              Math.min(0.94, materialOpacity * 0.92),
             );
           }
         }
@@ -669,7 +1034,7 @@ export function createMapTerrainComposite(
         );
         const textured = applyRegionTexture(
           color,
-          "paper-land",
+          regionTextureFromCode(landTextureKindData[offset]!),
           worldX,
           worldY,
           landTextureData[offset + 3]! / 255,
@@ -691,24 +1056,92 @@ export function createMapTerrainComposite(
         continue;
       }
       const offset = index * 4;
+      const lakeColorOpacity = lakeColorData[offset + 3]! / 255;
       const lakeColor: Rgb | null =
-        lakeColorData[offset + 3]! > 0
+        lakeColorOpacity > 0
           ? [
               lakeColorData[offset]!,
               lakeColorData[offset + 1]!,
               lakeColorData[offset + 2]!,
             ]
           : null;
+      // 非陆地且非显式水域的像素保持透明，让画布背景而不是地表合成器
+      // 决定空白处是海洋、星空、羊皮纸还是其它背景。
+      if (!lakeColor) continue;
       const shelfAmount = shelf[index]!;
-      const color = lakeColor
-        ? mixColor(shallowWater, lakeColor, 0.56)
-        : shelfAmount > 0
+      const waterBase =
+        shelfAmount > 0
           ? mixColor(deepWater, shallowWater, 0.28 + shelfAmount * 0.72)
           : deepWater;
-      const wave =
-        Math.sin(x * 0.16 + y * 0.045) > 0.94 && Math.sin(y * 0.11) > 0.2
-          ? 6 * style.textureStrength
-          : 0;
+      let color = mixColor(
+        waterBase,
+        lakeColor,
+        mapTerrainRegionColorMix(lakeColorOpacity, 0.72),
+      );
+      const rawMaterialOpacity = materialColorData[offset + 3]! / 255;
+      const materialId = materialIdData[offset]!;
+      const materialPreset = MAP_TERRAIN_MATERIAL_PRESETS[materialId - 1];
+      if (materialPreset?.surface === "water" && rawMaterialOpacity > 0) {
+        const materialProfile = getMapTerrainMaterialVisualProfile(
+          materialPreset.id,
+        );
+        const continuity = materialBoundaryContinuity(
+          materialIdData,
+          width,
+          height,
+          x,
+          y,
+          materialId,
+        );
+        const edgeBlend =
+          materialProfile.edgeBlend +
+          continuity * (1 - materialProfile.edgeBlend);
+        const materialOpacity = Math.max(
+          0,
+          Math.min(
+            1,
+            (rawMaterialOpacity +
+              surfaceTexture.materialOpacityJitter *
+                (1 - rawMaterialOpacity)) *
+              edgeBlend,
+          ),
+        );
+        const materialBase: Rgb = [
+          materialColorData[offset]!,
+          materialColorData[offset + 1]!,
+          materialColorData[offset + 2]!,
+        ];
+        const materialDetail = hexToRgb(
+          materialPreset.detailColor,
+          materialBase,
+        );
+        const texture = sampleMapTerrainMaterialTexture(
+          materialPreset.id,
+          worldX,
+          worldY,
+        );
+        const materialTextureStrength = 0.72 + style.textureStrength * 0.42;
+        const materialColor = mixColor(
+          materialBase,
+          materialDetail,
+          texture.detail *
+            materialProfile.detailStrength *
+            materialTextureStrength,
+        );
+        const texturedMaterial = mixColor(
+          materialColor,
+          [225, 244, 242],
+          texture.highlight *
+            materialProfile.highlightStrength *
+            materialTextureStrength,
+        );
+        color = mixColor(
+          color,
+          texturedMaterial,
+          Math.min(0.94, materialOpacity * 0.92),
+        );
+      }
+      const wave = surfaceTexture.waterWave * style.textureStrength;
       const textured = applyRegionTexture(
         color,
         "water-ripple",
@@ -717,7 +1150,13 @@ export function createMapTerrainComposite(
         waterTextureData[offset + 3]! / 255,
         style.textureStrength,
       );
-      setPixel(image.data, index, textured, noise * 0.52 + wave, 246);
+      setPixel(
+        image.data,
+        index,
+        textured,
+        noise * 0.52 + wave,
+        246 * lakeColorOpacity,
+      );
     }
   }
   outputContext.putImageData(image, 0, 0);
@@ -726,6 +1165,7 @@ export function createMapTerrainComposite(
     worldWidth,
     worldHeight,
     land,
+    water,
     rasterWidth: width,
     rasterHeight: height,
   };

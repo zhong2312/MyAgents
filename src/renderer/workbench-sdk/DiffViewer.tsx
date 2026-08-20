@@ -33,6 +33,13 @@ export interface DiffViewerProps {
   readonly modified: string;
   readonly language?: string;
   readonly renderSideBySide?: boolean;
+  readonly fontSize?: number;
+  readonly lineHeight?: number;
+  /**
+   * 提供时仅允许编辑右侧候选内容，并在每次修改后回传最新文本。
+   * 左侧基线始终只读，避免比较基准被误改。
+   */
+  readonly onModifiedChange?: (value: string) => void;
   readonly className?: string;
 }
 
@@ -72,10 +79,16 @@ export default function DiffViewer({
   modified,
   language = "plaintext",
   renderSideBySide = true,
+  fontSize = 14,
+  lineHeight = 0,
+  onModifiedChange,
   className = "",
 }: DiffViewerProps) {
   const editorRef = useRef<MonacoDiffEditor | null>(null);
   const modelsRef = useRef<ReturnType<MonacoDiffEditor["getModel"]>>(null);
+  const onModifiedChangeRef = useRef(onModifiedChange);
+  const modifiedContentListenerRef = useRef<monaco.IDisposable | null>(null);
+  const isModifiedEditable = Boolean(onModifiedChange);
   const [isDark, setIsDark] = useState(() =>
     typeof document === "undefined"
       ? false
@@ -92,21 +105,43 @@ export default function DiffViewer({
   const beforeMount = useCallback((monacoInstance: Monaco) => {
     defineThemes(monacoInstance);
   }, []);
+  useEffect(() => {
+    onModifiedChangeRef.current = onModifiedChange;
+  }, [onModifiedChange]);
+
   const handleMount = useCallback((editor: MonacoDiffEditor) => {
     editorRef.current = editor;
     modelsRef.current = editor.getModel();
+    modifiedContentListenerRef.current?.dispose();
+    const modifiedEditor = editor.getModifiedEditor();
+    modifiedContentListenerRef.current = modifiedEditor.onDidChangeModelContent(
+      () => onModifiedChangeRef.current?.(modifiedEditor.getValue()),
+    );
   }, []);
 
   useEffect(() => {
-    editorRef.current?.updateOptions({
+    const editor = editorRef.current;
+    if (!editor) return;
+    const options = {
       renderSideBySide,
       useInlineViewWhenSpaceIsLimited: false,
-    });
-  }, [renderSideBySide]);
+      fontSize,
+      lineHeight,
+      readOnly: !isModifiedEditable,
+      originalEditable: false,
+    };
+    editor.updateOptions(options);
+    // DiffEditor 的顶层选项在部分 Monaco 版本不会立即刷新子编辑器。
+    // 显式更新两侧，确保正文候选的阅读字号和行距即时生效。
+    editor.getOriginalEditor().updateOptions({ fontSize, lineHeight });
+    editor.getModifiedEditor().updateOptions({ fontSize, lineHeight });
+  }, [fontSize, isModifiedEditable, lineHeight, renderSideBySide]);
 
   useEffect(
     () => () => {
       editorRef.current = null;
+      modifiedContentListenerRef.current?.dispose();
+      modifiedContentListenerRef.current = null;
       const models = modelsRef.current;
       modelsRef.current = null;
       if (!models) return;
@@ -141,7 +176,7 @@ export default function DiffViewer({
           </div>
         }
         options={{
-          readOnly: true,
+          readOnly: !isModifiedEditable,
           originalEditable: false,
           renderSideBySide,
           useInlineViewWhenSpaceIsLimited: false,
@@ -153,6 +188,8 @@ export default function DiffViewer({
           lineNumbersMinChars: 3,
           renderOverviewRuler: false,
           overviewRulerLanes: 0,
+          fontSize,
+          lineHeight,
           scrollBeyondLastLine: false,
           wordWrap: "on",
           diffWordWrap: "on",

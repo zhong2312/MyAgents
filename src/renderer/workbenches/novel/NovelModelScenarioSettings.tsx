@@ -2,10 +2,8 @@ import {
   Bot,
   Check,
   CircleSlash2,
-  Columns2,
   Cpu,
   Loader2,
-  MessagesSquare,
   RefreshCw,
   RotateCcw,
   Sparkles,
@@ -32,10 +30,6 @@ import {
   createNovelModelSceneSettingsRepository,
   type LoadedModelSceneSettings,
 } from "./modelSceneSettingsRepository";
-import {
-  createManuscriptAiSettingsRepository,
-  type LoadedManuscriptAiSettings,
-} from "./manuscriptAiSettingsRepository";
 
 interface NovelModelScenarioSettingsProps {
   readonly storage: WorkbenchStorage;
@@ -234,10 +228,6 @@ export default function NovelModelScenarioSettings({
     () => createNovelModelSceneSettingsRepository(storage),
     [storage],
   );
-  const manuscriptAiRepository = useMemo(
-    () => createManuscriptAiSettingsRepository(storage),
-    [storage],
-  );
   const availableProviders = useWorkbenchAvailableProviders();
   const [loaded, setLoaded] = useState<LoadedModelSceneSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -246,47 +236,18 @@ export default function NovelModelScenarioSettings({
     null,
   );
   const [isSavingDefault, setIsSavingDefault] = useState(false);
-  const [manuscriptAiSettings, setManuscriptAiSettings] =
-    useState<LoadedManuscriptAiSettings | null>(null);
-  const [isSavingManuscriptPresentation, setIsSavingManuscriptPresentation] =
-    useState(false);
-
   const load = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [next, nextManuscriptAiSettings] = await Promise.all([
-        repository.load(),
-        manuscriptAiRepository.load(),
-      ]);
+      const next = await repository.load();
       setLoaded(next);
-      setManuscriptAiSettings(nextManuscriptAiSettings);
       setError(null);
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
       setIsLoading(false);
     }
-  }, [manuscriptAiRepository, repository]);
-
-  const saveManuscriptPresentation = useCallback(
-    async (presentation: "compact-review" | "full-dialog") => {
-      if (!manuscriptAiSettings) return;
-      setIsSavingManuscriptPresentation(true);
-      try {
-        const next = await manuscriptAiRepository.save(
-          manuscriptAiSettings,
-          { schemaVersion: 1, presentation },
-        );
-        setManuscriptAiSettings(next);
-        setError(null);
-      } catch (cause) {
-        setError(errorMessage(cause));
-      } finally {
-        setIsSavingManuscriptPresentation(false);
-      }
-    },
-    [manuscriptAiRepository, manuscriptAiSettings],
-  );
+  }, [repository]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -399,79 +360,6 @@ export default function NovelModelScenarioSettings({
           {error}
         </div>
       )}
-
-      <section className="mt-4 grid gap-4 border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-5 py-4 lg:grid-cols-[minmax(13rem,1fr)_minmax(26rem,1.7fr)] lg:items-center">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[var(--accent-cool-subtle)] text-[var(--accent-cool)]">
-              <Columns2 className="h-3.5 w-3.5" />
-            </span>
-            <h2 className="text-sm font-semibold text-[var(--ink)]">
-              正文 AI 交互
-            </h2>
-          </div>
-          <p className="mt-2 text-xs text-[var(--ink-muted)]">
-            决定完整生成、续写、润色和扩写的执行窗口
-          </p>
-        </div>
-        <div
-          role="radiogroup"
-          aria-label="正文 AI 交互方式"
-          className="grid grid-cols-2 gap-1 border border-[var(--line)] bg-[var(--paper-inset)] p-1"
-        >
-          {([
-            {
-              value: "compact-review" as const,
-              label: "简易协作窗",
-              detail: "执行过程与差异审阅并排",
-              icon: Columns2,
-            },
-            {
-              value: "full-dialog" as const,
-              label: "完整 Agent 对话",
-              detail: "使用标准对话窗口",
-              icon: MessagesSquare,
-            },
-          ]).map((option) => {
-            const Icon = option.icon;
-            const active =
-              manuscriptAiSettings?.settings.presentation === option.value;
-            return (
-              <button
-                key={option.value}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                disabled={
-                  isLoading ||
-                  !manuscriptAiSettings ||
-                  isSavingManuscriptPresentation
-                }
-                onClick={() => void saveManuscriptPresentation(option.value)}
-                className={`flex min-h-14 items-center gap-3 px-3 text-left transition-colors disabled:opacity-50 ${
-                  active
-                    ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm"
-                    : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
-                }`}
-              >
-                {isSavingManuscriptPresentation && active ? (
-                  <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-                ) : (
-                  <Icon className="h-4 w-4 shrink-0" />
-                )}
-                <span className="min-w-0">
-                  <strong className="block text-xs font-semibold">
-                    {option.label}
-                  </strong>
-                  <small className="mt-0.5 block text-xs text-[var(--ink-subtle)]">
-                    {option.detail}
-                  </small>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </section>
 
       <section className="mt-4 grid gap-4 border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-5 py-4 lg:grid-cols-[minmax(13rem,1fr)_minmax(12rem,0.78fr)_minmax(14rem,0.92fr)_2rem] lg:items-center">
         <div className="min-w-0">

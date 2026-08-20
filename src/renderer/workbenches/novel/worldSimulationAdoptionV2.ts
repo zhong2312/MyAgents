@@ -15,6 +15,7 @@ import {
 import {
   parseCharacterRecordFile,
   serializeCharacterLibraryFile,
+  type CharacterRelation,
   type CharacterRecord,
 } from "./modules/characters";
 import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
@@ -36,6 +37,22 @@ import {
   type TimelineLibrary,
   type TimelineStateChange,
 } from "./timelineLibrarySchema";
+import {
+  ITEM_LIBRARY_PATHS,
+  createNovelItemLibraryRepository,
+  type LoadedItem,
+} from "./itemLibraryRepository";
+import {
+  parseItemRecord,
+  serializeItemLibraryFile,
+  type ItemRecord,
+  type ItemStatus,
+} from "./itemLibrarySchema";
+import { createNovelLocationLibraryRepository } from "./modules/locations/data-access/locationLibraryRepository";
+import {
+  locationRecordFileSchema,
+  type LocationLibraryIndex,
+} from "./modules/locations/entities/locationLibrarySchema";
 import { getActiveSimulationBranch } from "./worldSimulationEngineV2";
 import type {
   SimulationAdoptionAuthority,
@@ -170,7 +187,11 @@ function commandDescription(command: WorldDomainCommand): string {
     case "character.arrive":
       return `${command.characterId} 抵达${command.toRegionId}`;
     case "character.cultivate":
-      return `${command.characterId} 修行进度变化 ${command.progressDelta}，阶段 ${command.nextLevelId ?? "保持不变"}`;
+      return `${command.characterId} 修行进度变化 ${command.progressDelta}，阶段 ${command.nextLevelId ?? "保持不变"}${command.resourceCosts ? `，消耗资源 ${JSON.stringify(command.resourceCosts)}` : ""}`;
+    case "character.resource":
+      return `${command.characterId} 的资源 ${command.resourceId} 变化 ${command.delta}`;
+    case "character.relation":
+      return `${command.characterId} 对 ${command.targetCharacterId} 的好感 ${command.affinityDelta}、信任 ${command.trustDelta}，状态 ${command.status ?? "保持"}`;
     case "character.life":
       return `${command.characterId} 生命状态改为“${command.status}”`;
     case "character.knowledge":
@@ -179,14 +200,18 @@ function commandDescription(command: WorldDomainCommand): string {
       return `${command.factionId} 采取“${command.strategy}”`;
     case "faction.metric":
       return `${command.factionId} 的 ${command.metric} 变化 ${command.delta}`;
+    case "faction.relation":
+      return `${command.factionId} 对 ${command.targetFactionId} 的外交态度变化 ${command.sentimentDelta}，状态 ${command.status ?? "保持"}`;
     case "region.metric":
       return `${command.regionId} 的 ${command.metric} 变化 ${command.delta}`;
     case "region.control":
       return `${command.regionId} 的控制势力改为 ${command.factionIds.join("、") || "无"}`;
     case "item.transfer":
       return `${command.itemId} 的归属改为 ${command.ownerId ?? "无主"}`;
+    case "world.emergent":
+      return `${command.entity.name}作为${command.entity.kind === "character" ? "新生人物" : command.entity.kind === "faction" ? "新兴势力" : "新生制度"}进入推演分支（需另行审阅后才能写入正式资料）`;
     case "effect.schedule":
-      return `影响沿${command.effect.connectionId}传播，预计于${command.effect.dueSortKey}抵达${command.effect.targetRegionId}`;
+      return `影响沿${command.effect.connectionId}传播（第 ${command.effect.hop ?? 1} 跳），预计于${command.effect.dueSortKey}抵达${command.effect.targetRegionId}`;
     case "effect.consume":
       return `传播影响${command.effectId}抵达并生效`;
   }
@@ -223,6 +248,9 @@ function stateChangeForCommand(
   }
   if (command.type === "item.transfer") {
     return { ...base, entityType: "item", entityId: command.itemId };
+  }
+  if (command.type === "region.metric" || command.type === "region.control") {
+    return { ...base, entityType: "location", entityId: command.regionId };
   }
   return null;
 }
@@ -281,76 +309,194 @@ function assertTransferTarget(
   return command.ownerId;
 }
 
+type CharacterRelationTone = CharacterRelation["tone"];
+
+interface AdoptedCharacterRelationState {
+  affinity: number;
+  trust: number;
+  status: "active" | "strained" | "ended";
+}
+
+interface AdoptedFactionRelationState {
+  sentiment: number;
+  status: "active" | "suspended" | "ended";
+}
+
+function clampRelationValue(value: number): number {
+  return Math.max(-100, Math.min(100, value));
+}
+
+function relationToneFromValues(
+  affinity: number,
+  trust: number,
+): CharacterRelationTone {
+  const score = (affinity + trust) / 2;
+  if (score >= 20) return "positive";
+  if (score <= -20) return "negative";
+  return "neutral";
+}
+
+function factionRelationKindFromSentiment(
+  sentiment: number,
+): "alliance" | "hostile" | "competitive" {
+  if (sentiment >= 20) return "alliance";
+  if (sentiment <= -20) return "hostile";
+  return "competitive";
+}
+
+function relationEventNote(event: SimulationEvent, text: string): string {
+  return `[${event.time.displayText}世界推演采纳] ${text}`;
+}
+
 function updateCharacters(
   sourceCharacters: readonly CharacterRecord[],
   run: WorldSimulationRun,
   events: readonly SimulationEvent[],
 ): CharacterRecord[] {
   let characters = [...sourceCharacters];
-  events.forEach((event) =>
-    event.commands.forEach((command) => {
-      if (isCharacterDomainCommand(command)) {
-        const characterId = command.characterId;
-        characters = characters.map((character) => {
-          if (character.id !== characterId) return character;
-          if (command.type === "character.intent")
-            return { ...character, status: command.status };
-          if (command.type === "character.life")
-            return { ...character, status: command.status };
-          if (command.type === "character.cultivate" && command.nextLevelId) {
-            const level = run.baseline.cultivationSystems
-              .flatMap((system) => system.levels)
-              .find((candidate) => candidate.id === command.nextLevelId);
-            return {
-              ...character,
-              currentRealm: level?.name ?? character.currentRealm,
-              cultivationProfile: {
-                ...character.cultivationProfile,
-                levelId: command.nextLevelId,
-              },
-            };
-          }
-          return character;
-        });
-        return;
-      }
-      if (command.type !== "item.transfer") return;
-      const targetId = assertTransferTarget(
-        command,
-        new Set(characters.map((character) => character.id)),
-        "character",
-      );
-      const name = targetId ? itemName(run, command.itemId) : null;
-      characters = characters.map((character) => {
-        const inventory = character.inventory.filter(
-          (entry) => entry.itemId !== command.itemId,
-        );
-        if (character.id !== targetId || !name) {
-          return inventory.length === character.inventory.length
-            ? character
-            : { ...character, inventory };
-        }
-        const existingIds = new Set(inventory.map((entry) => entry.id));
-        return {
-          ...character,
-          inventory: [
-            ...inventory,
-            {
-              id: uniqueChildId(
-                existingIds,
-                `simulation-item-${command.itemId}`,
-              ),
-              itemId: command.itemId,
-              name,
-              quantity: 1,
-              unit: "件",
-              description: `[${event.time.displayText} 推演采纳] ${command.status ?? "获得该物品"}`,
-            },
-          ],
-        };
+  const relationStates = new Map<string, AdoptedCharacterRelationState>();
+  run.baseline.characters.forEach((character) => {
+    character.relations.forEach((relation) => {
+      const value =
+        relation.tone === "positive"
+          ? 50
+          : relation.tone === "negative"
+            ? -50
+            : 0;
+      relationStates.set(`${character.id}:${relation.targetId}`, {
+        affinity: value,
+        trust: value,
+        status: "active",
       });
-    }),
-  );
+    });
+  });
+  events
+    .slice()
+    .sort((left, right) => left.sequence - right.sequence)
+    .forEach((event) =>
+      event.commands.forEach((command) => {
+        if (isCharacterDomainCommand(command)) {
+          const characterId = command.characterId;
+          characters = characters.map((character) => {
+            if (character.id !== characterId) return character;
+            if (command.type === "character.intent")
+              return { ...character, status: command.status };
+            if (command.type === "character.life")
+              return { ...character, status: command.status };
+            if (command.type === "character.resource")
+              return {
+                ...character,
+                cultivationProfile: {
+                  ...character.cultivationProfile,
+                  resourceBalances: {
+                    ...character.cultivationProfile.resourceBalances,
+                    [command.resourceId]: {
+                      ...(character.cultivationProfile.resourceBalances[
+                        command.resourceId
+                      ] ?? { quantity: 0, quality: "推演采纳" }),
+                      quantity:
+                        (character.cultivationProfile.resourceBalances[
+                          command.resourceId
+                        ]?.quantity ?? 0) + command.delta,
+                    },
+                  },
+                },
+              };
+            if (command.type === "character.cultivate" && command.nextLevelId) {
+              const level = run.baseline.cultivationSystems
+                .flatMap((system) => system.levels)
+                .find((candidate) => candidate.id === command.nextLevelId);
+              return {
+                ...character,
+                currentRealm: level?.name ?? character.currentRealm,
+                cultivationProfile: {
+                  ...character.cultivationProfile,
+                  levelId: command.nextLevelId,
+                },
+              };
+            }
+            if (command.type === "character.relation") {
+              const key = `${command.characterId}:${command.targetCharacterId}`;
+              const current = relationStates.get(key) ?? {
+                affinity: 0,
+                trust: 0,
+                status: "active" as const,
+              };
+              const next = {
+                affinity: clampRelationValue(
+                  current.affinity + command.affinityDelta,
+                ),
+                trust: clampRelationValue(current.trust + command.trustDelta),
+                status: command.status ?? current.status,
+              } satisfies AdoptedCharacterRelationState;
+              relationStates.set(key, next);
+              const existing = character.relations.find(
+                (relation) => relation.targetId === command.targetCharacterId,
+              );
+              const nextRelation: CharacterRelation = {
+                targetId: command.targetCharacterId,
+                type: existing?.type ?? "世界推演关系",
+                tone: relationToneFromValues(next.affinity, next.trust),
+                summary: appendSimulationNote(
+                  existing?.summary ?? "",
+                  relationEventNote(
+                    event,
+                    `与${command.targetCharacterId}的好感 ${next.affinity}、信任 ${next.trust}，关系状态 ${next.status}`,
+                  ),
+                ),
+              };
+              return {
+                ...character,
+                relations: existing
+                  ? character.relations.map((relation) =>
+                      relation.targetId === command.targetCharacterId
+                        ? nextRelation
+                        : relation,
+                    )
+                  : [...character.relations, nextRelation],
+              };
+            }
+            return character;
+          });
+          return;
+        }
+        if (command.type !== "item.transfer") return;
+        const targetId = assertTransferTarget(
+          command,
+          new Set(characters.map((character) => character.id)),
+          "character",
+        );
+        const name = targetId ? itemName(run, command.itemId) : null;
+        characters = characters.map((character) => {
+          const inventory = character.inventory.filter(
+            (entry) => entry.itemId !== command.itemId,
+          );
+          if (character.id !== targetId || !name) {
+            return inventory.length === character.inventory.length
+              ? character
+              : { ...character, inventory };
+          }
+          const existingIds = new Set(inventory.map((entry) => entry.id));
+          return {
+            ...character,
+            inventory: [
+              ...inventory,
+              {
+                id: uniqueChildId(
+                  existingIds,
+                  `simulation-item-${command.itemId}`,
+                ),
+                itemId: command.itemId,
+                name,
+                quantity: 1,
+                unit: "件",
+                description: `[${event.time.displayText} 推演采纳] ${command.status ?? "获得该物品"}`,
+              },
+            ],
+          };
+        });
+      }),
+    );
   return characters;
 }
 
@@ -368,126 +514,322 @@ function updateFactions(
   events: readonly SimulationEvent[],
 ): FactionLibrary {
   let factions = [...library.factions];
+  const relationStates = new Map<string, AdoptedFactionRelationState>();
+  run.baseline.factions.forEach((faction) => {
+    faction.relations.forEach((relation) => {
+      relationStates.set(`${faction.id}:${relation.targetFactionId}`, {
+        sentiment:
+          relation.kind === "hostile" || relation.kind === "competitive"
+            ? -50
+            : relation.kind === "alliance" || relation.kind === "subordinate"
+              ? 50
+              : 0,
+        status:
+          relation.status === "ended"
+            ? "ended"
+            : relation.status === "suspended"
+              ? "suspended"
+              : "active",
+      });
+    });
+  });
+  events
+    .slice()
+    .sort((left, right) => left.sequence - right.sequence)
+    .forEach((event) =>
+      event.commands.forEach((command) => {
+        if (isFactionDomainCommand(command)) {
+          factions = factions.map((faction) => {
+            if (faction.id !== command.factionId) return faction;
+            const updatedAt = new Date().toISOString();
+            if (command.type === "faction.strategy") {
+              const status =
+                command.lifecycle === "dissolved"
+                  ? "dissolved"
+                  : command.lifecycle === "declining" ||
+                      command.lifecycle === "fragmented"
+                    ? "declining"
+                    : faction.status;
+              return {
+                ...faction,
+                status,
+                summary: appendSimulationNote(
+                  faction.summary,
+                  `[${event.time.displayText}推演采纳] 当前策略：${command.strategy}`,
+                ),
+                updatedAt,
+              };
+            }
+            if (command.type === "faction.metric") {
+              const direction =
+                command.delta > 0
+                  ? `上升 ${command.delta}`
+                  : command.delta < 0
+                    ? `下降 ${Math.abs(command.delta)}`
+                    : "保持不变";
+              return {
+                ...faction,
+                state: {
+                  ...faction.state,
+                  [command.metric]: appendSimulationNote(
+                    faction.state[command.metric],
+                    `[${event.time.displayText}推演采纳] ${FACTION_METRIC_LABELS[command.metric]}${direction}`,
+                  ),
+                },
+                updatedAt,
+              };
+            }
+            if (command.type === "faction.relation") {
+              const key = `${command.factionId}:${command.targetFactionId}`;
+              const current = relationStates.get(key) ?? {
+                sentiment: 0,
+                status: "active" as const,
+              };
+              const next = {
+                sentiment: clampRelationValue(
+                  current.sentiment + command.sentimentDelta,
+                ),
+                status: command.status ?? current.status,
+              } satisfies AdoptedFactionRelationState;
+              relationStates.set(key, next);
+              const existing = faction.relations.find(
+                (relation) =>
+                  relation.targetFactionId === command.targetFactionId,
+              );
+              const description = appendSimulationNote(
+                existing?.description ?? "",
+                relationEventNote(
+                  event,
+                  `与${command.targetFactionId}的外交态度 ${next.sentiment}，关系状态 ${next.status}`,
+                ),
+              );
+              const nextRelation = existing
+                ? {
+                    ...existing,
+                    status: next.status,
+                    endedAt:
+                      next.status === "ended"
+                        ? event.time.displayText
+                        : existing.endedAt,
+                    description,
+                  }
+                : {
+                    id: uniqueChildId(
+                      new Set(faction.relations.map((relation) => relation.id)),
+                      `simulation-relation-${command.targetFactionId}`,
+                    ),
+                    targetFactionId: command.targetFactionId,
+                    kind: factionRelationKindFromSentiment(next.sentiment),
+                    direction: "outbound" as const,
+                    status: next.status,
+                    startedAt: event.time.displayText,
+                    endedAt:
+                      next.status === "ended" ? event.time.displayText : "",
+                    description,
+                  };
+              return {
+                ...faction,
+                relations: existing
+                  ? faction.relations.map((relation) =>
+                      relation.targetFactionId === command.targetFactionId
+                        ? nextRelation
+                        : relation,
+                    )
+                  : [...faction.relations, nextRelation],
+                updatedAt,
+              };
+            }
+            return faction;
+          });
+          return;
+        }
+        if (command.type !== "item.transfer") return;
+        const targetId = assertTransferTarget(
+          command,
+          new Set(factions.map((faction) => faction.id)),
+          "faction",
+        );
+        const name = targetId ? itemName(run, command.itemId) : null;
+        factions = factions.map((faction) => {
+          const existing = faction.resources.find(
+            (resource) => resource.itemId === command.itemId,
+          );
+          if (faction.id !== targetId || !name) {
+            if (!existing) return faction;
+            return {
+              ...faction,
+              resources: faction.resources.filter(
+                (resource) => resource.itemId !== command.itemId,
+              ),
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          const history = {
+            id: `simulation-history-${event.id}`,
+            timeLabel: event.time.displayText,
+            summary: `世界推演采纳：${command.status ?? "获得该物品"}`,
+          };
+          if (existing) {
+            return {
+              ...faction,
+              resources: faction.resources.map((resource) =>
+                resource.itemId !== command.itemId
+                  ? resource
+                  : {
+                      ...resource,
+                      name,
+                      control: "持有",
+                      controlLevel: "owned",
+                      worldNodeId: command.locationId,
+                      history: [...resource.history, history],
+                    },
+              ),
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          const existingIds = new Set(
+            faction.resources.map((resource) => resource.id),
+          );
+          return {
+            ...faction,
+            resources: [
+              ...faction.resources,
+              {
+                id: uniqueChildId(
+                  existingIds,
+                  `simulation-item-${command.itemId}`,
+                ),
+                name,
+                kind: "物品",
+                control: "持有",
+                controlLevel: "owned",
+                worldNodeId: command.locationId,
+                itemId: command.itemId,
+                competingFactionIds: [],
+                history: [history],
+                description: `[${event.time.displayText} 推演采纳] ${command.status ?? "获得该物品"}`,
+              },
+            ],
+            updatedAt: new Date().toISOString(),
+          };
+        });
+      }),
+    );
+  return { ...library, factions };
+}
+
+function itemStatusFromSimulation(
+  status: string | undefined,
+  current: ItemStatus,
+): ItemStatus {
+  const normalized = status?.trim().toLocaleLowerCase() ?? "";
+  if (
+    normalized === "draft" ||
+    normalized === "active" ||
+    normalized === "inactive" ||
+    normalized === "lost" ||
+    normalized === "destroyed" ||
+    normalized === "archived"
+  ) {
+    return normalized;
+  }
+  if (/遗失|丢失|失落/u.test(normalized)) return "lost";
+  if (/损毁|毁灭|破碎/u.test(normalized)) return "destroyed";
+  if (/封存|失效|停用/u.test(normalized)) return "inactive";
+  if (/归档/u.test(normalized)) return "archived";
+  if (/获得|持有|传承|转移|使用/u.test(normalized)) return "active";
+  return current;
+}
+
+function updateItems(
+  sourceItems: readonly {
+    readonly entry: { readonly id: string; readonly recordPath: string };
+    readonly loaded: LoadedItem;
+  }[],
+  run: WorldSimulationRun,
+  events: readonly SimulationEvent[],
+): Map<string, ItemRecord> {
+  const knownItemIds = new Set(run.baseline.items.map((item) => item.id));
+  const records = new Map(
+    sourceItems.map(({ entry, loaded }) => [entry.id, loaded.record]),
+  );
   events.forEach((event) =>
     event.commands.forEach((command) => {
-      if (isFactionDomainCommand(command)) {
-        factions = factions.map((faction) => {
-          if (faction.id !== command.factionId) return faction;
-          const updatedAt = new Date().toISOString();
-          if (command.type === "faction.strategy") {
-            const status =
-              command.lifecycle === "dissolved"
-                ? "dissolved"
-                : command.lifecycle === "declining" ||
-                    command.lifecycle === "fragmented"
-                  ? "declining"
-                  : faction.status;
-            return {
-              ...faction,
-              status,
-              summary: appendSimulationNote(
-                faction.summary,
-                `[${event.time.displayText}推演采纳] 当前策略：${command.strategy}`,
-              ),
-              updatedAt,
-            };
-          }
-          if (command.type === "faction.metric") {
-            const direction =
-              command.delta > 0
-                ? `上升 ${command.delta}`
-                : command.delta < 0
-                  ? `下降 ${Math.abs(command.delta)}`
-                  : "保持不变";
-            return {
-              ...faction,
-              state: {
-                ...faction.state,
-                [command.metric]: appendSimulationNote(
-                  faction.state[command.metric],
-                  `[${event.time.displayText}推演采纳] ${FACTION_METRIC_LABELS[command.metric]}${direction}`,
-                ),
-              },
-              updatedAt,
-            };
-          }
-          return faction;
-        });
-        return;
-      }
       if (command.type !== "item.transfer") return;
-      const targetId = assertTransferTarget(
-        command,
-        new Set(factions.map((faction) => faction.id)),
-        "faction",
-      );
-      const name = targetId ? itemName(run, command.itemId) : null;
-      factions = factions.map((faction) => {
-        const existing = faction.resources.find(
-          (resource) => resource.itemId === command.itemId,
-        );
-        if (faction.id !== targetId || !name) {
-          if (!existing) return faction;
-          return {
-            ...faction,
-            resources: faction.resources.filter(
-              (resource) => resource.itemId !== command.itemId,
-            ),
-            updatedAt: new Date().toISOString(),
-          };
-        }
-        const history = {
-          id: `simulation-history-${event.id}`,
-          timeLabel: event.time.displayText,
-          summary: `世界推演采纳：${command.status ?? "获得该物品"}`,
-        };
-        if (existing) {
-          return {
-            ...faction,
-            resources: faction.resources.map((resource) =>
-              resource.itemId !== command.itemId
-                ? resource
-                : {
-                    ...resource,
-                    name,
-                    control: "持有",
-                    controlLevel: "owned",
-                    worldNodeId: command.locationId,
-                    history: [...resource.history, history],
-                  },
-            ),
-            updatedAt: new Date().toISOString(),
-          };
-        }
-        const existingIds = new Set(
-          faction.resources.map((resource) => resource.id),
-        );
-        return {
-          ...faction,
-          resources: [
-            ...faction.resources,
-            {
-              id: uniqueChildId(
-                existingIds,
-                `simulation-item-${command.itemId}`,
-              ),
-              name,
-              kind: "物品",
-              control: "持有",
-              controlLevel: "owned",
-              worldNodeId: command.locationId,
-              itemId: command.itemId,
-              competingFactionIds: [],
-              history: [history],
-              description: `[${event.time.displayText} 推演采纳] ${command.status ?? "获得该物品"}`,
-            },
-          ],
-          updatedAt: new Date().toISOString(),
-        };
-      });
+      if (!knownItemIds.has(command.itemId)) {
+        throw new Error(`推演引用了基线中不存在的物品：${command.itemId}`);
+      }
+      const record = records.get(command.itemId);
+      if (!record) {
+        throw new Error(`正式物品记录不存在：${command.itemId}`);
+      }
+      const status = itemStatusFromSimulation(command.status, record.status);
+      if (status !== record.status)
+        records.set(command.itemId, { ...record, status });
     }),
   );
-  return { ...library, factions };
+  return records;
+}
+
+const REGION_METRIC_LABELS = {
+  pressure: "压力",
+  stability: "稳定度",
+  economy: "经济",
+  population: "人口",
+  cultivation: "修炼环境",
+  ecology: "生态",
+} as const;
+
+function updateLocations(
+  library: LocationLibraryIndex,
+  run: WorldSimulationRun,
+  events: readonly SimulationEvent[],
+): LocationLibraryIndex {
+  let locations = [...library.locations];
+  events.forEach((event) =>
+    event.commands.forEach((command) => {
+      if (command.type === "region.metric") {
+        const direction =
+          command.delta > 0
+            ? `上升 ${command.delta}`
+            : command.delta < 0
+              ? `下降 ${Math.abs(command.delta)}`
+              : "保持不变";
+        const note = `[${event.time.displayText}世界推演采纳] ${REGION_METRIC_LABELS[command.metric]}${direction}`;
+        locations = locations.map((location) =>
+          location.nodeId === command.regionId
+            ? {
+                ...location,
+                appearanceNote: appendSimulationNote(
+                  location.appearanceNote,
+                  note,
+                ),
+              }
+            : location,
+        );
+        return;
+      }
+      if (command.type !== "region.control") return;
+      const factionNames = command.factionIds.map(
+        (factionId) =>
+          run.baseline.factions.find((faction) => faction.id === factionId)
+            ?.name ?? factionId,
+      );
+      const note = `[${event.time.displayText}世界推演采纳] 控制势力：${factionNames.join("、") || "无"}`;
+      locations = locations.map((location) =>
+        location.nodeId === command.regionId
+          ? {
+              ...location,
+              appearanceNote: appendSimulationNote(
+                location.appearanceNote,
+                note,
+              ),
+            }
+          : location,
+      );
+    }),
+  );
+  return { ...library, locations };
 }
 
 function timelineEventWorldSortKey(event: TimelineEvent): bigint {
@@ -546,13 +888,16 @@ function createTimelineEvents(
   const characterIds = new Set(run.baseline.characters.map((item) => item.id));
   const factionIds = new Set(run.baseline.factions.map((item) => item.id));
   const itemIds = new Set(run.baseline.items.map((item) => item.id));
+  const locationIds = new Set(run.baseline.regions.map((item) => item.id));
   const usedIds = new Set(library.events.map((event) => event.id));
+  const existingTimelineIds = new Set(library.events.map((event) => event.id));
   const startOrder =
     library.events.reduce(
       (maximum, event) => Math.max(maximum, event.sortOrder),
       -1,
     ) + 1;
-  const created: TimelineEvent[] = events.map((event, index) => {
+  const timelineIds = new Map<string, string>();
+  events.forEach((event) => {
     let id = `sim-${run.id}-${event.sequence}`;
     let suffix = 1;
     while (usedIds.has(id)) {
@@ -560,6 +905,10 @@ function createTimelineEvents(
       suffix += 1;
     }
     usedIds.add(id);
+    timelineIds.set(event.id, id);
+  });
+  const created: TimelineEvent[] = events.map((event, index) => {
+    const id = timelineIds.get(event.id)!;
     const stateChanges = event.commands.flatMap((command, commandIndex) => {
       const change = stateChangeForCommand(event, command, commandIndex);
       if (!change) return [];
@@ -568,7 +917,9 @@ function createTimelineEvents(
           ? characterIds
           : change.entityType === "faction"
             ? factionIds
-            : itemIds;
+            : change.entityType === "item"
+              ? itemIds
+              : locationIds;
       return existing.has(change.entityId) ? [change] : [];
     });
     const evidence = event.evidence
@@ -613,11 +964,21 @@ function createTimelineEvents(
         .filter(Boolean)
         .join("\n\n"),
       characterIds: uniqueExisting(event.characterIds, characterIds),
-      locationIds: [],
+      locationIds: uniqueExisting(event.regionIds, locationIds),
       chapterIds: [],
       factionIds: uniqueExisting(event.factionIds, factionIds),
       itemIds: uniqueExisting(event.itemIds, itemIds),
-      causeEventIds: [],
+      causeEventIds: event.causeEventIds
+        .map(
+          (causeEventId) =>
+            timelineIds.get(causeEventId) ??
+            (existingTimelineIds.has(causeEventId) ? causeEventId : null),
+        )
+        .filter((causeEventId): causeEventId is string => Boolean(causeEventId))
+        .filter(
+          (causeEventId, causeIndex, values) =>
+            values.indexOf(causeEventId) === causeIndex,
+        ),
       stateChanges,
       foreshadowings: [],
       tags: ["世界推演", authorityLabel(authority)],
@@ -681,15 +1042,25 @@ export async function createWorldSimulationAdoptionProposal(
   const characterRepository = createNovelCharacterLibraryRepository(storage);
   const factionRepository = createNovelFactionLibraryRepository(storage);
   const timelineRepository = createNovelTimelineLibraryRepository(storage);
-  const [characters, factions, timeline] = await Promise.all([
+  const itemRepository = createNovelItemLibraryRepository(storage);
+  const locationRepository = createNovelLocationLibraryRepository(storage);
+  const [characters, factions, timeline, items, locations] = await Promise.all([
     characterRepository.load(),
     factionRepository.load(),
     timelineRepository.load(),
+    itemRepository.load(),
+    locationRepository.load(),
   ]);
   const loadedCharacters = await Promise.all(
     characters.index.characters.map((entry) =>
       characterRepository.loadCharacter(entry),
     ),
+  );
+  const loadedItems = await Promise.all(
+    items.index.items.map(async (entry) => ({
+      entry,
+      loaded: await itemRepository.loadItem(entry),
+    })),
   );
   const sourceCharacters = loadedCharacters.map((loaded) => loaded.record);
   const now = new Date().toISOString();
@@ -703,6 +1074,16 @@ export async function createWorldSimulationAdoptionProposal(
     authority === "actual"
       ? updateFactions(factions.library, run, events)
       : factions.library;
+  const nextItems =
+    authority === "actual"
+      ? updateItems(loadedItems, run, events)
+      : new Map(
+          loadedItems.map(({ entry, loaded }) => [entry.id, loaded.record]),
+        );
+  const nextLocations =
+    authority === "actual"
+      ? updateLocations(locations.index, run, events)
+      : locations.index;
   const nextTimeline = createTimelineEvents(
     timeline.library,
     run,
@@ -728,18 +1109,52 @@ export async function createWorldSimulationAdoptionProposal(
       proposalChange(
         `change-character-${character.id}`,
         entry.recordPath,
-        `同步角色“${character.name}”的生命、状态、修行阶段与物品持有候选`,
+        `同步角色“${character.name}”的生命、状态、修行阶段、关系与物品持有候选`,
         current.content,
         content,
       ),
     ];
   });
+  const itemChanges = loadedItems.flatMap(({ entry, loaded }) => {
+    const next = nextItems.get(entry.id);
+    if (!next || JSON.stringify(next) === JSON.stringify(loaded.record))
+      return [];
+    return [
+      proposalChange(
+        `change-item-${entry.id}`,
+        entry.recordPath,
+        `同步物品“${next.name}”的状态候选`,
+        loaded.recordContent,
+        serializeItemLibraryFile(next),
+      ),
+    ];
+  });
+  const locationChanges = nextLocations.locations.flatMap((location) => {
+    const targetPath = `world/locations/records/${location.id}.json`;
+    const beforeContent = locations.files.get(targetPath);
+    if (beforeContent === undefined) {
+      throw new Error(`地点记录未进入目录快照：${targetPath}`);
+    }
+    const afterContent = serialize(location);
+    if (afterContent === beforeContent) return [];
+    return [
+      proposalChange(
+        `change-location-${location.id}`,
+        targetPath,
+        `同步地点“${location.name}”的世界推演外观记录`,
+        beforeContent,
+        afterContent,
+      ),
+    ];
+  });
   const changes = [
     ...characterChanges,
+    ...itemChanges,
+    ...locationChanges,
     proposalChange(
       "change-factions",
       FACTION_LIBRARY_PATH,
-      "同步势力策略、生命周期、状态摘要与物品资源候选",
+      "同步势力策略、生命周期、外交关系、状态摘要与物品资源候选",
       serializeFactionLibrary(factions.library),
       serializeFactionLibrary(nextFactions),
     ),
@@ -811,6 +1226,20 @@ async function currentContent(
   storage: WorkbenchStorage,
   targetPath: string,
 ): Promise<string | null> {
+  if (targetPath.startsWith("world/locations/records/")) {
+    const repository = createNovelLocationLibraryRepository(storage);
+    const library = await repository.load();
+    return library.files.get(targetPath) ?? null;
+  }
+  if (targetPath.startsWith(`${ITEM_LIBRARY_PATHS.records}/`)) {
+    const repository = createNovelItemLibraryRepository(storage);
+    const library = await repository.load();
+    const entry = library.index.items.find(
+      (candidate) => candidate.recordPath === targetPath,
+    );
+    if (!entry) return null;
+    return (await repository.loadItem(entry)).recordContent;
+  }
   if (targetPath === TIMELINE_LIBRARY_PATH) {
     const [info] = await storage.stat([TIMELINE_LIBRARY_PATH]);
     if (!info?.exists) return null;
@@ -825,6 +1254,15 @@ async function currentContent(
   }
   const [info] = await storage.stat([targetPath]);
   return info?.exists ? (await storage.readText(targetPath)).content : null;
+}
+
+async function requiredCurrentContent(
+  storage: WorkbenchStorage,
+  targetPath: string,
+): Promise<string> {
+  const content = await currentContent(storage, targetPath);
+  if (content === null) throw new Error(`正式目标文件不存在：${targetPath}`);
+  return content;
 }
 
 async function materialize(
@@ -872,7 +1310,7 @@ async function writeValidatedTarget(
   targetPath: string,
   expectedContent: string,
   content: string,
-): Promise<void> {
+): Promise<string> {
   if (targetPath.startsWith(`${CHARACTER_LIBRARY_PATHS.records}/`)) {
     const repository = createNovelCharacterLibraryRepository(storage);
     const current = await repository.load();
@@ -886,7 +1324,7 @@ async function writeValidatedTarget(
     const { schemaVersion: _schemaVersion, ...record } =
       parseCharacterRecordFile(targetPath, content);
     await repository.saveCharacter(current, record);
-    return;
+    return requiredCurrentContent(storage, targetPath);
   }
   if (targetPath === FACTION_LIBRARY_PATH) {
     const repository = createNovelFactionLibraryRepository(storage);
@@ -894,7 +1332,7 @@ async function writeValidatedTarget(
     if (serializeFactionLibrary(current.library) !== expectedContent)
       throw new Error("势力库在审阅期间发生变化，请重新加载提案");
     await repository.save(current, parseFactionLibrary(content));
-    return;
+    return requiredCurrentContent(storage, targetPath);
   }
   if (targetPath === TIMELINE_LIBRARY_PATH) {
     const repository = createNovelTimelineLibraryRepository(storage);
@@ -902,7 +1340,44 @@ async function writeValidatedTarget(
     if (serializeTimelineLibrary(current.library) !== expectedContent)
       throw new Error("时间线在审阅期间发生变化，请重新加载提案");
     await repository.save(current, parseTimelineLibrary(content));
-    return;
+    return requiredCurrentContent(storage, targetPath);
+  }
+  if (targetPath.startsWith("world/locations/records/")) {
+    const repository = createNovelLocationLibraryRepository(storage);
+    const current = await repository.load();
+    if (current.files.get(targetPath) !== expectedContent)
+      throw new Error("地点库在审阅期间发生变化，请重新加载提案");
+    const location = locationRecordFileSchema.parse(JSON.parse(content));
+    if (!targetPath.endsWith(`/${location.id}.json`))
+      throw new Error("地点记录路径与稳定 id 不一致");
+    const locations = current.index.locations.map((candidate) =>
+      candidate.id === location.id ? location : candidate,
+    );
+    if (locations.every((candidate) => candidate.id !== location.id))
+      throw new Error("地点记录在审阅期间已被删除，请重新加载提案");
+    await repository.save(current, {
+      ...current.index,
+      locations,
+    });
+    return requiredCurrentContent(storage, targetPath);
+  }
+  if (targetPath.startsWith(`${ITEM_LIBRARY_PATHS.records}/`)) {
+    const repository = createNovelItemLibraryRepository(storage);
+    const library = await repository.load();
+    const entry = library.index.items.find(
+      (candidate) => candidate.recordPath === targetPath,
+    );
+    if (!entry) throw new Error("物品记录在审阅期间已被删除，请重新加载提案");
+    const item = await repository.loadItem(entry);
+    if (item.recordContent !== expectedContent)
+      throw new Error("物品库在审阅期间发生变化，请重新加载提案");
+    await repository.saveItem(
+      library,
+      item,
+      parseItemRecord(targetPath, content),
+      item.pageContent,
+    );
+    return requiredCurrentContent(storage, targetPath);
   }
   throw new Error(`推演提案不允许写入目标：${targetPath}`);
 }
@@ -912,6 +1387,42 @@ async function rollbackTarget(
   change: AdoptionChange,
   appliedContent: string,
 ): Promise<void> {
+  if (change.targetPath.startsWith("world/locations/records/")) {
+    const repository = createNovelLocationLibraryRepository(storage);
+    const current = await repository.load();
+    if (current.files.get(change.targetPath) !== appliedContent) {
+      throw new Error("地点库在回滚前发生变化，不能覆盖当前事实源");
+    }
+    const location = locationRecordFileSchema.parse(
+      JSON.parse(change.beforeContent),
+    );
+    await repository.save(current, {
+      ...current.index,
+      locations: current.index.locations.map((candidate) =>
+        candidate.id === location.id ? location : candidate,
+      ),
+    });
+    return;
+  }
+  if (change.targetPath.startsWith(`${ITEM_LIBRARY_PATHS.records}/`)) {
+    const repository = createNovelItemLibraryRepository(storage);
+    const library = await repository.load();
+    const entry = library.index.items.find(
+      (candidate) => candidate.recordPath === change.targetPath,
+    );
+    if (!entry) throw new Error("物品记录在回滚前已被删除，不能覆盖当前事实源");
+    const item = await repository.loadItem(entry);
+    if (item.recordContent !== appliedContent) {
+      throw new Error("物品库在回滚前发生变化，不能覆盖当前事实源");
+    }
+    await repository.saveItem(
+      library,
+      item,
+      parseItemRecord(change.targetPath, change.beforeContent),
+      item.pageContent,
+    );
+    return;
+  }
   if (change.targetPath === TIMELINE_LIBRARY_PATH) {
     const repository = createNovelTimelineLibraryRepository(storage);
     const current = await repository.load();
@@ -939,12 +1450,19 @@ function updateStatuses(
   manifest: AdoptionManifest,
   ids: ReadonlySet<string>,
   status: AdoptionChange["status"],
+  appliedContents?: ReadonlyMap<string, string>,
 ): AdoptionManifest {
   return {
     ...manifest,
     changes: manifest.changes.map((change) =>
       ids.has(change.id) && change.status === "pending"
-        ? { ...change, status }
+        ? {
+            ...change,
+            status,
+            ...(appliedContents?.has(change.id)
+              ? { afterContent: appliedContents.get(change.id)! }
+              : {}),
+          }
         : change,
     ),
   };
@@ -1010,13 +1528,13 @@ export function createWorldSimulationAdoptionFileProposalRepository(
             throw new Error(
               `${change.targetPath} 与生成基准不一致，请先解决冲突`,
             );
-          await writeValidatedTarget(
+          const appliedContent = await writeValidatedTarget(
             storage,
             change.targetPath,
             change.beforeContent,
             change.afterContent,
           );
-          applied.push({ change, content: change.afterContent });
+          applied.push({ change, content: appliedContent });
         }
         const saved = await writeManifest(
           storage,
@@ -1025,6 +1543,7 @@ export function createWorldSimulationAdoptionFileProposalRepository(
             loaded.value,
             new Set(selected.map((change) => change.id)),
             "applied",
+            new Map(applied.map((item) => [item.change.id, item.content])),
           ),
         );
         return materialize(storage, saved);
@@ -1095,7 +1614,12 @@ export function createWorldSimulationAdoptionFileProposalRepository(
         resolution.strategy === "merge"
           ? resolution.content
           : change.afterContent;
-      await writeValidatedTarget(storage, change.targetPath, current, content);
+      const appliedContent = await writeValidatedTarget(
+        storage,
+        change.targetPath,
+        current,
+        content,
+      );
       try {
         const nextManifest = {
           ...loaded.value,
@@ -1105,7 +1629,7 @@ export function createWorldSimulationAdoptionFileProposalRepository(
                   ...item,
                   status: "applied" as const,
                   beforeContent: current,
-                  afterContent: content,
+                  afterContent: appliedContent,
                 }
               : item,
           ),
@@ -1115,9 +1639,11 @@ export function createWorldSimulationAdoptionFileProposalRepository(
           await writeManifest(storage, loaded, nextManifest),
         );
       } catch (cause) {
-        await storage.writeText(change.targetPath, current, {
-          expectedContent: content,
-        });
+        await rollbackTarget(
+          storage,
+          { ...change, beforeContent: current },
+          appliedContent,
+        );
         throw cause;
       }
     },

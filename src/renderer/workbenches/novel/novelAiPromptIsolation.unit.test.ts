@@ -65,6 +65,24 @@ describe("小说工作台 AI 提示词上下文隔离", () => {
     );
     expect(request.systemPrompt).toContain("novel_inspiration_get_context");
     expect(request.systemPrompt).toContain("idea-1");
+    expect(request.systemPrompt).not.toContain("雨夜相逢");
     expect(request.systemPrompt).not.toContain("当前上下文：");
+  });
+
+  it("灵感诊断使用独立的一次性助手会话", () => {
+    const request = createInspirationAiAgentRequest(
+      {
+        projectTitle: "测试小说",
+        focusId: "idea-1",
+        focusLabel: "雨夜相逢",
+      },
+      "diagnose",
+    );
+
+    expect(request.sceneId).toBe("inspiration.assist");
+    expect(request.conversationKey).toMatch(
+      /^novel\.inspiration\.assist:diagnose:idea-1:/u,
+    );
+    expect(request.historyGroupPath).toEqual(["灵感", "诊断当前灵感"]);
   });
 });

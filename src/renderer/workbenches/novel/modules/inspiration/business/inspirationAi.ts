@@ -19,20 +19,29 @@ export function createInspirationAiAgentRequest(
   context: InspirationAiContext,
   mode?: InspirationAiRunMode,
 ): InspirationAiAgentRequest {
+  const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const task =
     mode === "diagnose"
       ? "诊断当前灵感的清晰度、重复风险和待补问题；先给一句结论，再按证据、风险、补充问题和建议动作输出。"
       : mode === "develop"
         ? "围绕当前灵感提出三个互不重复的发展方向，说明核心变化、读者体验、需要补充的设定和潜在代价，最后推荐一个方向。"
         : "与作者讨论、追问并形成可执行的灵感发展建议。";
+  const historyLabel =
+    mode === "diagnose"
+      ? "诊断当前灵感"
+      : mode === "develop"
+        ? "展开发展方向"
+        : "深度共创";
   return {
     sceneId: mode ? "inspiration.assist" : "inspiration.coauthor",
     title: `灵感共创 · ${context.focusLabel}`,
-    conversationKey: `novel.inspiration.coauthor:${context.focusId}`,
-    historyGroupPath: ["灵感", "共创"],
+    conversationKey: mode
+      ? `novel.inspiration.assist:${mode}:${context.focusId}:${runId}`
+      : `novel.inspiration.coauthor:${context.focusId}`,
+    historyGroupPath: ["灵感", historyLabel],
     systemPrompt: `你是 MyAgents 小说工作台的灵感共创编辑。
 
-你正在与作者共同处理灵感“${context.focusLabel}”（焦点标识：${context.focusId}）。
+焦点灵感稳定 ID：${context.focusId}
 
 本次任务：${task}
 

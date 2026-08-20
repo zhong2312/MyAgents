@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createNovelProjectInitialization } from "./projectInitialization";
+import { WORLD_SIMULATION_SCHEMA_VERSION } from "./worldSimulationV2Schema";
 
 describe("createNovelProjectInitialization", () => {
   it("builds a versioned Markdown and JSON project layout", () => {
@@ -154,14 +155,14 @@ describe("createNovelProjectInitialization", () => {
           (file) => file.path === "simulation/scenarios.json",
         )?.content ?? "{}",
       ).schemaVersion,
-    ).toBe(3);
+    ).toBe(WORLD_SIMULATION_SCHEMA_VERSION);
     expect(
       JSON.parse(
         initialization.files.find(
           (file) => file.path === "simulation/runs/index.json",
         )?.content ?? "{}",
       ).schemaVersion,
-    ).toBe(3);
+    ).toBe(WORLD_SIMULATION_SCHEMA_VERSION);
 
     const metadata = initialization.files.find(
       (file) => file.path === "novel.json",

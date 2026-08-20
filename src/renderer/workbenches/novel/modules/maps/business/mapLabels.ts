@@ -1,4 +1,5 @@
 import { isMapRiverFeature, smoothMapPath } from "./mapHydrography";
+import { isMapFeatureFreeformArea } from "../entities/mapSchema";
 import type { MapFeature, MapScenePoint } from "../entities/mapSchema";
 
 export const MAP_LABEL_FONT_OPTIONS = Object.freeze([
@@ -154,7 +155,7 @@ function defaultStyle(feature: MapFeature): Omit<MapLabelStyle, "fontFamily"> {
       followPath: true,
     };
   }
-  if (feature.kind === "polygon" || feature.kind === "area") {
+  if (isMapFeatureFreeformArea(feature.kind)) {
     return {
       fontId: "atlas-serif",
       fontSize: 22,
@@ -360,11 +361,8 @@ export function getMapLabelLayout(
     );
     return style.followPath ? layout : { ...layout, pathRotation: 0 };
   }
-  if (feature.kind === "polygon") {
+  if (isMapFeatureFreeformArea(feature.kind)) {
     return { anchor: polygonCentroid(points), pathRotation: 0 };
-  }
-  if (feature.kind === "area") {
-    return { anchor: points[0] ?? { x: 0, y: 0 }, pathRotation: 0 };
   }
   return { anchor: points[0] ?? { x: 0, y: 0 }, pathRotation: 0 };
 }

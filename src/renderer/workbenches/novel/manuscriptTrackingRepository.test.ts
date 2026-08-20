@@ -5,12 +5,16 @@ import {
   MANUSCRIPT_TRACKING_LEGACY_PATH,
   manuscriptTrackingBatchPath,
 } from "../../../shared/workbenches/novel/manuscriptTrackingStorage";
-import { NovelMemoryStorage } from "./shared/infrastructure/testStorage";
+import {
+  createEmptyNovelStorage,
+  NovelMemoryStorage,
+} from "./shared/infrastructure/testStorage";
 import type { ManuscriptTrackingBatch } from "./manuscriptTrackingSchema";
 import {
   createManuscriptTrackingRepository,
   hashManuscriptContent,
 } from "./manuscriptTrackingRepository";
+import { createNovelRepository } from "./repository";
 
 const NOW = "2026-08-09T00:00:00.000Z";
 
@@ -171,5 +175,101 @@ describe("ManuscriptTrackingRepository 目录存储", () => {
         proposed.changes[0]!.id,
       ]),
     ).rejects.toThrow("章节正文已经变化，请重新执行连续性分析");
+  });
+
+  it("确认批次时拒绝缺少人物引用的状态变化", async () => {
+    const storage = createEmptyNovelStorage();
+    const novelRepository = createNovelRepository(storage);
+    const project = await novelRepository.load();
+    const chapter = await novelRepository.createChapter(project);
+    const content = "他终于踏入筑基期。";
+    storage.setExternalText(chapter.path, content);
+    const repository = createManuscriptTrackingRepository(storage);
+    let loaded = await repository.load();
+    const proposed: ManuscriptTrackingBatch = {
+      ...batch("tracking-batch-missing-character"),
+      chapterId: chapter.id,
+      chapterContentHash: hashManuscriptContent(content),
+      changes: [
+        {
+          id: "tracking-change-missing-character",
+          domain: "character-state",
+          entityId: null,
+          title: "缺少人物引用",
+          before: null,
+          after: "进入筑基期",
+          evidence: "踏入筑基期",
+          operation: { kind: "character-field", field: "currentRealm" },
+        },
+      ],
+    };
+    loaded = await repository.save(loaded, {
+      ...loaded.ledger,
+      batches: [proposed],
+    });
+
+    await expect(
+      repository.applyBatchSelection(loaded, proposed.id, [
+        proposed.changes[0]!.id,
+      ]),
+    ).rejects.toThrow("缺少关联人物");
+  });
+
+  it("部分采纳时保留未选变化为新的待审阅批次", async () => {
+    const storage = createEmptyNovelStorage();
+    const novelRepository = createNovelRepository(storage);
+    const project = await novelRepository.load();
+    const chapter = await novelRepository.createChapter(project);
+    const content = "雨夜里，主角抵达旧港。";
+    storage.setExternalText(chapter.path, content);
+    const repository = createManuscriptTrackingRepository(storage);
+    let loaded = await repository.load();
+    const proposed: ManuscriptTrackingBatch = {
+      ...batch("tracking-batch-partial"),
+      chapterContentHash: hashManuscriptContent(content),
+      changes: [
+        {
+          id: "tracking-change-first",
+          domain: "continuity",
+          entityId: null,
+          title: "主角抵达旧港",
+          before: null,
+          after: "主角已抵达旧港",
+          evidence: "主角抵达旧港",
+          operation: { kind: "continuity-fact", key: "arrival" },
+        },
+        {
+          id: "tracking-change-second",
+          domain: "continuity",
+          entityId: null,
+          title: "旧港下雨",
+          before: null,
+          after: "旧港正在下雨",
+          evidence: "雨夜",
+          operation: { kind: "continuity-fact", key: "rain" },
+        },
+      ],
+    };
+    loaded = await repository.save(loaded, {
+      ...loaded.ledger,
+      batches: [proposed],
+    });
+
+    const next = await repository.applyBatchSelection(loaded, proposed.id, [
+      "tracking-change-first",
+    ]);
+    const applied = next.ledger.batches.find(
+      (item) => item.status === "applied",
+    );
+    const remaining = next.ledger.batches.find(
+      (item) => item.status === "proposed",
+    );
+    expect(applied?.changes.map((change) => change.id)).toEqual([
+      "tracking-change-first",
+    ]);
+    expect(remaining?.changes.map((change) => change.id)).toEqual([
+      "tracking-change-second",
+    ]);
+    expect(remaining?.chapterId).toBe(chapter.id);
   });
 });

@@ -42,6 +42,8 @@ export interface CreateTrackingBatchInput {
   readonly chapterId: string;
   readonly chapterContentHash: string;
   readonly summary: string;
+  /** 作者已确认的正式时间线事件；null 表示尚未能定位世界时间。 */
+  readonly timeAnchorEventId?: string | null;
   readonly changes: readonly Omit<ManuscriptTrackingChange, "id">[];
 }
 
@@ -287,7 +289,8 @@ export function createManuscriptTrackingRepository(storage: WorkbenchStorage) {
               ...mutation,
               after: {
                 ...after,
-                sortKey: sequence,
+                // 章节重排只改变叙事揭示顺序；世界坐标由正式时间锚点
+                // 决定，不能退化为章节序号。
                 narrativeOrder: sequence,
               },
             };
@@ -415,6 +418,7 @@ export function createManuscriptTrackingRepository(storage: WorkbenchStorage) {
         createdAt: now,
         appliedAt: null,
         revertedAt: null,
+        timeAnchorEventId: input.timeAnchorEventId ?? null,
         changes: input.changes.map((change) => ({
           ...change,
           id: createStableId("tracking-change"),
@@ -477,10 +481,26 @@ export function createManuscriptTrackingRepository(storage: WorkbenchStorage) {
       const selectedChanges = batch.changes.filter((change) =>
         selected.has(change.id),
       );
+      const remainingChanges = batch.changes.filter(
+        (change) => !selected.has(change.id),
+      );
       const mutations = await projection.prepareBatch(batch, selectedChanges, {
         ...chapter,
       });
       const now = new Date().toISOString();
+      const remainingBatch: ManuscriptTrackingBatch | null =
+        remainingChanges.length > 0
+          ? {
+              ...batch,
+              id: createStableId("tracking-batch"),
+              status: "proposed",
+              createdAt: now,
+              appliedAt: null,
+              revertedAt: null,
+              changes: remainingChanges,
+              mutations: [],
+            }
+          : null;
       const nextLedger: ManuscriptTrackingLedger = {
         ...current.ledger,
         baselines: mutations.reduce<Record<string, unknown | null>>(
@@ -492,18 +512,20 @@ export function createManuscriptTrackingRepository(storage: WorkbenchStorage) {
           },
           { ...current.ledger.baselines },
         ),
-        batches: current.ledger.batches.map((item) =>
-          item.id === batchId
-            ? {
-                ...item,
-                status: "applied",
-                appliedAt: now,
-                revertedAt: null,
-                changes: selectedChanges,
-                mutations: [...mutations],
-              }
-            : item,
-        ),
+        batches: current.ledger.batches.flatMap((item) => {
+          if (item.id !== batchId) return [item];
+          const appliedBatch: ManuscriptTrackingBatch = {
+            ...item,
+            status: "applied",
+            appliedAt: now,
+            revertedAt: null,
+            changes: selectedChanges,
+            mutations: [...mutations],
+          };
+          return remainingBatch
+            ? [appliedBatch, remainingBatch]
+            : [appliedBatch];
+        }),
       };
       return transition(current, nextLedger, order, order);
     },

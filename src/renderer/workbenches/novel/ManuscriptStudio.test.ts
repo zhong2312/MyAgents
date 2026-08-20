@@ -12,6 +12,7 @@ import {
   buildBrainstormContextDigest,
   buildBrainstormDesignerBatchPrompt,
   buildBrainstormSynthesisPrompt,
+  buildSimulationCandidateDraft,
   formatBrainstormPlanContent,
   parseBrainstormCompletePlan,
   parseBrainstormCouncilNote,
@@ -20,8 +21,10 @@ import {
   parseBrainstormRoundtable,
   parseNarrativeExtraction,
   parseQualityReview,
+  findUniqueEvidenceRange,
   parseTrackingProposal,
   isQualityReviewCurrent,
+  verifyQualityReviewEvidence,
   buildFullGenerationAgentPrompt,
   buildFullGenerationRecoveryRunRequest,
   buildFullGenerationAgentRunRequest,
@@ -29,7 +32,6 @@ import {
   buildFullGenerationPlanRepairRunRequest,
   buildFullGenerationSuggestionRepairRunRequest,
   buildFullGenerationTextCorrectionRunRequest,
-  buildFullGenerationTextAgentInitialMessage,
   buildFullGenerationTextRunRequest,
   buildWritingWordBudget,
   countCharacters,
@@ -49,6 +51,7 @@ import {
   parseFullGenerationPlans,
   parseFullGenerationSuggestion,
   parseRoomSchemes,
+  parseSimulationCandidateDraft,
   SIMULATION_AI_EXECUTION_PROFILE,
   SIMULATION_AI_TIMEOUT_MS,
   SIMULATION_AI_MAX_TURNS,
@@ -140,6 +143,13 @@ describe("正文 AI 结果契约", () => {
             evidence: "他终于踏入筑基期。",
             operation: { kind: "character-field", field: "currentRealm" },
           },
+          {
+            domain: "character-state",
+            title: "缺少人物引用",
+            after: "进入筑基期",
+            evidence: "他终于踏入筑基期。",
+            operation: { kind: "character-field", field: "currentRealm" },
+          },
         ],
       }),
     );
@@ -222,6 +232,49 @@ describe("正文 AI 结果契约", () => {
         externalChanged: false,
       }),
     ).toBe(false);
+  });
+
+  it("质量审查只保留可以由正文证实的问题，并拒绝全部失真的结果", () => {
+    const review = parseQualityReview(
+      JSON.stringify({
+        score: 76,
+        summary: "需要调整节奏。",
+        issues: [
+          {
+            category: "节奏",
+            severity: "warning",
+            title: "有效问题",
+            evidence: "雨落在旧港。",
+          },
+          {
+            category: "人物",
+            severity: "warning",
+            title: "编造问题",
+            evidence: "不存在的文本",
+          },
+        ],
+      }),
+    );
+
+    expect(verifyQualityReviewEvidence(review, "雨落在旧港。")).toMatchObject({
+      issues: [{ title: "有效问题" }],
+      discardedIssueCount: 1,
+    });
+    expect(() =>
+      verifyQualityReviewEvidence(
+        { ...review, issues: [review.issues[1]!], discardedIssueCount: 0 },
+        "雨落在旧港。",
+      ),
+    ).toThrow("均无法在正文中验证");
+  });
+
+  it("只为唯一出现的证据返回正文定位范围", () => {
+    expect(findUniqueEvidenceRange("甲。乙。", "乙。")).toEqual({
+      start: 2,
+      end: 4,
+    });
+    expect(findUniqueEvidenceRange("甲。甲。", "甲。")).toBeNull();
+    expect(findUniqueEvidenceRange("甲。", "乙。")).toBeNull();
   });
 });
 
@@ -734,6 +787,54 @@ describe("正文脑暴室", () => {
     expect(schemes[0].content).not.toContain('"title"');
   });
 
+  it("将剧情推演编辑稿无损映射回结构化采用数据", () => {
+    const original = {
+      title: "灯下的代价",
+      premise: "主角必须在救人与守住秘密之间选择。",
+      content: "旧友带来一封不能公开的信。",
+      nodes: [
+        {
+          offset: 1,
+          title: "半夜通行",
+          summary: "主角用承诺换取通行。",
+          checkpoint: "承诺可被追责",
+        },
+      ],
+    };
+    const draft = buildSimulationCandidateDraft(original, 3);
+    expect(parseSimulationCandidateDraft(draft, 3)).toEqual(original);
+
+    const edited = draft
+      .replace("灯下的代价", "钟声后的选择")
+      .replace("救人与守住秘密", "救人与公开秘密")
+      .replace("旧友带来一封不能公开的信。", "主角决定公开半封信。")
+      .replace("第 4 章 · 半夜通行", "第 5 章 · 当面对质")
+      .replace("主角用承诺换取通行。", "主角在众人面前交出证据。")
+      .replace("承诺可被追责", "证据来源必须闭合");
+    expect(parseSimulationCandidateDraft(edited, 3)).toEqual({
+      title: "钟声后的选择",
+      premise: "主角必须在救人与公开秘密之间选择。",
+      content: "主角决定公开半封信。",
+      nodes: [
+        {
+          offset: 2,
+          title: "当面对质",
+          summary: "主角在众人面前交出证据。",
+          checkpoint: "证据来源必须闭合",
+        },
+      ],
+    });
+  });
+
+  it("剧情推演编辑稿结构损坏时拒绝静默采用旧方案", () => {
+    expect(() =>
+      parseSimulationCandidateDraft(
+        "# 候选路径：只剩标题\n\n正文已经脱离结构",
+        3,
+      ),
+    ).toThrow("必须保留唯一的“## 前提”段落");
+  });
+
   it("解析正文方案片段并限制每个 Agent 的方案数量", () => {
     const plans = parseFullGenerationPlans(
       JSON.stringify({
@@ -1172,55 +1273,21 @@ describe("正文脑暴室", () => {
     expect(request.systemPrompt).toContain("只输出可直接采用的完整章节正文");
   });
 
-  it("第三步 Agent 明确遵循读取与正文候选提交流程", () => {
-    const message = buildFullGenerationTextAgentInitialMessage({
-      runId: "full-generation-1",
-      chapterId: "chapter-000001",
-      chapterNumber: 1,
+  it("快速模式的一次性正文 Run 不携带上下文工具", () => {
+    const request = buildFullGenerationTextRunRequest({
       chapterTitle: "雨夜入局",
-      chapterPlan: "剧情工程章节计划：雨夜入局",
-      targetWordCount: 3000,
-      readMode: "agent",
-      selectedFragments: [
-        {
-          id: "fragment-1",
-          title: "先谈后战",
-          summary: "以谈判推进冲突",
-          content: "守门人先试探主角，再迫使主角亮出旧案。",
-          source: "Agent 1",
-        },
-      ],
-      writerNotes: "结尾不要揭露幕后主使。",
-      suggestionReason: "保留人物关系的代价。",
-      quickContext: "",
-    });
-
-    expect(message).toContain("小说工作台的正文写作 Agent");
-    expect(message).toContain("novel_manuscript_get_context");
-    expect(message).toContain("novel_manuscript_create_draft");
-    expect(message).toContain("novel_manuscript_submit_draft");
-    expect(message).toContain("2,700～3,300");
-    expect(message).toContain("先谈后战");
-  });
-
-  it("快速模式只携带人工资料快照，不再要求额外读取事实工具", () => {
-    const message = buildFullGenerationTextAgentInitialMessage({
-      runId: "full-generation-quick",
-      chapterId: "chapter-000001",
-      chapterNumber: 1,
-      chapterTitle: "雨夜入局",
-      chapterPlan: "剧情工程章节计划：雨夜入局",
+      prompt: "按人工资料快照生成完整正文",
       targetWordCount: 3000,
       readMode: "quick",
-      selectedFragments: [],
-      writerNotes: "",
-      suggestionReason: "",
-      quickContext: "世界架构：城门子时关闭。",
     });
 
-    expect(message).toContain("作者选择的资料快照");
-    expect(message).toContain("城门子时关闭");
-    expect(message).toContain("不得调用任何 novel_*_get_context 读取工具");
+    expect(request).toMatchObject({
+      sceneId: "manuscript.generate",
+      executionProfile: "extended",
+    });
+    expect(request).not.toHaveProperty("usesNovelContextTools");
+    expect(request).not.toHaveProperty("novelContextToolCallLimit");
+    expect(request.systemPrompt).toContain("禁止调用任何工具");
   });
 
   it("正文超时会识别为可收敛重试错误", () => {

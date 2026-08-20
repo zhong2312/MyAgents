@@ -8,11 +8,10 @@ import {
   useNodesState,
   type Connection,
   type Edge,
-  type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { GitBranch, Loader2, Plus, Save } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { GitBranch, Loader2, Plus, Save, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CustomSelect, type WorkbenchStorage } from "@/workbench-sdk";
 
@@ -21,22 +20,19 @@ import {
   createInspirationBoardRepository,
   type CanvasEdge,
   type CanvasNode,
+  type LoadedBoard,
 } from "../data-access/inspirationBoard";
 import { createNovelInspirationRepository } from "../data-access/inspirationRepository";
+import {
+  toCanvasNode,
+  toInspirationFlowNode,
+  type InspirationFlowNode,
+} from "./inspirationCanvasAdapters";
 
 interface InspirationCanvasProps {
   readonly storage: WorkbenchStorage;
   readonly projectTitle: string;
   readonly isActive: boolean;
-}
-
-function toFlowNode(node: CanvasNode): Node {
-  return {
-    id: node.id,
-    position: { x: node.x, y: node.y },
-    data: { label: node.label },
-    style: { width: node.width, height: node.height },
-  };
 }
 
 function toFlowEdge(edge: CanvasEdge): Edge {
@@ -66,10 +62,14 @@ export default function InspirationCanvas({
     [],
   );
   const [boardId, setBoardId] = useState<string | null>(null);
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [loadedBoard, setLoadedBoard] = useState<LoadedBoard | null>(null);
+  const [nodes, setNodes, onNodesChange] = useNodesState<InspirationFlowNode>(
+    [],
+  );
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const openingBoardIdRef = useRef<string | null>(null);
 
   const loadBoards = useCallback(async () => {
     try {
@@ -89,17 +89,28 @@ export default function InspirationCanvas({
   const openBoard = useCallback(
     async (id: string) => {
       setError(null);
+      openingBoardIdRef.current = id;
       try {
         const loaded = await repository.loadBoard(id);
         setBoardId(id);
-        setNodes(loaded.board.nodes.map(toFlowNode));
+        setLoadedBoard(loaded);
+        setNodes(loaded.board.nodes.map(toInspirationFlowNode));
         setEdges(loaded.board.edges.map(toFlowEdge));
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        if (openingBoardIdRef.current === id) {
+          openingBoardIdRef.current = null;
+        }
       }
     },
     [repository, setEdges, setNodes],
   );
+
+  useEffect(() => {
+    if (boardId || openingBoardIdRef.current || boards.length === 0) return;
+    void openBoard(boards[0]!.id);
+  }, [boardId, boards, openBoard]);
 
   const createBoard = useCallback(async () => {
     setError(null);
@@ -115,21 +126,11 @@ export default function InspirationCanvas({
   }, [loadBoards, openBoard, repository]);
 
   const saveBoard = useCallback(async () => {
-    if (!boardId) return;
+    if (!loadedBoard) return;
     setSaving(true);
     setError(null);
     try {
-      const loaded = await repository.loadBoard(boardId);
-      const next: CanvasNode[] = nodes.map((node) => ({
-        id: node.id,
-        kind: (node.data.kind as CanvasNode["kind"]) ?? "inspiration",
-        entityId: (node.data.entityId as string | null) ?? null,
-        label: String(node.data.label ?? node.id),
-        x: node.position.x,
-        y: node.position.y,
-        width: 220,
-        height: 140,
-      }));
+      const next: CanvasNode[] = nodes.map(toCanvasNode);
       const nextEdges: CanvasEdge[] = edges.map((edge) => ({
         id: edge.id,
         source: edge.source,
@@ -139,17 +140,18 @@ export default function InspirationCanvas({
             ? edge.label
             : "",
       }));
-      await repository.saveBoard(loaded, {
-        ...loaded.board,
+      const saved = await repository.saveBoard(loadedBoard, {
+        ...loadedBoard.board,
         nodes: next,
         edges: nextEdges,
       });
+      setLoadedBoard(saved);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSaving(false);
     }
-  }, [boardId, edges, nodes, repository]);
+  }, [edges, loadedBoard, nodes, repository]);
 
   const addSticky = useCallback(async () => {
     if (!boardId) return;
@@ -180,19 +182,32 @@ export default function InspirationCanvas({
         x: 40 + nodes.length * 20,
         y: 40 + nodes.length * 16,
       });
-      const flowNode: Node = {
-        ...toFlowNode(node),
-        data: {
-          ...toFlowNode(node).data,
-          kind: "inspiration",
-          entityId: inspiration.id,
-        },
-      };
+      const flowNode: InspirationFlowNode = toInspirationFlowNode(node);
       setNodes((current) => [...current, flowNode]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   }, [boardId, inspirationRepository, nodes.length, setNodes]);
+
+  const deleteBoard = useCallback(async () => {
+    if (
+      !loadedBoard ||
+      !window.confirm(`确认删除画布“${loadedBoard.board.name}”？`)
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await repository.deleteBoard(loadedBoard.board.id);
+      setBoardId(null);
+      setLoadedBoard(null);
+      setNodes([]);
+      setEdges([]);
+      await loadBoards();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, [loadBoards, loadedBoard, repository, setEdges, setNodes]);
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -248,7 +263,7 @@ export default function InspirationCanvas({
         >
           <Plus className="h-3.5 w-3.5" /> 新建画布
         </button>
-        {boardId && (
+        {loadedBoard && (
           <div className="ml-auto flex items-center gap-2">
             <button
               type="button"
@@ -278,6 +293,15 @@ export default function InspirationCanvas({
               )}
               保存
             </button>
+            <button
+              type="button"
+              onClick={() => void deleteBoard()}
+              title="删除当前画布"
+              className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--error)] px-2.5 text-sm text-[var(--error)] hover:bg-[var(--error-bg)]"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              删除画布
+            </button>
           </div>
         )}
       </div>
@@ -293,7 +317,7 @@ export default function InspirationCanvas({
             <p>选择或新建一个画布开始推演</p>
           </div>
         ) : (
-          <ReactFlow
+          <ReactFlow<InspirationFlowNode, Edge>
             nodes={nodes}
             edges={edges}
             onNodesChange={onNodesChange}

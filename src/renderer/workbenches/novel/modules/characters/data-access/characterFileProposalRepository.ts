@@ -23,6 +23,10 @@ function json(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function targetId(operation: CharacterProposalOperation): string | null {
   const value =
     operation.action === "update" ? operation.targetId : operation.value.id;
@@ -177,7 +181,9 @@ export function createCharacterFileProposalRepository(
         (change) => selected.has(change.id) && change.conflict,
       );
       if (conflicted) {
-        throw new Error(`正式内容已变化，不能直接应用：${conflicted.targetPath}`);
+        throw new Error(
+          `正式内容已变化，不能直接应用：${conflicted.targetPath}`,
+        );
       }
       await domain.apply(proposalId, changeIds);
       return materialize(proposalId);
@@ -189,8 +195,8 @@ export function createCharacterFileProposalRepository(
     async delete(proposalId, changeIds) {
       const proposal = await load(proposalId);
       const selected = new Set(changeIds);
-      const selectedOperations = proposal.manifest.operations.filter((operation) =>
-        selected.has(operation.candidateId),
+      const selectedOperations = proposal.manifest.operations.filter(
+        (operation) => selected.has(operation.candidateId),
       );
       if (
         selectedOperations.length !== selected.size ||
@@ -252,22 +258,36 @@ export function createCharacterFileProposalRepository(
         action: currentValue ? "update" : operation.action,
         targetId:
           currentValue && operation.action === "create"
-            ? targetId(operation) ?? operation.candidateId
+            ? (targetId(operation) ?? operation.candidateId)
             : operation.targetId,
         baseValue: currentValue ?? operation.baseValue,
         value,
       };
-      await storage.writeText(
+      const resolvedManifestContent = serializeCharacterProposalManifest({
+        ...loaded.manifest,
+        operations: loaded.manifest.operations.map((item) =>
+          item.candidateId === changeId ? resolvedOperation : item,
+        ),
+      });
+      const resolvedManifest = await storage.writeText(
         loaded.path,
-        serializeCharacterProposalManifest({
-          ...loaded.manifest,
-          operations: loaded.manifest.operations.map((item) =>
-            item.candidateId === changeId ? resolvedOperation : item,
-          ),
-        }),
+        resolvedManifestContent,
         { expectedContent: loaded.content },
       );
-      await domain.apply(proposalId, [changeId]);
+      try {
+        await domain.apply(proposalId, [changeId]);
+      } catch (error) {
+        try {
+          await storage.writeText(loaded.path, loaded.content, {
+            expectedContent: resolvedManifest.content,
+          });
+        } catch (rollbackError) {
+          throw new Error(
+            `角色提案冲突解决失败，且无法恢复提案清单：${errorMessage(error)}；${errorMessage(rollbackError)}`,
+          );
+        }
+        throw error;
+      }
       return materialize(proposalId);
     },
   };

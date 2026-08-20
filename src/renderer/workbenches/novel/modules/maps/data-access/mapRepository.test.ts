@@ -6,7 +6,9 @@ import {
 } from "./mapRepository";
 import {
   createEmptyMapArtwork,
+  createEmptyMapDocument,
   createEmptyMapScene,
+  parseMapDocument,
   type MapDocument,
 } from "../entities/mapSchema";
 import { addMapSceneStroke, createMapSceneStroke } from "../business/mapScene";
@@ -54,6 +56,56 @@ function mapDocument(): MapDocument {
 }
 
 describe("createNovelMapRepository", () => {
+  it("新旧自由圈定区域共用闭合几何契约", () => {
+    const document = createEmptyMapDocument({
+      id: "map-area",
+      name: "区域测试",
+      projectionType: "continent",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const area = {
+      id: "feature-area",
+      kind: "area" as const,
+      name: "北境",
+      entityRef: null,
+      layerId: "layer-main",
+      points: [
+        { x: 10, y: 10 },
+        { x: 120, y: 10 },
+        { x: 70, y: 90 },
+      ],
+      timeFrom: null,
+      timeTo: null,
+      props: {},
+      description: "",
+    };
+
+    expect(
+      parseMapDocument(
+        "world/maps/records/map-area.json",
+        JSON.stringify({ ...document, features: [area] }),
+      ).features[0]?.kind,
+    ).toBe("area");
+    expect(() =>
+      parseMapDocument(
+        "world/maps/records/map-area.json",
+        JSON.stringify({
+          ...document,
+          features: [{ ...area, points: area.points.slice(0, 2) }],
+        }),
+      ),
+    ).toThrow("自由圈定区域至少需要三个坐标点");
+    expect(
+      parseMapDocument(
+        "world/maps/records/map-area.json",
+        JSON.stringify({
+          ...document,
+          features: [{ ...area, kind: "polygon" }],
+        }),
+      ).features[0]?.kind,
+    ).toBe("polygon");
+  });
+
   it("创建地图并写索引与记录，可加载与保存", async () => {
     const storage = new NovelMemoryStorage({});
     const repository = createNovelMapRepository(storage);
@@ -116,7 +168,7 @@ describe("createNovelMapRepository", () => {
     expect(persisted.features[0]?.points).toEqual([{ x: 2_000, y: 1_500 }]);
   });
 
-  it("保存时会为贴近左上边缘的内容补出可继续绘制的留白", async () => {
+  it("首次手工落图按内容包络初始化画布，并保留可继续绘制的留白", async () => {
     const storage = new NovelMemoryStorage({});
     const repository = createNovelMapRepository(storage);
     const created = await repository.createMap({
@@ -144,8 +196,52 @@ describe("createNovelMapRepository", () => {
 
     const saved = await repository.saveMap(created, candidate);
 
-    expect(saved.map.canvas).toMatchObject({ width: 1_766, height: 1_166 });
+    // 单点标记的可见外沿为 6px；首次落图后的画布由外沿与四周固定
+    // 留白精确推导，不能再退回到默认的 640 × 400 最小画板。
+    expect(saved.map.canvas).toMatchObject({ width: 332, height: 332 });
     expect(saved.map.features[0]?.points).toEqual([{ x: 166, y: 166 }]);
+  });
+
+  it("保存 Agent 生成的新地图时按生成内容包络初始化画布", async () => {
+    const storage = new NovelMemoryStorage({});
+    const repository = createNovelMapRepository(storage);
+    const created = await repository.createMap({
+      id: "map-generated",
+      name: "生成地图",
+      projectionType: "continent",
+    });
+    const generated = {
+      ...created.map,
+      features: [
+        {
+          id: "generated-land",
+          kind: "polygon" as const,
+          name: "主大陆",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [
+            { x: 420, y: 60 },
+            { x: 860, y: 80 },
+            { x: 780, y: 360 },
+            { x: 460, y: 340 },
+          ],
+          timeFrom: null,
+          timeTo: null,
+          props: { generator: "fantasy-map-tool", terrain: "coast" },
+          description: "生成大陆",
+        },
+      ],
+    };
+
+    const saved = await repository.saveMap(created, generated);
+
+    expect(saved.map.canvas).toMatchObject({ width: 760, height: 620 });
+    expect(saved.map.features[0]?.points).toEqual([
+      { x: 160, y: 160 },
+      { x: 600, y: 180 },
+      { x: 520, y: 460 },
+      { x: 200, y: 440 },
+    ]);
   });
 
   it("保存时校验稳定 id 与冲突保护", async () => {

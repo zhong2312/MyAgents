@@ -105,6 +105,15 @@ describe("mapSceneCamera", () => {
     };
 
     expect(screenAfter).toEqual(screenBefore);
+
+    // 撤销左上扩展时，文档坐标回到旧原点；使用相反平移补偿后，
+    // 相机也必须精确回到扩展前的位置。
+    expect(
+      rebaseMapSceneCamera(rebased, {
+        x: -translation.x,
+        y: -translation.y,
+      }),
+    ).toEqual(camera);
   });
 
   it("按实际内容而不是整张画布居中适配相机", () => {

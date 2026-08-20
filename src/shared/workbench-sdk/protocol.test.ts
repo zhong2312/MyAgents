@@ -6,8 +6,8 @@ import {
 } from "./protocol";
 
 describe("checkWorkbenchApiCompatibility", () => {
-  it("publishes bounded extended AI runs as host API 1.10", () => {
-    expect(WORKBENCH_HOST_API_VERSION).toEqual({ major: 1, minor: 10 });
+  it("publishes cancellable one-shot AI runs as host API 1.11", () => {
+    expect(WORKBENCH_HOST_API_VERSION).toEqual({ major: 1, minor: 11 });
   });
 
   it("accepts the same major when the host satisfies the minor floor", () => {

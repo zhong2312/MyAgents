@@ -36,21 +36,21 @@ describe("地图构件库", () => {
     };
     render(<MapComponentPalette disabled={false} onInsert={onInsert} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "河流水系" }));
-    const riverButton = screen.getByRole("button", { name: "放置河流" });
-    fireEvent.click(riverButton);
-    fireEvent.dragStart(riverButton, { dataTransfer });
+    fireEvent.click(screen.getByRole("button", { name: "文明道路" }));
+    const cityButton = screen.getByRole("button", { name: "放置城市" });
+    fireEvent.click(cityButton);
+    fireEvent.dragStart(cityButton, { dataTransfer });
 
     expect(onInsert).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "river", drawKind: "route" }),
+      expect.objectContaining({ id: "city", drawKind: "marker" }),
     );
     expect(dataTransfer.setData).toHaveBeenCalledWith(
       MAP_COMPONENT_DRAG_MIME,
-      "river",
+      "city",
     );
   });
 
-  it("为成组素材提供独立笔刷入口", () => {
+  it("素材库按四类交互筛选，并让山脉脊线进入连续素材笔刷", () => {
     const onBrush = vi.fn();
     render(
       <MapComponentPalette
@@ -60,12 +60,50 @@ describe("地图构件库", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "大陆板块" }));
-    fireEvent.click(screen.getByRole("button", { name: "使用群岛笔刷" }));
+    fireEvent.click(screen.getByRole("button", { name: "山川地貌" }));
+    fireEvent.click(screen.getByRole("tab", { name: "筛选素材笔刷" }));
 
+    expect(
+      screen.getByRole("button", { name: "使用山脉脊线笔刷" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "放置火山" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "使用山脉脊线笔刷" }));
     expect(onBrush).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "archipelago" }),
+      expect.objectContaining({ id: "mountain-range", interaction: "scatter" }),
     );
+  });
+
+  it("大陆与水域预设按轮廓放置，不进入连续表面笔刷", () => {
+    const onInsert = vi.fn();
+    const onBrush = vi.fn();
+    render(
+      <MapComponentPalette
+        disabled={false}
+        onInsert={onInsert}
+        onBrush={onBrush}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "大陆板块" }));
+    fireEvent.click(screen.getByRole("button", { name: "放置群岛" }));
+    fireEvent.click(screen.getByRole("button", { name: "河流水系" }));
+    fireEvent.click(screen.getByRole("button", { name: "放置内海" }));
+
+    expect(onInsert).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        id: "archipelago",
+        terrainPrefab: expect.objectContaining({ kind: "land" }),
+      }),
+    );
+    expect(onInsert).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: "inland-sea", placement: "terrain-prefab" }),
+    );
+    expect(onBrush).not.toHaveBeenCalled();
   });
 
   it("点击可连续绘制的地貌主卡直接进入笔刷，不再默认插入单个印章", () => {
@@ -84,6 +122,52 @@ describe("地图构件库", () => {
 
     expect(onBrush).toHaveBeenCalledWith(
       expect.objectContaining({ id: "forest" }),
+    );
+    expect(onInsert).not.toHaveBeenCalled();
+  });
+
+  it("新增断崖和珊瑚礁主卡也直接进入连续笔刷", () => {
+    const onBrush = vi.fn();
+    render(
+      <MapComponentPalette
+        disabled={false}
+        onInsert={vi.fn()}
+        onBrush={onBrush}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "山川地貌" }));
+    fireEvent.click(screen.getByRole("button", { name: "使用断崖笔刷" }));
+    fireEvent.click(screen.getByRole("button", { name: "河流水系" }));
+    fireEvent.click(screen.getByRole("button", { name: "使用珊瑚礁笔刷" }));
+
+    expect(onBrush).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: "cliff" }),
+    );
+    expect(onBrush).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: "coral-reef" }),
+    );
+  });
+
+  it("路径构件主卡直接进入路径笔刷，拖入画布仍保留预制件落图", () => {
+    const onInsert = vi.fn();
+    const onBrush = vi.fn();
+    render(
+      <MapComponentPalette
+        disabled={false}
+        onInsert={onInsert}
+        onBrush={onBrush}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "河流水系" }));
+    const riverBrush = screen.getByRole("button", { name: "使用河流笔刷" });
+    fireEvent.click(riverBrush);
+
+    expect(onBrush).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "river", interaction: "path" }),
     );
     expect(onInsert).not.toHaveBeenCalled();
   });
@@ -130,6 +214,23 @@ describe("地图构件库", () => {
 
     expect(onTerrainMaterial).toHaveBeenCalledWith(
       expect.objectContaining({ id: "desert", color: "#c9a865" }),
+    );
+  });
+
+  it("沙滩材质作为可连续绘制的地形材质提供给画布", () => {
+    const onTerrainMaterial = vi.fn();
+    render(
+      <MapComponentPalette
+        disabled={false}
+        onInsert={vi.fn()}
+        onTerrainMaterial={onTerrainMaterial}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "使用沙滩材质笔刷" }));
+
+    expect(onTerrainMaterial).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "beach", name: "沙滩" }),
     );
   });
 

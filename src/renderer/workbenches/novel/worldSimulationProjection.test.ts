@@ -15,7 +15,13 @@ import { createNovelRepository } from "./repository";
 import { createNovelSettingLibraryRepository } from "./settingLibraryRepository";
 import { MAIN_TIMELINE_BRANCH_ID } from "./timelineLibrarySchema";
 import { createNovelTimelineLibraryRepository } from "./timelineLibraryRepository";
+import {
+  createManuscriptTrackingRepository,
+  hashManuscriptContent,
+} from "./manuscriptTrackingRepository";
+import type { ManuscriptTrackingBatch } from "./manuscriptTrackingSchema";
 import { NovelMemoryStorage } from "./testStorage";
+import { createWorldSimulationRun } from "./worldSimulationEngineV2";
 import { buildWorldSimulationBaseline } from "./worldSimulationProjection";
 import { createDefaultWorldSimulationScenario } from "./worldSimulationV2Schema";
 
@@ -134,6 +140,50 @@ function timelineEvent(
   };
 }
 
+function trackedChapterBatch(
+  chapterId: string,
+  content: string,
+  event: ReturnType<typeof timelineEvent>,
+): ManuscriptTrackingBatch {
+  return {
+    id: "tracking-batch-chapter-fact",
+    chapterId,
+    chapterContentHash: hashManuscriptContent(content),
+    summary: "正文已确认事件",
+    status: "applied",
+    createdAt,
+    appliedAt: createdAt,
+    revertedAt: null,
+    changes: [
+      {
+        id: "tracking-change-chapter-fact",
+        domain: "timeline",
+        entityId: null,
+        title: event.title,
+        before: null,
+        after: event.summary,
+        evidence: "正文明确事件",
+        operation: {
+          kind: "timeline-event",
+          eventKind: event.kind,
+          timeLabel: event.timeLabel,
+        },
+      },
+    ],
+    mutations: [
+      {
+        targetKey: `timeline-event:${event.id}`,
+        targetKind: "timeline-event",
+        entityId: event.id,
+        relatedId: null,
+        field: null,
+        before: null,
+        after: event,
+      },
+    ],
+  };
+}
+
 function faction(id: string): FactionRecord {
   return {
     id,
@@ -241,7 +291,7 @@ describe("buildWorldSimulationBaseline", () => {
     );
   });
 
-  it("blocks a facts-anchor run when no fact endpoint is configured", async () => {
+  it("automatically starts from world day zero without asking the author for a fact endpoint", async () => {
     const storage = initializedStorage();
 
     const baseline = await buildWorldSimulationBaseline(
@@ -249,15 +299,14 @@ describe("buildWorldSimulationBaseline", () => {
       createDefaultWorldSimulationScenario(),
     );
 
-    expect(baseline.diagnostics).toContainEqual(
-      expect.objectContaining({
-        id: "timeline-facts-anchor-missing",
-        severity: "blocking",
-      }),
+    expect(baseline.anchor.sortKey).toBe("0");
+    expect(baseline.factsThroughEventId).toBeNull();
+    expect(baseline.diagnostics).not.toContainEqual(
+      expect.objectContaining({ id: "timeline-facts-anchor-missing" }),
     );
   });
 
-  it("keeps a custom-start run explicit about the absence of facts", async () => {
+  it("accepts a custom start without surfacing a missing-facts setup diagnostic", async () => {
     const storage = initializedStorage();
     const scenario = {
       ...createDefaultWorldSimulationScenario(),
@@ -266,15 +315,13 @@ describe("buildWorldSimulationBaseline", () => {
 
     const baseline = await buildWorldSimulationBaseline(storage, scenario);
 
-    expect(baseline.diagnostics).toContainEqual(
-      expect.objectContaining({
-        id: "timeline-facts-anchor-missing",
-        severity: "warning",
-      }),
+    expect(baseline.anchor.sortKey).toBe("0");
+    expect(baseline.diagnostics).not.toContainEqual(
+      expect.objectContaining({ id: "timeline-facts-anchor-missing" }),
     );
   });
 
-  it("blocks a run with no actionable character or faction even at a custom start", async () => {
+  it("allows a run with no actionable character or faction and keeps an info note", async () => {
     const storage = initializedStorage();
     const scenario = {
       ...createDefaultWorldSimulationScenario(),
@@ -286,9 +333,33 @@ describe("buildWorldSimulationBaseline", () => {
     expect(baseline.diagnostics).toContainEqual(
       expect.objectContaining({
         id: "actionable-subjects-missing",
-        severity: "blocking",
+        severity: "info",
       }),
     );
+  });
+
+  it("allows direct start when no fact endpoint exists and a character has no location", async () => {
+    const storage = initializedStorage();
+    const characterRepository = createNovelCharacterLibraryRepository(storage);
+    const characters = await characterRepository.load();
+    await characterRepository.saveCharacter(
+      characters,
+      character("lin-mo", "林默"),
+    );
+
+    const scenario = createDefaultWorldSimulationScenario();
+    const baseline = await buildWorldSimulationBaseline(storage, scenario);
+
+    expect(baseline.factsThroughEventId).toBeNull();
+    expect(
+      baseline.characters.find((entry) => entry.id === "lin-mo"),
+    ).toMatchObject({ locationId: null });
+    expect(
+      baseline.diagnostics.some(
+        (diagnostic) => diagnostic.severity === "blocking",
+      ),
+    ).toBe(false);
+    expect(() => createWorldSimulationRun(baseline, scenario)).not.toThrow();
   });
 
   it("includes descendants in the actionable-subject preflight scope", async () => {
@@ -435,6 +506,57 @@ describe("buildWorldSimulationBaseline", () => {
     ).toBe(true);
   });
 
+  it("compiles applied正文批次 and isolates before/after/none chapter semantics", async () => {
+    const storage = initializedStorage();
+    const projectRepository = createNovelRepository(storage);
+    const project = await projectRepository.load();
+    const chapter = await projectRepository.createChapter(project);
+    const content = "正文明确事件：沈砚抵达云城。";
+    storage.setExternalText(chapter.path, content);
+    const trackedEvent = {
+      ...timelineEvent("event-tracking-batch-chapter-fact", 10, [chapter.id]),
+      worldSortKey: "10",
+      summary: "正文明确事件：沈砚抵达云城。",
+    };
+    await writeTimeline(storage, [trackedEvent], null);
+    const trackingRepository = createManuscriptTrackingRepository(storage);
+    const tracking = await trackingRepository.load();
+    await trackingRepository.save(tracking, {
+      ...tracking.ledger,
+      batches: [trackedChapterBatch(chapter.id, content, trackedEvent)],
+    });
+
+    const base = {
+      ...createDefaultWorldSimulationScenario(),
+    };
+    const after = await buildWorldSimulationBaseline(storage, {
+      ...base,
+      chapterContext: { mode: "after", chapterId: chapter.id },
+    });
+    const before = await buildWorldSimulationBaseline(storage, {
+      ...base,
+      chapterContext: { mode: "before", chapterId: chapter.id },
+    });
+    const none = await buildWorldSimulationBaseline(storage, {
+      ...base,
+      chapterContext: { mode: "none", chapterId: null },
+    });
+
+    expect(after.chapterFacts).toHaveLength(1);
+    expect(after.anchor.sortKey).toBe("10");
+    expect(after.timelinePlans).toHaveLength(0);
+    expect(before.chapterFacts).toHaveLength(1);
+    expect(before.anchor.sortKey).toBe("9");
+    expect(before.timelinePlans.map((event) => event.id)).toEqual([
+      trackedEvent.id,
+    ]);
+    expect(none.chapterFacts).toHaveLength(1);
+    expect(none.anchor.sortKey).toBe("0");
+    expect(none.timelinePlans.map((event) => event.id)).toEqual([
+      trackedEvent.id,
+    ]);
+  });
+
   it("does not leak facts that occur after the selected chapter into an after-chapter baseline", async () => {
     const storage = initializedStorage();
     const project = await createNovelRepository(storage).load();
@@ -555,6 +677,25 @@ describe("buildWorldSimulationBaseline", () => {
             },
           ],
           content: "主线护栏",
+          simulationConstraint: {
+            timeWindow: { startSortKey: "10", endSortKey: "360" },
+            requiredActorIds: ["hero-1"],
+            requiredRegionIds: ["region-1"],
+            requiredOutcomes: [
+              {
+                id: "investigate",
+                kind: "command",
+                commandType: "character.intent",
+                entityType: "character",
+                entityId: "hero-1",
+                field: "intent",
+                operator: "equals",
+                value: "调查封印",
+              },
+            ],
+            forbiddenOutcomes: [],
+            flexibility: 20,
+          },
         },
       ],
       arcs: [
@@ -630,6 +771,19 @@ describe("buildWorldSimulationBaseline", () => {
       ["outline-volume-1", ["hero-1"]],
       ["chapter-plan-chapter-plan-1", ["hero-1"]],
     ]);
+    const projected = baseline.narrativeConstraints[0]!;
+    expect(projected.timeWindow).toEqual({
+      startSortKey: "10",
+      endSortKey: "360",
+    });
+    expect(projected.regionIds).toEqual(["region-1"]);
+    expect(projected.requiredOutcomes?.[0]).toMatchObject({
+      id: "investigate",
+      kind: "command",
+      commandType: "character.intent",
+      entityId: "hero-1",
+    });
+    expect(projected.flexibility).toBe(20);
   });
 
   it("projects parsed setting entries into regional rules and summaries", async () => {
@@ -673,10 +827,43 @@ describe("buildWorldSimulationBaseline", () => {
     )!;
 
     expect(rule.description).toContain("突破失败会损耗寿元");
+    expect(rule.kind).toBe("lifecycle");
     expect(rule.sourceRefs.map((ref) => ref.path)).toEqual(
       expect.arrayContaining([setting.pagePath, setting.entriesPath]),
     );
     expect(rootRegion.summary).toContain("突破失败会损耗寿元");
+  });
+
+  it("将世界架构中的周期设定编译为可聚合的规则快照", async () => {
+    const storage = initializedStorage();
+    const settingRepository = createNovelSettingLibraryRepository(storage);
+    const settings = await settingRepository.load("仙途");
+    const created = await settingRepository.createCustomSetting(settings, {
+      id: "festival-setting",
+      nodeId: settings.spatialTree.nodes[0]!.id,
+      name: "岁时节庆",
+      group: "世界规则",
+      skeleton: "每年举行一次万灯节，民众会在城中集会。",
+    });
+    await settingRepository.updateSettingStatus(
+      created.library,
+      "festival-setting",
+      "completed",
+    );
+
+    const scenario = createDefaultWorldSimulationScenario();
+    const baseline = await buildWorldSimulationBaseline(storage, scenario);
+    const rule = baseline.rules.find(
+      (candidate) => candidate.id === "setting-rule-festival-setting",
+    );
+
+    expect(rule).toMatchObject({
+      kind: "periodic",
+      aggregationLabel: "按窗口聚合节庆与民间生活",
+      intervalDays: String(
+        scenario.calendar.daysPerMonth * scenario.calendar.monthsPerYear,
+      ),
+    });
   });
 
   it("reports unreadable setting, map and item records instead of silently skipping them", async () => {

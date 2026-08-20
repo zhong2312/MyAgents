@@ -1,10 +1,18 @@
 import {
   createEmptyMapScene,
+  isMapFeatureFreeformArea,
   type MapDocument,
   type MapFeature,
   type MapTerrainMaterial,
 } from "../entities/mapSchema";
-import { addMapArtworkStamp, createMapArtworkStamp } from "./mapArtwork";
+import {
+  addMapArtworkLayer,
+  addMapArtworkStamp,
+  createMapArtworkLayer,
+  createMapArtworkStamp,
+  getMapArtworkStampAsset,
+  mapArtworkVariantIndex,
+} from "./mapArtwork";
 import { generateFantasyMapCandidate as generateFantasyMapCandidateCore } from "../../../../../../shared/workbenches/novel/fantasyMapGenerator";
 import { getMapTerrainMaterialPreset } from "./mapTerrainMaterials";
 import {
@@ -13,6 +21,10 @@ import {
   createMapSceneRegion,
   createMapSceneStroke,
 } from "./mapScene";
+import {
+  expandMapCanvasToContent,
+  fitMapCanvasToContentWhenEmpty,
+} from "./mapCanvasBounds";
 
 export type MapGeneratorId =
   | "agent-azgaar"
@@ -35,6 +47,36 @@ export interface MapGeneratorCandidate {
   readonly seed: string | null;
   readonly canvas?: Partial<MapDocument["canvas"]>;
   readonly features: readonly MapFeature[];
+}
+
+/**
+ * 生成结果不属于作者当前选中的图层。来源图层 ID 是稳定契约：同一个
+ * 生成器多次应用候选时复用同一组层，作者即可一次隐藏、锁定或删除该来源
+ * 的全部结果，而不会影响手工图层。
+ */
+export function mapGeneratorSourceLayerIds(generatorId: MapGeneratorId): {
+  readonly feature: string;
+  readonly scene: string;
+  /** 兼容旧版生成结果保留的来源素材层。 */
+  readonly artwork: string;
+  readonly relief: string;
+  readonly vegetation: string;
+} {
+  const suffix = generatorId.replace(/[^a-z0-9]+/giu, "-");
+  return {
+    feature: `layer-generator-${suffix}`,
+    scene: `scene-generator-${suffix}`,
+    artwork: `artwork-generator-${suffix}`,
+    relief: `artwork-generator-${suffix}-relief`,
+    vegetation: `artwork-generator-${suffix}-vegetation`,
+  };
+}
+
+function mapGeneratorSourceLabel(generatorId: MapGeneratorId): string {
+  return (
+    MAP_GENERATORS.find((generator) => generator.id === generatorId)?.name ??
+    "地图生成器"
+  );
 }
 
 export const MAP_GENERATORS: readonly MapGeneratorDescriptor[] = Object.freeze([
@@ -93,6 +135,229 @@ function seededRandom(seed: string): () => number {
     value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
     return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+function polygonContainsPoint(
+  point: { readonly x: number; readonly y: number },
+  polygon: readonly { readonly x: number; readonly y: number }[],
+): boolean {
+  let inside = false;
+  for (
+    let index = 0, previous = polygon.length - 1;
+    index < polygon.length;
+    previous = index, index += 1
+  ) {
+    const current = polygon[index]!;
+    const last = polygon[previous]!;
+    const intersects =
+      current.y > point.y !== last.y > point.y &&
+      point.x <
+        ((last.x - current.x) * (point.y - current.y)) /
+          (last.y - current.y || Number.EPSILON) +
+          current.x;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function polygonArea(
+  points: readonly { readonly x: number; readonly y: number }[],
+): number {
+  if (points.length < 3) return 0;
+  return Math.abs(
+    points.reduce((total, point, index) => {
+      const next = points[(index + 1) % points.length]!;
+      return total + point.x * next.y - next.x * point.y;
+    }, 0) / 2,
+  );
+}
+
+function pointDistance(
+  start: { readonly x: number; readonly y: number },
+  end: { readonly x: number; readonly y: number },
+): number {
+  return Math.hypot(end.x - start.x, end.y - start.y);
+}
+
+type MountainStampPlacement = {
+  readonly point: { readonly x: number; readonly y: number };
+  readonly scale: number;
+  readonly rotation: number;
+};
+
+/**
+ * 将山脊路线投影成连续、但不规则的山体构件。
+ *
+ * 这不是新的地形事实：路线仍保留在 MapFeature 中，返回的每个位置只用来
+ * 生成独立的 MapArtworkStamp。采样密度、变体和朝向均由稳定 feature id 与
+ * 已保存控制点派生，因此重开地图、缩放画布和导出时不会随机跳变。
+ */
+function mountainStampPlacements(
+  feature: MapFeature,
+): readonly MountainStampPlacement[] {
+  if (feature.points.length === 0) return [];
+  const random = seededRandom(`mountain-stamps:${feature.id}`);
+  if (feature.points.length === 1) {
+    return [
+      {
+        point: feature.points[0]!,
+        scale: 0.56 + random() * 0.36,
+        rotation: 0,
+      },
+    ];
+  }
+
+  const segmentLengths = feature.points
+    .slice(1)
+    .map((point, index) => pointDistance(feature.points[index]!, point));
+  const totalLength = segmentLengths.reduce(
+    (sum, segmentLength) => sum + segmentLength,
+    0,
+  );
+  if (totalLength <= Number.EPSILON) {
+    return [
+      {
+        point: feature.points[0]!,
+        scale: 0.56 + random() * 0.36,
+        rotation: 0,
+      },
+    ];
+  }
+
+  // 以 68 个世界坐标为目标间距补齐长线段，同时每条可见山脊至少形成六座
+  // 山体，避免控制点较少时再次退化成几个稀疏的地点标记。
+  const placementCount = Math.min(
+    40,
+    Math.max(6, feature.points.length, Math.ceil(totalLength / 68) + 1),
+  );
+  const spacing = totalLength / Math.max(1, placementCount - 1);
+  const placements: MountainStampPlacement[] = [];
+
+  for (let index = 0; index < placementCount; index += 1) {
+    const endpoint = index === 0 || index === placementCount - 1;
+    const longitudinalJitter = endpoint
+      ? 0
+      : (random() * 2 - 1) * Math.min(12, spacing * 0.18);
+    const targetDistance = Math.max(
+      0,
+      Math.min(totalLength, index * spacing + longitudinalJitter),
+    );
+    let traversed = 0;
+    let segmentIndex = 0;
+    while (
+      segmentIndex < segmentLengths.length - 1 &&
+      targetDistance > traversed + segmentLengths[segmentIndex]!
+    ) {
+      traversed += segmentLengths[segmentIndex]!;
+      segmentIndex += 1;
+    }
+    const start = feature.points[segmentIndex]!;
+    const end = feature.points[segmentIndex + 1]!;
+    const segmentLength = segmentLengths[segmentIndex]!;
+    const progress =
+      segmentLength > Number.EPSILON
+        ? Math.max(0, Math.min(1, (targetDistance - traversed) / segmentLength))
+        : 0;
+    const direction = Math.atan2(end.y - start.y, end.x - start.x);
+    const normal = { x: -Math.sin(direction), y: Math.cos(direction) };
+    const lateralJitter = endpoint
+      ? 0
+      : (random() * 2 - 1) * Math.min(26, 7 + spacing * 0.2);
+    placements.push({
+      point: {
+        x: start.x + (end.x - start.x) * progress + normal.x * lateralJitter,
+        y: start.y + (end.y - start.y) * progress + normal.y * lateralJitter,
+      },
+      scale: 0.56 + random() * 0.36,
+      rotation: (direction * 180) / Math.PI + (random() * 2 - 1) * 4,
+    });
+  }
+  return placements;
+}
+
+/**
+ * 将森林区域投影为一组稳定的、可逐个编辑的树群印章。
+ *
+ * 生成器此前只在林地中心放置一两枚大图标，难以形成成片植被。这里按
+ * 森林多边形面积采样，并保留每棵树为 MapArtwork 事实，作者可独立移动、
+ * 删除或替换，而不是把树冠烘焙为不可编辑贴图。
+ */
+function forestStampPlacements(feature: MapFeature): readonly {
+  readonly point: { readonly x: number; readonly y: number };
+  readonly scale: number;
+}[] {
+  const polygon = feature.points;
+  if (polygon.length === 0) return [];
+  const random = seededRandom(`forest-stamps:${feature.id}`);
+  const center = polygon.reduce(
+    (sum, point) => ({ x: sum.x + point.x, y: sum.y + point.y }),
+    { x: 0, y: 0 },
+  );
+  center.x /= polygon.length;
+  center.y /= polygon.length;
+  if (polygon.length < 3) {
+    return [
+      {
+        point: polygon[0]!,
+        scale: 0.34 + random() * 0.16,
+      },
+    ];
+  }
+
+  const bounds = polygon.reduce(
+    (current, point) => ({
+      left: Math.min(current.left, point.x),
+      right: Math.max(current.right, point.x),
+      top: Math.min(current.top, point.y),
+      bottom: Math.max(current.bottom, point.y),
+    }),
+    {
+      left: Number.POSITIVE_INFINITY,
+      right: Number.NEGATIVE_INFINITY,
+      top: Number.POSITIVE_INFINITY,
+      bottom: Number.NEGATIVE_INFINITY,
+    },
+  );
+  const targetCount = Math.max(
+    5,
+    Math.min(18, Math.round(polygonArea(polygon) / 1_800)),
+  );
+  const placements: {
+    point: { x: number; y: number };
+    scale: number;
+  }[] = [
+    {
+      point: center,
+      scale: 0.35 + random() * 0.12,
+    },
+  ];
+  for (
+    let attempt = 0;
+    placements.length < targetCount && attempt < targetCount * 40;
+    attempt += 1
+  ) {
+    const point = {
+      x: bounds.left + random() * (bounds.right - bounds.left),
+      y: bounds.top + random() * (bounds.bottom - bounds.top),
+    };
+    if (!polygonContainsPoint(point, polygon)) continue;
+    placements.push({
+      point,
+      scale: 0.26 + random() * 0.23,
+    });
+  }
+  while (placements.length < targetCount) {
+    const anchor = polygon[placements.length % polygon.length]!;
+    const ratio = 0.2 + random() * 0.58;
+    placements.push({
+      point: {
+        x: center.x + (anchor.x - center.x) * ratio,
+        y: center.y + (anchor.y - center.y) * ratio,
+      },
+      scale: 0.26 + random() * 0.23,
+    });
+  }
+  return placements;
 }
 
 function safeId(prefix: string, value: unknown, index: number): string {
@@ -242,7 +507,7 @@ function convertGeoJsonFeature(
         {
           ...base,
           id: ringIndex === 0 ? idBase : `${idBase}-${ringIndex + 1}`,
-          kind: "polygon" as const,
+          kind: "area" as const,
           name: ringIndex === 0 ? name : `${name} ${ringIndex + 1}`,
           points,
           props: { color, fill, lineWidth: "1", generator: "azgaar" },
@@ -396,6 +661,7 @@ export function importAzgaarCandidate(input: {
       seed: null,
       canvas: {
         backgroundImage: `data:image/svg+xml;base64,${encoded}`,
+        backgroundImageVisible: true,
         backgroundOpacity: 1,
         ...(svgSize
           ? {
@@ -513,7 +779,7 @@ export function generateRedBlobCandidate(input: {
     });
     features.push({
       id: `generated-land-${hashSeed(`${seed}-${index}`).toString(36)}`,
-      kind: "polygon",
+      kind: "area",
       name: `大陆 ${index + 1}`,
       entityRef: null,
       layerId: input.layerId,
@@ -581,16 +847,35 @@ export function applyGeneratorCandidate(
   document: MapDocument,
   candidate: MapGeneratorCandidate,
 ): MapDocument {
+  const sourceLayerIds = mapGeneratorSourceLayerIds(candidate.generatorId);
+  const sourceLabel = mapGeneratorSourceLabel(candidate.generatorId);
+  const hasGeneratedGeometry = candidate.features.length > 0;
+  const layers = hasGeneratedGeometry
+    ? document.layers.some((layer) => layer.id === sourceLayerIds.feature)
+      ? document.layers
+      : [
+          ...document.layers,
+          {
+            id: sourceLayerIds.feature,
+            name: `${sourceLabel} · 生成结果`,
+            visible: true,
+            locked: false,
+            opacity: 1,
+          },
+        ]
+    : document.layers;
   const existingIds = new Set(document.features.map((feature) => feature.id));
   const landCandidates = candidate.features.filter(
     (feature) =>
-      feature.kind === "polygon" &&
+      isMapFeatureFreeformArea(feature.kind) &&
       (feature.props.terrain === "coast" ||
         feature.props.terrain === "island" ||
         candidate.generatorId === "red-blob"),
   );
   const waterCandidates = candidate.features.filter(
-    (feature) => feature.kind === "polygon" && feature.props.terrain === "lake",
+    (feature) =>
+      isMapFeatureFreeformArea(feature.kind) &&
+      feature.props.terrain === "lake",
   );
   const features = candidate.features
     .filter(
@@ -602,10 +887,37 @@ export function applyGeneratorCandidate(
       let suffix = 2;
       while (existingIds.has(id)) id = `${feature.id}-${suffix++}`;
       existingIds.add(id);
-      return id === feature.id ? feature : { ...feature, id };
+      return {
+        ...(id === feature.id ? feature : { ...feature, id }),
+        layerId: sourceLayerIds.feature,
+      };
     });
+  const initialScene = document.scene ?? createEmptyMapScene();
+  const sceneWithSourceLayer = hasGeneratedGeometry
+    ? initialScene.layers.some((layer) => layer.id === sourceLayerIds.scene)
+      ? initialScene
+      : {
+          ...initialScene,
+          layers: [
+            ...initialScene.layers,
+            {
+              id: sourceLayerIds.scene,
+              name: `${sourceLabel} · 地形底稿`,
+              // 生成的区域和材质笔触共用一个来源层。场景合成器按区域
+              // kind 处理海陆，因此该层使用 terrain 只表示它是可编辑
+              // 底稿，不会把湖泊误判为陆地。
+              kind: "terrain" as const,
+              visible: true,
+              locked: false,
+              opacity: 1,
+              regions: [],
+              strokes: [],
+            },
+          ],
+        }
+    : initialScene;
   const sceneRegionIds = new Set(
-    (document.scene ?? createEmptyMapScene()).layers.flatMap((layer) =>
+    sceneWithSourceLayer.layers.flatMap((layer) =>
       layer.regions.map((region) => region.id),
     ),
   );
@@ -619,7 +931,7 @@ export function applyGeneratorCandidate(
       currentScene,
       createMapSceneRegion({
         id: regionId,
-        layerId: "scene-terrain",
+        layerId: sourceLayerIds.scene,
         kind: "land",
         points: feature.points,
         fill: feature.props.fill ?? (index % 2 === 0 ? "#b8ad7d" : "#c9b983"),
@@ -627,7 +939,7 @@ export function applyGeneratorCandidate(
         edgeWidth: Math.max(1, Number(feature.props.lineWidth ?? 3)),
       }),
     );
-  }, document.scene ?? createEmptyMapScene());
+  }, sceneWithSourceLayer);
   const scene = waterCandidates.reduce((currentScene, feature) => {
     let regionId = `region-${feature.id}`;
     let suffix = 2;
@@ -638,7 +950,7 @@ export function applyGeneratorCandidate(
       currentScene,
       createMapSceneRegion({
         id: regionId,
-        layerId: "scene-water",
+        layerId: sourceLayerIds.scene,
         kind: "water",
         points: feature.points,
         fill: feature.props.fill ?? "#5d9caf",
@@ -682,7 +994,7 @@ export function applyGeneratorCandidate(
       return;
     }
     const terrainLayer = enhancedScene.layers.find(
-      (layer) => layer.id === "scene-terrain",
+      (layer) => layer.id === sourceLayerIds.scene,
     );
     if (!terrainLayer) return;
     const center = feature.points.reduce(
@@ -730,20 +1042,32 @@ export function applyGeneratorCandidate(
         : "mountain-range";
     }
     if (terrain === "forest") return "forest";
-    if (feature.kind === "marker") {
-      const symbol = feature.props.symbol;
-      if (symbol === "capital") return "capital";
-      if (symbol === "city") return "city";
-      if (symbol === "village") return "village";
-      if (symbol === "port") return "port";
-      if (symbol === "bridge") return "bridge";
-    }
     return null;
   };
-  const artworkLayerId =
-    document.artwork.layers.find((layer) => layer.id === "artwork-stamps")
-      ?.id ?? document.artwork.layers[0]?.id;
-  let artwork = document.artwork;
+  const artwork = hasGeneratedGeometry
+    ? [
+        {
+          id: sourceLayerIds.relief,
+          name: `${sourceLabel} · 山脉地貌`,
+          kind: "relief" as const,
+        },
+        {
+          id: sourceLayerIds.vegetation,
+          name: `${sourceLabel} · 植被`,
+          kind: "vegetation" as const,
+        },
+      ].reduce(
+        (currentArtwork, descriptor) =>
+          currentArtwork.layers.some((layer) => layer.id === descriptor.id)
+            ? currentArtwork
+            : addMapArtworkLayer(
+                currentArtwork,
+                createMapArtworkLayer(descriptor),
+              ),
+        document.artwork,
+      )
+    : document.artwork;
+  let nextArtwork = artwork;
   const artworkIds = new Set(
     artwork.layers.flatMap((layer) => layer.stamps.map((stamp) => stamp.id)),
   );
@@ -751,15 +1075,24 @@ export function applyGeneratorCandidate(
     feature: MapFeature,
     point: MapFeature["points"][number],
     index: number,
+    style?: {
+      readonly scale?: number;
+      readonly opacity?: number;
+      readonly rotation?: number;
+    },
   ) => {
     const assetId = artworkAssetForFeature(feature);
-    if (!assetId || !artworkLayerId) return;
+    if (!assetId) return;
+    const layerId =
+      assetId === "mountain-range" || assetId === "snow-peak"
+        ? sourceLayerIds.relief
+        : sourceLayerIds.vegetation;
     const baseId = `generated-artwork-${feature.id}-${index}`;
     let stampId = baseId;
     let suffix = 2;
     while (artworkIds.has(stampId)) stampId = `${baseId}-${suffix++}`;
     artworkIds.add(stampId);
-    const scale =
+    const defaultScale =
       assetId === "mountain-range" || assetId === "snow-peak"
         ? 0.72
         : assetId === "forest"
@@ -767,18 +1100,22 @@ export function applyGeneratorCandidate(
           : assetId === "port"
             ? 0.46
             : 0.44;
-    artwork = addMapArtworkStamp(
-      artwork,
+    const asset = getMapArtworkStampAsset(assetId);
+    nextArtwork = addMapArtworkStamp(
+      nextArtwork,
       createMapArtworkStamp({
         id: stampId,
-        layerId: artworkLayerId,
+        layerId,
         assetId,
         x: point.x,
         y: point.y,
-        variant: `${feature.id}:${index}`.length % 4,
-        scale,
+        variant: asset
+          ? mapArtworkVariantIndex(asset, `${feature.id}:${index}`)
+          : 0,
+        scale: style?.scale ?? defaultScale,
         rotation:
-          (assetId === "mountain-range" || assetId === "snow-peak") &&
+          style?.rotation ??
+          ((assetId === "mountain-range" || assetId === "snow-peak") &&
           feature.points.length > 1
             ? (Math.atan2(
                 (feature.points[Math.min(index + 1, feature.points.length - 1)]
@@ -788,8 +1125,8 @@ export function applyGeneratorCandidate(
               ) *
                 180) /
               Math.PI
-            : 0,
-        opacity: 0.9,
+            : 0),
+        opacity: style?.opacity ?? 0.9,
       }),
     );
   };
@@ -797,44 +1134,52 @@ export function applyGeneratorCandidate(
     const assetId = artworkAssetForFeature(feature);
     if (!assetId || feature.points.length === 0) return;
     if (assetId === "mountain-range" || assetId === "snow-peak") {
-      // 沿山脉路径分布多个印章，避免生成结果退化为单条折线。
-      feature.points.forEach((point, index) => {
-        if (index % 2 === 0) addGeneratedStamp(feature, point, index);
+      mountainStampPlacements(feature).forEach((placement, index) => {
+        addGeneratedStamp(feature, placement.point, index, {
+          scale: placement.scale,
+          opacity: 0.92,
+          rotation: placement.rotation,
+        });
       });
       return;
     }
     if (assetId === "forest") {
-      const center = feature.points.reduce(
-        (sum, point) => ({ x: sum.x + point.x, y: sum.y + point.y }),
-        { x: 0, y: 0 },
-      );
-      center.x /= feature.points.length;
-      center.y /= feature.points.length;
-      addGeneratedStamp(feature, center, 0);
-      // 第二个偏移点让林地不再呈现单一中心图标，同时保持在候选区域
-      // 的视觉范围内；具体边界仍由原始区域多边形负责。
-      if (feature.points.length >= 6) {
-        const anchor = feature.points[Math.floor(feature.points.length / 3)]!;
-        addGeneratedStamp(
-          feature,
-          { x: (center.x + anchor.x) / 2, y: (center.y + anchor.y) / 2 },
-          1,
-        );
-      }
+      forestStampPlacements(feature).forEach((placement, index) => {
+        addGeneratedStamp(feature, placement.point, index, {
+          scale: placement.scale,
+          opacity: 0.86,
+        });
+      });
       return;
     }
     addGeneratedStamp(feature, feature.points[0]!, 0);
   });
-  return {
+  const applied = {
     ...document,
     canvas: { ...document.canvas, ...candidate.canvas },
+    layers,
     features: [...document.features, ...features],
-    scene:
-      landCandidates.length > 0 ||
-      waterCandidates.length > 0 ||
-      enhancedScene !== scene
-        ? enhancedScene
-        : document.scene,
-    artwork,
+    // 即使候选只有地点、路线等语义要素，也保留对应的来源场景层，
+    // 这样后续再次生成地形时仍能沿用同一来源层的显隐和锁定状态。
+    scene: hasGeneratedGeometry ? enhancedScene : document.scene,
+    artwork: nextArtwork,
   };
+  // 所有生成器候选都必须遵守同一条首次构图契约。Azgaar JSON/GeoJSON
+  // 候选在此前只会等到保存或重载时收束，导致“应用”后的即时画布仍保留
+  // 默认 1600×1000 空白区域；已有作者内容则由 helper 原样保留。
+  return fitMapCanvasToContentWhenEmpty(document, applied);
+}
+
+/**
+ * 构造生成候选的只读预览文档。
+ *
+ * 预览与正式落地必须共享同一个候选投影；额外执行边界扩展是为了让
+ * 越界导入或手工生成的候选在尚未写入 MapDocument 时也能完整显示。
+ * 该函数只返回新文档，不触碰 Repository，也不会产生撤销历史。
+ */
+export function previewGeneratorCandidate(
+  document: MapDocument,
+  candidate: MapGeneratorCandidate,
+): MapDocument {
+  return expandMapCanvasToContent(applyGeneratorCandidate(document, candidate));
 }

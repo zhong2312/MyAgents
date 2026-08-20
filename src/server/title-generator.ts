@@ -2,7 +2,8 @@
  * title-generator.ts — AI-powered session title generation.
  *
  * Runtime-aware:
- *   - builtin  → Claude Agent SDK query() with provider-env (current behavior)
+ *   - workbench tool-free one-shot → in-process direct provider HTTP
+ *   - builtin/title generation → Claude Agent SDK query() with provider-env
  *   - external → spawns a fresh short-lived process of the session's runtime
  *                (claude-code / codex / gemini) with the title system prompt.
  *                Model, CLI auth, etc. are inherited from the active runtime
@@ -13,27 +14,38 @@
  * before that the session shows the default truncated-first-message title.
  */
 
-import { randomUUID } from 'crypto';
-import { homedir } from 'os';
-import { join } from 'path';
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge } from './agent-session';
-import type { ProviderEnv } from './provider-types';
-import { applyContextWindowSuffixForContextLength, applyProviderContextWindowSuffix } from './utils/model-capabilities';
-import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
-import { isLikelyErrorTitle } from '../shared/titleFilters';
-import { capTitleAtBoundary } from '../shared/sessionTitle';
-import { ClaudeCodeRuntime } from './runtimes/claude-code';
-import { CodexRuntime } from './runtimes/codex';
-import { GeminiRuntime } from './runtimes/gemini';
-import type { AgentRuntime, RuntimeProcess, SessionStartOptions } from './runtimes/types';
-import type { RuntimeSource, RuntimeType } from '../shared/types/runtime';
-import { ensureDirSync } from './utils/fs-utils';
-import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
+import { randomUUID } from "crypto";
+import { homedir } from "os";
+import { join } from "path";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import {
+  resolveClaudeCodeCli,
+  buildClaudeSessionEnv,
+  startOneShotBridge,
+} from "./agent-session";
+import type { ProviderEnv } from "./provider-types";
+import {
+  applyContextWindowSuffixForContextLength,
+  applyProviderContextWindowSuffix,
+} from "./utils/model-capabilities";
+import { SUBSCRIPTION_PROVIDER_ID } from "../shared/config-types";
+import { isLikelyErrorTitle } from "../shared/titleFilters";
+import { capTitleAtBoundary } from "../shared/sessionTitle";
+import { ClaudeCodeRuntime } from "./runtimes/claude-code";
+import { CodexRuntime } from "./runtimes/codex";
+import { GeminiRuntime } from "./runtimes/gemini";
+import type {
+  AgentRuntime,
+  RuntimeProcess,
+  SessionStartOptions,
+} from "./runtimes/types";
+import type { RuntimeSource, RuntimeType } from "../shared/types/runtime";
+import { ensureDirSync } from "./utils/fs-utils";
+import { createGuardedSdkQuery } from "./utils/sdk-child-launch-guard";
 import type {
   WorkbenchAgentToolsetRequest,
   WorkbenchAiRunProgressKind,
-} from '../shared/workbench-sdk';
+} from "../shared/workbench-sdk";
 
 const TITLE_MAX_LENGTH = 30;
 export const BUILTIN_TITLE_TIMEOUT_MS = 30_000;
@@ -54,9 +66,23 @@ const PER_MESSAGE_LIMIT = 200;
  * than relying on permission mode) removes the tools from the model's context
  * entirely, so even bypassPermissions has nothing to auto-execute. */
 const TITLE_GEN_DISALLOWED_TOOLS = [
-  'Task', 'Bash', 'BashOutput', 'KillShell', 'Glob', 'Grep', 'Read', 'Edit',
-  'MultiEdit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'TodoWrite',
-  'SlashCommand', 'ExitPlanMode', 'AskUserQuestion',
+  "Task",
+  "Bash",
+  "BashOutput",
+  "KillShell",
+  "Glob",
+  "Grep",
+  "Read",
+  "Edit",
+  "MultiEdit",
+  "Write",
+  "NotebookEdit",
+  "WebFetch",
+  "WebSearch",
+  "TodoWrite",
+  "SlashCommand",
+  "ExitPlanMode",
+  "AskUserQuestion",
 ];
 
 const SYSTEM_PROMPT = `You are a session title generator for a chat app. Weeks later the user will
@@ -113,7 +139,7 @@ function buildUserPrompt(rounds: TitleRound[]): string {
   });
   // Restate the hard constraints at the very END (recency): weaker / smaller
   // title-gen models follow the last instruction most reliably.
-  return `<conversation>\n${parts.join('\n\n')}\n</conversation>\n\nWrite the session title. Keep the most distinctive anchor (name / number / file), match the user's language, ≤30 chars, output only the title.`;
+  return `<conversation>\n${parts.join("\n\n")}\n</conversation>\n\nWrite the session title. Keep the most distinctive anchor (name / number / file), match the user's language, ≤30 chars, output only the title.`;
 }
 
 /**
@@ -123,15 +149,15 @@ function buildUserPrompt(rounds: TitleRound[]): string {
 function cleanTitle(raw: string): string {
   let cleaned = raw.trim();
   // Remove surrounding quotes (single, double, Chinese quotes)
-  cleaned = cleaned.replace(/^["'「『《【"']+|["'」』》】"']+$/g, '');
+  cleaned = cleaned.replace(/^["'「『《【"']+|["'」』》】"']+$/g, "");
   // Remove trailing punctuation
-  cleaned = cleaned.replace(/[。，、；：！？.,:;!?…]+$/, '');
+  cleaned = cleaned.replace(/[。，、；：！？.,:;!?…]+$/, "");
   // Remove common AI preamble patterns
-  cleaned = cleaned.replace(/^(标题[：:]|Title[：:])\s*/i, '');
+  cleaned = cleaned.replace(/^(标题[：:]|Title[：:])\s*/i, "");
   // Defense-in-depth: strip angle brackets so a model-injected "<script>" never reaches
   // a consumer that might render titles as HTML/Markdown raw. Frontend uses text nodes
   // today, but title is long-lived metadata and cheap to harden here.
-  cleaned = cleaned.replace(/[<>]/g, '');
+  cleaned = cleaned.replace(/[<>]/g, "");
   cleaned = cleaned.trim();
   // #245 backstop: if the title looks like an upstream-error string (SDK 4xx/5xx
   // surface, openai-bridge [Error]: …) the title-gen LLM has either echoed
@@ -140,7 +166,7 @@ function cleanTitle(raw: string): string {
   // back to its truncated-first-message default. Primary gate is the renderer
   // shouldRecordTurnForTitle; this catches paths it can't cover (loaded-history
   // reconstruction, title-gen call hitting its own 4xx).
-  if (isLikelyErrorTitle(cleaned)) return '';
+  if (isLikelyErrorTitle(cleaned)) return "";
   // Boundary-aware cap: a blind slice(0,30) severs Latin words ("…SSE 流式调" →
   // "…SSE 流"); capTitleAtBoundary backs a mid-word cut off to the last space.
   // Pure CJK (no whitespace) still hard-cuts at the limit.
@@ -159,27 +185,41 @@ type SdkResultLikeMessage = {
   messages?: Array<{ role: string; content?: SdkTextContentBlock[] }>;
 };
 
-function textFromContentBlocks(content: SdkTextContentBlock[] | undefined): string {
-  if (!Array.isArray(content)) return '';
+function textFromContentBlocks(
+  content: SdkTextContentBlock[] | undefined,
+): string {
+  if (!Array.isArray(content)) return "";
   return content
-    .map((block) => (typeof block?.text === 'string' ? block.text : ''))
-    .join('')
+    .map((block) => (typeof block?.text === "string" ? block.text : ""))
+    .join("")
     .trim();
 }
 
-export function extractTitleTextFromSdkMessage(message: unknown): string | null {
-  if (!message || typeof message !== 'object') return null;
+export function extractTitleTextFromSdkMessage(
+  message: unknown,
+): string | null {
+  if (!message || typeof message !== "object") return null;
   const typed = message as SdkAssistantLikeMessage & SdkResultLikeMessage;
-  if (typed.type === 'assistant') {
+  if (typed.type === "assistant") {
     const text = textFromContentBlocks(typed.message?.content);
     return text || null;
   }
-  if (typed.type === 'result' && typed.subtype === 'success' && Array.isArray(typed.messages)) {
-    const lastAssistant = typed.messages.filter(m => m.role === 'assistant').pop();
+  if (
+    typed.type === "result" &&
+    typed.subtype === "success" &&
+    Array.isArray(typed.messages)
+  ) {
+    const lastAssistant = typed.messages
+      .filter((m) => m.role === "assistant")
+      .pop();
     const text = textFromContentBlocks(lastAssistant?.content);
     return text || null;
   }
-  if (typed.type === 'result' && typed.subtype === 'success' && typeof typed.result === 'string') {
+  if (
+    typed.type === "result" &&
+    typed.subtype === "success" &&
+    typeof typed.result === "string"
+  ) {
     const text = typed.result.trim();
     return text || null;
   }
@@ -194,7 +234,11 @@ export interface OneShotTextRequest {
   readonly providerEnv?: ProviderEnv;
   readonly timeoutMs?: number;
   readonly maxTurns?: number;
+  /** Enables SDK text deltas for a single no-tool workbench run. */
+  readonly streamText?: boolean;
   readonly throwOnTimeout?: boolean;
+  /** Host-owned controller used to stop a workbench one-shot run. */
+  readonly abortController?: AbortController;
   readonly toolset?: WorkbenchAgentToolsetRequest;
   readonly onProgress?: (progress: OneShotTextProgressUpdate) => void;
 }
@@ -202,6 +246,7 @@ export interface OneShotTextRequest {
 export interface OneShotTextProgressUpdate {
   readonly kind: WorkbenchAiRunProgressKind;
   readonly message: string;
+  readonly partialOutput?: string;
 }
 
 const MAX_ONE_SHOT_RECOVERY_CONTEXT_CHARS = 24_000;
@@ -214,41 +259,48 @@ type OneShotProgressMessage = {
 };
 
 function textFromOneShotToolResult(value: unknown): string {
-  if (typeof value === 'string') return value;
+  if (typeof value === "string") return value;
   if (Array.isArray(value)) {
     return value
       .map((item) => textFromOneShotToolResult(item))
       .filter(Boolean)
-      .join('\n');
+      .join("\n");
   }
-  if (!value || typeof value !== 'object') return '';
+  if (!value || typeof value !== "object") return "";
   const record = value as Record<string, unknown>;
-  if (typeof record.text === 'string') return record.text;
-  if (record.content !== undefined) return textFromOneShotToolResult(record.content);
-  return '';
+  if (typeof record.text === "string") return record.text;
+  if (record.content !== undefined)
+    return textFromOneShotToolResult(record.content);
+  return "";
 }
 
 /** 只提取只读工具返回，用于轮次耗尽时的内部收敛提示。 */
-export function extractOneShotToolContextFromSdkMessage(message: unknown): string {
-  if (!message || typeof message !== 'object') return '';
+export function extractOneShotToolContextFromSdkMessage(
+  message: unknown,
+): string {
+  if (!message || typeof message !== "object") return "";
   const typed = message as {
     readonly type?: unknown;
     readonly message?: { readonly content?: unknown };
   };
-  if (typed.type !== 'user' || !Array.isArray(typed.message?.content)) return '';
+  if (typed.type !== "user" || !Array.isArray(typed.message?.content))
+    return "";
   const chunks = typed.message.content
-    .filter((block): block is Record<string, unknown> => Boolean(block && typeof block === 'object'))
-    .filter((block) =>
-      (block.type === 'tool_result' || block.type === 'mcp_tool_result') &&
-      block.is_error !== true,
+    .filter((block): block is Record<string, unknown> =>
+      Boolean(block && typeof block === "object"),
+    )
+    .filter(
+      (block) =>
+        (block.type === "tool_result" || block.type === "mcp_tool_result") &&
+        block.is_error !== true,
     )
     .map((block) => textFromOneShotToolResult(block.content))
     .filter(Boolean);
-  return chunks.join('\n\n').slice(0, MAX_ONE_SHOT_RECOVERY_CONTEXT_CHARS);
+  return chunks.join("\n\n").slice(0, MAX_ONE_SHOT_RECOVERY_CONTEXT_CHARS);
 }
 
 export function extractOneShotSdkError(message: unknown): string | null {
-  if (!message || typeof message !== 'object') return null;
+  if (!message || typeof message !== "object") return null;
   const typed = message as {
     readonly type?: unknown;
     readonly subtype?: unknown;
@@ -256,26 +308,73 @@ export function extractOneShotSdkError(message: unknown): string | null {
     readonly error?: unknown;
   };
   if (
-    typed.type === 'result' &&
-    typeof typed.subtype === 'string' &&
-    typed.subtype.startsWith('error_')
+    typed.type === "result" &&
+    typeof typed.subtype === "string" &&
+    typed.subtype.startsWith("error_")
   ) {
     const errors = Array.isArray(typed.errors)
       ? typed.errors
-          .filter((item): item is string => typeof item === 'string')
-          .join('; ')
-      : '';
+          .filter((item): item is string => typeof item === "string")
+          .join("; ")
+      : "";
     return errors || `Claude SDK returned ${typed.subtype}.`;
   }
-  if (typed.type === 'assistant' && typeof typed.error === 'string') {
+  if (typed.type === "assistant" && typeof typed.error === "string") {
     return `Claude SDK returned ${typed.error}.`;
   }
   return null;
 }
 
+/** Extracts a text delta from Claude Agent SDK partial-message events. */
+export function extractOneShotTextDeltaFromSdkMessage(
+  message: unknown,
+): string {
+  if (!message || typeof message !== "object") return "";
+  const record = message as {
+    readonly type?: unknown;
+    readonly event?: unknown;
+  };
+  if (record.type !== "stream_event") return "";
+  if (!record.event || typeof record.event !== "object") return "";
+  const event = record.event as {
+    readonly type?: unknown;
+    readonly delta?: unknown;
+    readonly content_block?: unknown;
+  };
+  if (
+    event.type === "content_block_delta" &&
+    event.delta &&
+    typeof event.delta === "object"
+  ) {
+    const delta = event.delta as {
+      readonly type?: unknown;
+      readonly text?: unknown;
+    };
+    return delta.type === "text_delta" && typeof delta.text === "string"
+      ? delta.text
+      : "";
+  }
+  if (
+    event.type === "content_block_start" &&
+    event.content_block &&
+    typeof event.content_block === "object"
+  ) {
+    const contentBlock = event.content_block as {
+      readonly type?: unknown;
+      readonly text?: unknown;
+    };
+    return contentBlock.type === "text" && typeof contentBlock.text === "string"
+      ? contentBlock.text
+      : "";
+  }
+  return "";
+}
+
 export function isOneShotMaxTurnsError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? '');
-  return /error_max_turns|reached maximum number of turns|maximum number of turns/iu.test(message);
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /error_max_turns|reached maximum number of turns|maximum number of turns/iu.test(
+    message,
+  );
 }
 
 const NOVEL_CONTEXT_TOOL_LABELS: Readonly<Record<string, string>> = {
@@ -304,17 +403,16 @@ function oneShotProgressForSdkMessage(
   if (!Array.isArray(content)) return null;
   const toolCall = [...content]
     .reverse()
-    .find(
-      (block): block is { readonly type: string; readonly name: string } =>
-        Boolean(
-          block &&
-            typeof block === "object" &&
-            "type" in block &&
-            ((block as { type?: unknown }).type === "mcp_tool_use" ||
-              (block as { type?: unknown }).type === "tool_use") &&
-            "name" in block &&
-            typeof (block as { name?: unknown }).name === "string",
-        ),
+    .find((block): block is { readonly type: string; readonly name: string } =>
+      Boolean(
+        block &&
+          typeof block === "object" &&
+          "type" in block &&
+          ((block as { type?: unknown }).type === "mcp_tool_use" ||
+            (block as { type?: unknown }).type === "tool_use") &&
+          "name" in block &&
+          typeof (block as { name?: unknown }).name === "string",
+      ),
     );
   if (toolCall) {
     const normalizedToolName = toolCall.name.replace(/^mcp__[^_]+__/u, "");
@@ -323,15 +421,14 @@ function oneShotProgressForSdkMessage(
       ? { kind: "tool", message: `正在读取${label}` }
       : { kind: "tool", message: "正在读取项目资料" };
   }
-  const hasText = content.some(
-    (block) =>
-      Boolean(
-        block &&
-          typeof block === "object" &&
-          (block as { type?: unknown }).type === "text" &&
-          typeof (block as { text?: unknown }).text === "string" &&
-          (block as { text: string }).text.trim(),
-      ),
+  const hasText = content.some((block) =>
+    Boolean(
+      block &&
+        typeof block === "object" &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string" &&
+        (block as { text: string }).text.trim(),
+    ),
   );
   return hasText ? { kind: "status", message: "正在生成结果" } : null;
 }
@@ -339,7 +436,14 @@ function oneShotProgressForSdkMessage(
 export class OneShotTextTimeoutError extends Error {
   constructor(readonly timeoutMs: number) {
     super(`One-shot text generation timed out after ${timeoutMs}ms.`);
-    this.name = 'OneShotTextTimeoutError';
+    this.name = "OneShotTextTimeoutError";
+  }
+}
+
+export class OneShotTextCancelledError extends Error {
+  constructor() {
+    super("本次 AI 生成已取消");
+    this.name = "OneShotTextCancelledError";
   }
 }
 
@@ -348,7 +452,8 @@ export function resolveOneShotTextMaxTurns(
   hasTools: boolean,
 ): number {
   if (!hasTools) return 1;
-  if (requestedMaxTurns === undefined || !Number.isFinite(requestedMaxTurns)) return 8;
+  if (requestedMaxTurns === undefined || !Number.isFinite(requestedMaxTurns))
+    return 8;
   return Math.max(1, Math.min(16, Math.round(requestedMaxTurns)));
 }
 
@@ -356,13 +461,28 @@ export function resolveOneShotReadToolCallLimit(
   value: unknown,
 ): number | undefined {
   const parsed =
-    typeof value === 'number'
+    typeof value === "number"
       ? value
-      : typeof value === 'string' && /^\d+$/.test(value.trim())
+      : typeof value === "string" && /^\d+$/.test(value.trim())
         ? Number(value.trim())
         : Number.NaN;
   if (!Number.isFinite(parsed)) return undefined;
   return Math.max(1, Math.min(10, Math.round(parsed)));
+}
+
+/**
+ * Tool-free, single-turn workbench calls can use the in-process provider
+ * client. Subscription providers have no host API key and therefore retain
+ * the SDK path; provider-backed calls do not need a Claude CLI subprocess.
+ */
+export function shouldUseDirectOneShotText(
+  request: OneShotTextRequest,
+): boolean {
+  return (
+    request.providerEnv !== undefined &&
+    request.toolset === undefined &&
+    resolveOneShotTextMaxTurns(request.maxTurns, false) === 1
+  );
 }
 
 /**
@@ -373,25 +493,63 @@ export function resolveOneShotReadToolCallLimit(
 export async function generateOneShotText(
   request: OneShotTextRequest,
 ): Promise<string | null> {
-  const bridge = request.providerEnv?.apiProtocol === 'openai'
-    ? startOneShotBridge(
-      request.providerEnv,
-      request.model,
-      `workbench-run:${request.providerEnv.baseUrl ?? 'anthropic'}`,
-    )
-    : null;
+  if (shouldUseDirectOneShotText(request)) {
+    const timeoutMs = request.timeoutMs ?? 60_000;
+    const providerEnv = request.providerEnv;
+    if (!providerEnv) return null;
+    const directOneShot = await import("./direct-one-shot");
+    try {
+      return await directOneShot.generateDirectOneShotText({
+        prompt: request.prompt,
+        systemPrompt: request.systemPrompt,
+        workspacePath: request.workspacePath,
+        model: request.model,
+        providerEnv,
+        streamText: request.streamText,
+        timeoutMs,
+        abortController: request.abortController,
+        onProgress: (partialOutput) => {
+          request.onProgress?.({
+            kind: "status",
+            message: "正在生成结果",
+            partialOutput,
+          });
+        },
+      });
+    } catch (error) {
+      if (error instanceof directOneShot.DirectOneShotCancelledError) {
+        throw new OneShotTextCancelledError();
+      }
+      if (error instanceof directOneShot.DirectOneShotTimeoutError) {
+        if (request.throwOnTimeout) {
+          throw new OneShotTextTimeoutError(timeoutMs);
+        }
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  const bridge =
+    request.providerEnv?.apiProtocol === "openai"
+      ? startOneShotBridge(
+          request.providerEnv,
+          request.model,
+          `workbench-run:${request.providerEnv.baseUrl ?? "anthropic"}`,
+        )
+      : null;
   try {
     let activeRequest = request;
-    let recoveryContext = '';
-    const run = async (
-      toolConfiguration?: {
-        readonly adapterId: string;
-        readonly server: Awaited<ReturnType<
-          typeof import('./tools/novel-workbench-tool').createNovelWorkbenchServer
-        >>;
-        readonly readTools: readonly string[];
-      },
-    ): Promise<string | null> => {
+    let recoveryContext = "";
+    const run = async (toolConfiguration?: {
+      readonly adapterId: string;
+      readonly server: Awaited<
+        ReturnType<
+          typeof import("./tools/novel-workbench-tool").createNovelWorkbenchServer
+        >
+      >;
+      readonly readTools: readonly string[];
+    }): Promise<string | null> => {
       const cliPath = resolveClaudeCodeCli();
       const allowedReadTools = toolConfiguration?.readTools.map(
         (name) => `mcp__${toolConfiguration.adapterId}__${name}`,
@@ -400,64 +558,90 @@ export async function generateOneShotText(
         activeRequest.toolset?.context?.readToolCallLimit,
       );
       let allowedReadToolCallCount = 0;
-      const oneShot = await createGuardedSdkQuery(cliPath, () => query({
-        prompt: activeRequest.prompt,
-        options: {
-          maxTurns: resolveOneShotTextMaxTurns(
-            activeRequest.maxTurns,
-            Boolean(toolConfiguration),
-          ),
-          cwd: activeRequest.workspacePath,
-          settingSources: [],
-          permissionMode: toolConfiguration ? 'default' : 'bypassPermissions',
-          allowDangerouslySkipPermissions: true,
-          pathToClaudeCodeExecutable: cliPath,
-          env: buildClaudeSessionEnv(activeRequest.providerEnv, activeRequest.model, {
-            bridgeToken: bridge?.token,
-            providerId: activeRequest.providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
-          }),
-          systemPrompt: activeRequest.systemPrompt,
-          thinking: { type: 'disabled' },
-          effort: 'low',
-          includePartialMessages: false,
-          persistSession: false,
-          mcpServers: toolConfiguration
-            ? { [toolConfiguration.adapterId]: toolConfiguration.server }
-            : {},
-          tools: [],
-          ...(allowedReadTools ? {
-            allowedTools: allowedReadTools,
-            canUseTool: async (toolName: string) => {
-              if (!allowedReadTools.includes(toolName)) {
-                return {
-                  behavior: 'deny' as const,
-                  message: '一次性工作台 Agent 只允许读取项目上下文。',
-                };
-              }
-              if (
-                readToolCallLimit !== undefined &&
-                allowedReadToolCallCount >= readToolCallLimit
-              ) {
-                return {
-                  behavior: 'deny' as const,
-                  message: `只读资料调用已达到 ${readToolCallLimit} 次上限。请停止检索，立即依据已取得资料返回最终结果。`,
-                };
-              }
-              allowedReadToolCallCount += 1;
-              return { behavior: 'allow' as const };
-            },
-          } : {}),
-          ...(activeRequest.model ? {
-            model: applyProviderContextWindowSuffix(
-              activeRequest.model,
-              activeRequest.providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
+      const oneShot = await createGuardedSdkQuery(cliPath, () =>
+        query({
+          prompt: activeRequest.prompt,
+          options: {
+            ...(activeRequest.abortController
+              ? { abortController: activeRequest.abortController }
+              : {}),
+            maxTurns: resolveOneShotTextMaxTurns(
+              activeRequest.maxTurns,
+              Boolean(toolConfiguration),
             ),
-          } : {}),
-        },
-      }));
+            cwd: activeRequest.workspacePath,
+            settingSources: [],
+            permissionMode: toolConfiguration ? "default" : "bypassPermissions",
+            allowDangerouslySkipPermissions: true,
+            pathToClaudeCodeExecutable: cliPath,
+            env: buildClaudeSessionEnv(
+              activeRequest.providerEnv,
+              activeRequest.model,
+              {
+                bridgeToken: bridge?.token,
+                providerId:
+                  activeRequest.providerEnv?.providerId ??
+                  SUBSCRIPTION_PROVIDER_ID,
+              },
+            ),
+            systemPrompt: activeRequest.systemPrompt,
+            thinking: { type: "disabled" },
+            effort: "low",
+            includePartialMessages: activeRequest.streamText === true,
+            persistSession: false,
+            mcpServers: toolConfiguration
+              ? { [toolConfiguration.adapterId]: toolConfiguration.server }
+              : {},
+            tools: [],
+            ...(allowedReadTools
+              ? {
+                  allowedTools: allowedReadTools,
+                  canUseTool: async (toolName: string) => {
+                    if (!allowedReadTools.includes(toolName)) {
+                      return {
+                        behavior: "deny" as const,
+                        message: "一次性工作台 Agent 只允许读取项目上下文。",
+                      };
+                    }
+                    if (
+                      readToolCallLimit !== undefined &&
+                      allowedReadToolCallCount >= readToolCallLimit
+                    ) {
+                      return {
+                        behavior: "deny" as const,
+                        message: `只读资料调用已达到 ${readToolCallLimit} 次上限。请停止检索，立即依据已取得资料返回最终结果。`,
+                      };
+                    }
+                    allowedReadToolCallCount += 1;
+                    return { behavior: "allow" as const };
+                  },
+                }
+              : {}),
+            ...(activeRequest.model
+              ? {
+                  model: applyProviderContextWindowSuffix(
+                    activeRequest.model,
+                    activeRequest.providerEnv?.providerId ??
+                      SUBSCRIPTION_PROVIDER_ID,
+                  ),
+                }
+              : {}),
+          },
+        }),
+      );
       const queryPromise = (async (): Promise<string | null> => {
         let latest: string | null = null;
+        let streamedOutput = "";
         for await (const message of oneShot) {
+          const textDelta = extractOneShotTextDeltaFromSdkMessage(message);
+          if (textDelta) {
+            streamedOutput += textDelta;
+            activeRequest.onProgress?.({
+              kind: "status",
+              message: "正在生成结果",
+              partialOutput: streamedOutput,
+            });
+          }
           const toolContext = extractOneShotToolContextFromSdkMessage(message);
           if (toolContext) {
             recoveryContext = `${recoveryContext}\n\n${toolContext}`
@@ -470,20 +654,42 @@ export async function generateOneShotText(
           if (sdkError) throw new Error(sdkError);
           latest = extractTitleTextFromSdkMessage(message) ?? latest;
         }
-        return latest;
+        return latest ?? streamedOutput;
       })();
-      const timeoutMs = activeRequest.timeoutMs ?? (toolConfiguration ? 120_000 : 60_000);
-      const timedOut = Symbol('one-shot-timeout');
+      const timeoutMs =
+        activeRequest.timeoutMs ?? (toolConfiguration ? 120_000 : 60_000);
+      const timedOut = Symbol("one-shot-timeout");
+      const cancelled = Symbol("one-shot-cancelled");
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      let removeAbortListener: (() => void) | undefined;
       const timeout = new Promise<typeof timedOut>((resolve) => {
         timeoutHandle = setTimeout(() => resolve(timedOut), timeoutMs);
       });
-      let result: string | null | typeof timedOut;
+      const cancellation = activeRequest.abortController
+        ? new Promise<typeof cancelled>((resolve) => {
+            const signal = activeRequest.abortController?.signal;
+            const onAbort = () => {
+              void oneShot.return(undefined as never).catch(() => undefined);
+              resolve(cancelled);
+            };
+            if (signal?.aborted) onAbort();
+            else signal?.addEventListener("abort", onAbort, { once: true });
+            removeAbortListener = () =>
+              signal?.removeEventListener("abort", onAbort);
+          })
+        : null;
+      let result: string | null | typeof timedOut | typeof cancelled;
       try {
-        result = await Promise.race([queryPromise, timeout]);
+        result = await Promise.race([
+          queryPromise,
+          timeout,
+          ...(cancellation ? [cancellation] : []),
+        ]);
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
+        removeAbortListener?.();
       }
+      if (result === cancelled) throw new OneShotTextCancelledError();
       if (result === timedOut) {
         try {
           await Promise.race([
@@ -493,7 +699,8 @@ export async function generateOneShotText(
         } catch {
           // Best-effort SDK subprocess cleanup after the request deadline.
         }
-        if (activeRequest.throwOnTimeout) throw new OneShotTextTimeoutError(timeoutMs);
+        if (activeRequest.throwOnTimeout)
+          throw new OneShotTextTimeoutError(timeoutMs);
         return null;
       }
       const output = result;
@@ -504,8 +711,8 @@ export async function generateOneShotText(
       if (!activeRequest.toolset) return await run();
 
       const [contextModule, toolModule] = await Promise.all([
-        import('./novel-workbench-context'),
-        import('./tools/novel-workbench-tool'),
+        import("./novel-workbench-context"),
+        import("./tools/novel-workbench-tool"),
       ]);
       return await contextModule.runWithNovelWorkbenchToolset(
         activeRequest.toolset,
@@ -528,8 +735,8 @@ export async function generateOneShotText(
       if (!request.toolset || !isOneShotMaxTurnsError(error)) throw error;
 
       request.onProgress?.({
-        kind: 'status',
-        message: '已达到轮次上限，依据已读取资料直接输出',
+        kind: "status",
+        message: "已达到轮次上限，依据已读取资料直接输出",
       });
       activeRequest = {
         ...request,
@@ -537,9 +744,9 @@ export async function generateOneShotText(
           request.prompt.slice(0, 36_000),
           recoveryContext
             ? `【本轮已读取资料快照】\n${recoveryContext}`
-            : '【本轮已读取资料快照】\n本轮没有收到可复用的工具返回，请依据原始请求中的已有资料直接完成。',
-          '【收敛要求】不得调用工具，不得重新读取，直接输出最终结果。',
-        ].join('\n\n'),
+            : "【本轮已读取资料快照】\n本轮没有收到可复用的工具返回，请依据原始请求中的已有资料直接完成。",
+          "【收敛要求】不得调用工具，不得重新读取，直接输出最终结果。",
+        ].join("\n\n"),
         systemPrompt: `${request.systemPrompt}\n\n上一轮已达到轮次上限。本轮必须依据上面保留的已读资料直接输出最终结果，不得重新开始读取。`,
         maxTurns: 1,
         toolset: undefined,
@@ -566,9 +773,14 @@ export async function generateTitle(
   // OpenAI-protocol — the SDK subprocess routes to ITS upstream via a
   // dedicated /bridge/<token> path, fully isolated from the active session.
   // For Anthropic-direct / subscription title-gen, no token is needed.
-  const bridge = providerEnv?.apiProtocol === 'openai'
-    ? startOneShotBridge(providerEnv, model, `title-gen:${providerEnv.baseUrl ?? 'anthropic'}`)
-    : null;
+  const bridge =
+    providerEnv?.apiProtocol === "openai"
+      ? startOneShotBridge(
+          providerEnv,
+          model,
+          `title-gen:${providerEnv.baseUrl ?? "anthropic"}`,
+        )
+      : null;
   try {
     return await generateTitleInner(rounds, model, providerEnv, bridge?.token);
   } finally {
@@ -587,7 +799,7 @@ async function generateTitleInner(
 
   try {
     const cliPath = resolveClaudeCodeCli();
-    const cwd = join(homedir(), '.myagents', 'projects');
+    const cwd = join(homedir(), ".myagents", "projects");
     ensureDirSync(cwd);
 
     // Pass `model` as the override so CLAUDE_CODE_AUTO_COMPACT_WINDOW is
@@ -604,49 +816,51 @@ async function generateTitleInner(
 
     async function* titlePrompt() {
       yield {
-        type: 'user' as const,
-        message: { role: 'user' as const, content: prompt },
+        type: "user" as const,
+        message: { role: "user" as const, content: prompt },
         parent_tool_use_id: null,
         session_id: sessionId,
       };
     }
 
-    const titleQuery = await createGuardedSdkQuery(cliPath, () => query({
-      prompt: titlePrompt(),
-      options: {
-        maxTurns: 1,
-        sessionId,
-        cwd,
-        settingSources: ['project'],
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        pathToClaudeCodeExecutable: cliPath,
-        env,
-        systemPrompt: SYSTEM_PROMPT,
-        // Title generation is a short text-classification task. Adaptive thinking
-        // can spend the whole one-shot budget on hidden reasoning or delay first
-        // text on strong reasoning models, so force the cheapest text path.
-        thinking: { type: 'disabled' },
-        effort: 'low',
-        includePartialMessages: false,
-        persistSession: false,
-        mcpServers: {},
-        // Security (review #2): title generation is a PURE-TEXT task whose only
-        // input is (attacker-influenceable) transcript text. Running it at
-        // bypassPermissions with built-in tools available means an indirect
-        // prompt injection in the transcript could make the title model emit a
-        // Bash/Write tool_use that then executes with NO approval. `tools: []`
-        // is the SDK-native "disable ALL built-in tools" (sdk.d.ts:1360), and
-        // `mcpServers:{}` already removes MCP tools — together there is nothing
-        // to invoke, so bypassPermissions becomes moot. The model can still
-        // produce the title text (tools are orthogonal to generation).
-        tools: [],
-        // Wrap with [1m] when this provider's contextLength >200K (#335) so SDK
-        // uses the 1M path even for a one-shot title-gen subprocess. SDK strips
-        // the suffix before the wire.
-        ...(launchModel ? { model: launchModel } : {}),
-      },
-    }));
+    const titleQuery = await createGuardedSdkQuery(cliPath, () =>
+      query({
+        prompt: titlePrompt(),
+        options: {
+          maxTurns: 1,
+          sessionId,
+          cwd,
+          settingSources: ["project"],
+          permissionMode: "bypassPermissions",
+          allowDangerouslySkipPermissions: true,
+          pathToClaudeCodeExecutable: cliPath,
+          env,
+          systemPrompt: SYSTEM_PROMPT,
+          // Title generation is a short text-classification task. Adaptive thinking
+          // can spend the whole one-shot budget on hidden reasoning or delay first
+          // text on strong reasoning models, so force the cheapest text path.
+          thinking: { type: "disabled" },
+          effort: "low",
+          includePartialMessages: false,
+          persistSession: false,
+          mcpServers: {},
+          // Security (review #2): title generation is a PURE-TEXT task whose only
+          // input is (attacker-influenceable) transcript text. Running it at
+          // bypassPermissions with built-in tools available means an indirect
+          // prompt injection in the transcript could make the title model emit a
+          // Bash/Write tool_use that then executes with NO approval. `tools: []`
+          // is the SDK-native "disable ALL built-in tools" (sdk.d.ts:1360), and
+          // `mcpServers:{}` already removes MCP tools — together there is nothing
+          // to invoke, so bypassPermissions becomes moot. The model can still
+          // produce the title text (tools are orthogonal to generation).
+          tools: [],
+          // Wrap with [1m] when this provider's contextLength >200K (#335) so SDK
+          // uses the 1M path even for a one-shot title-gen subprocess. SDK strips
+          // the suffix before the wire.
+          ...(launchModel ? { model: launchModel } : {}),
+        },
+      }),
+    );
 
     let titleText: string | null = null;
 
@@ -667,19 +881,27 @@ async function generateTitleInner(
 
     // If timeout won, terminate the SDK iterator to release the subprocess
     if (titleText === null) {
-      try { titleQuery.return(undefined as never); } catch { /* ignore */ }
+      try {
+        titleQuery.return(undefined as never);
+      } catch {
+        /* ignore */
+      }
     }
 
     if (!titleText) {
-      console.warn(`[title-generator] No title text returned (${Date.now() - startTime}ms)`);
+      console.warn(
+        `[title-generator] No title text returned (${Date.now() - startTime}ms)`,
+      );
       return null;
     }
 
     const cleaned = cleanTitle(titleText);
-    console.log(`[title-generator] Generated title: "${cleaned}" (${Date.now() - startTime}ms, ${rounds.length} rounds)`);
+    console.log(
+      `[title-generator] Generated title: "${cleaned}" (${Date.now() - startTime}ms, ${rounds.length} rounds)`,
+    );
     return cleaned.length > 0 ? cleaned : null;
   } catch (err) {
-    console.warn('[title-generator] SDK query failed:', err);
+    console.warn("[title-generator] SDK query failed:", err);
     return null;
   }
 }
@@ -695,11 +917,16 @@ async function generateTitleInner(
  */
 function createFreshRuntime(type: RuntimeType): AgentRuntime {
   switch (type) {
-    case 'claude-code': return new ClaudeCodeRuntime();
-    case 'codex': return new CodexRuntime();
-    case 'gemini': return new GeminiRuntime();
+    case "claude-code":
+      return new ClaudeCodeRuntime();
+    case "codex":
+      return new CodexRuntime();
+    case "gemini":
+      return new GeminiRuntime();
     default:
-      throw new Error(`Unsupported external runtime for title generation: ${type}`);
+      throw new Error(
+        `Unsupported external runtime for title generation: ${type}`,
+      );
   }
 }
 
@@ -720,10 +947,14 @@ function createFreshRuntime(type: RuntimeType): AgentRuntime {
  */
 function titlePermissionMode(runtimeType: RuntimeType): string {
   switch (runtimeType) {
-    case 'claude-code': return 'fullAgency';  // tools stripped via disallowedTools
-    case 'codex': return 'suggest';           // → approval=untrusted + sandbox=read-only
-    case 'gemini': return 'default';          // → approval-required (no yolo)
-    default: return 'auto';
+    case "claude-code":
+      return "fullAgency"; // tools stripped via disallowedTools
+    case "codex":
+      return "suggest"; // → approval=untrusted + sandbox=read-only
+    case "gemini":
+      return "default"; // → approval-required (no yolo)
+    default:
+      return "auto";
   }
 }
 
@@ -754,22 +985,26 @@ export function buildExternalTitleSessionOptions(input: {
     maxTurns: 1,
     // Placeholder — title-gen passes its own systemPromptAppend and explicit permissionMode,
     // so scenario-driven branches in each runtime (default-mode/L2-prompt) never fire.
-    scenario: { type: 'desktop' },
+    scenario: { type: "desktop" },
     // Runtime Source is part of Codex identity. Without this, startSession()
     // defaults to system-cli even when the owning Session is Managed Codex.
-    ...(input.runtimeType === 'codex' ? {
-      runtimeSource: input.runtimeSource,
-      // Managed Codex has an isolated CODEX_HOME; an explicit empty set means
-      // this utility process receives no workspace MCP injection. system-cli
-      // intentionally keeps its user-owned native config unchanged.
-      ...(input.runtimeSource === 'managed-provider' ? {
-        mcpServers: [],
-        // Title generation is a short text task. Do not inherit a user's xhigh
-        // effort or persist a throwaway Managed Codex thread.
-        reasoningEffort: 'low',
-        ephemeral: true,
-      } : {}),
-    } : {}),
+    ...(input.runtimeType === "codex"
+      ? {
+          runtimeSource: input.runtimeSource,
+          // Managed Codex has an isolated CODEX_HOME; an explicit empty set means
+          // this utility process receives no workspace MCP injection. system-cli
+          // intentionally keeps its user-owned native config unchanged.
+          ...(input.runtimeSource === "managed-provider"
+            ? {
+                mcpServers: [],
+                // Title generation is a short text task. Do not inherit a user's xhigh
+                // effort or persist a throwaway Managed Codex thread.
+                reasoningEffort: "low",
+                ephemeral: true,
+              }
+            : {}),
+        }
+      : {}),
   };
 }
 
@@ -801,15 +1036,23 @@ export async function generateTitleExternal(
   try {
     runtime = createFreshRuntime(runtimeType);
   } catch (err) {
-    console.warn('[title-generator] external runtime unavailable:', err);
+    console.warn("[title-generator] external runtime unavailable:", err);
     return null;
   }
 
-  let collected = '';
+  let collected = "";
   let handle: RuntimeProcess | null = null;
   let resolved = false;
-  let settle: (val: string | null) => void = () => { /* placeholder replaced by promise ctor */ };
-  let outcome: 'ok' | 'empty' | 'timeout' | 'start-failed' | 'error' | 'permission' = 'timeout';
+  let settle: (val: string | null) => void = () => {
+    /* placeholder replaced by promise ctor */
+  };
+  let outcome:
+    | "ok"
+    | "empty"
+    | "timeout"
+    | "start-failed"
+    | "error"
+    | "permission" = "timeout";
 
   const resultPromise = new Promise<string | null>((resolve) => {
     settle = (val: string | null) => {
@@ -834,44 +1077,50 @@ export async function generateTitleExternal(
   const startPromise = runtime.startSession(titleSessionOptions, (event) => {
     // Guard: events can still stream in after we've settled (timeout winner / late turn_complete).
     if (resolved) return;
-    if (event.kind === 'text_delta') {
+    if (event.kind === "text_delta") {
       collected += event.text;
-    } else if (event.kind === 'turn_complete') {
-      outcome = collected ? 'ok' : 'empty';
+    } else if (event.kind === "turn_complete") {
+      outcome = collected ? "ok" : "empty";
       settle(collected || null);
-    } else if (event.kind === 'session_complete') {
+    } else if (event.kind === "session_complete") {
       // On non-success (Gemini session/prompt error, Codex turn error) a few tokens may have
       // streamed before the failure — those partial fragments make garbage titles. Settle null.
-      if (event.subtype === 'success') {
-        outcome = collected ? 'ok' : 'empty';
+      if (event.subtype === "success") {
+        outcome = collected ? "ok" : "empty";
         settle(collected || null);
       } else {
-        outcome = 'error';
+        outcome = "error";
         settle(null);
       }
-    } else if (event.kind === 'permission_request') {
+    } else if (event.kind === "permission_request") {
       // Title-gen is text-only and forces the most permissive mode per runtime so this shouldn't
       // fire. If it does (e.g. Gemini set_mode non-fatally fell back to default), don't deadlock
       // waiting on an approval we'd never grant — settle with whatever text we have and let the
       // cleanup path kill the process. No respondPermission call needed.
-      outcome = 'permission';
+      outcome = "permission";
       settle(collected || null);
     }
   });
 
-  startPromise.then((h) => {
-    handle = h;
-    // Late handle after timeout already fired — kill immediately, nobody else will.
-    if (resolved) {
-      runtime.stopSession(h).catch(() => { /* ignore */ });
-    }
-  }).catch((err) => {
-    outcome = 'start-failed';
-    console.warn('[title-generator] external startSession failed:', err);
-    settle(null);
-  });
+  startPromise
+    .then((h) => {
+      handle = h;
+      // Late handle after timeout already fired — kill immediately, nobody else will.
+      if (resolved) {
+        runtime.stopSession(h).catch(() => {
+          /* ignore */
+        });
+      }
+    })
+    .catch((err) => {
+      outcome = "start-failed";
+      console.warn("[title-generator] external startSession failed:", err);
+      settle(null);
+    });
 
-  const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), EXTERNAL_TIMEOUT_MS));
+  const timeoutPromise = new Promise<null>((resolve) =>
+    setTimeout(() => resolve(null), EXTERNAL_TIMEOUT_MS),
+  );
   const titleText = await Promise.race([resultPromise, timeoutPromise]);
 
   // #296 review (Codex C2): mark the attempt finished now. If the TIMEOUT won the
@@ -891,14 +1140,24 @@ export async function generateTitleExternal(
   //   3. startPromise rejects during the grace window → .catch above already fired, no handle to
   //      stop. Swallow rejection in the race so we don't propagate.
   if (handle) {
-    try { await runtime.stopSession(handle); } catch { /* ignore */ }
+    try {
+      await runtime.stopSession(handle);
+    } catch {
+      /* ignore */
+    }
   } else {
     const lateHandle = await Promise.race([
       startPromise.catch(() => null),
-      new Promise<RuntimeProcess | null>((r) => setTimeout(() => r(null), 5_000)),
+      new Promise<RuntimeProcess | null>((r) =>
+        setTimeout(() => r(null), 5_000),
+      ),
     ]);
     if (lateHandle) {
-      try { await runtime.stopSession(lateHandle); } catch { /* ignore */ }
+      try {
+        await runtime.stopSession(lateHandle);
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -906,11 +1165,15 @@ export async function generateTitleExternal(
   if (!titleText || !titleText.trim()) {
     // Preserve the outcome tag the callback/catch/timeout set so ops can distinguish
     // timeout / start-failed / error / empty in the logs.
-    console.warn(`[title-generator] external ${runtimeType} produced no title (outcome=${outcome}, ${durationMs}ms)`);
+    console.warn(
+      `[title-generator] external ${runtimeType} produced no title (outcome=${outcome}, ${durationMs}ms)`,
+    );
     return null;
   }
 
   const cleaned = cleanTitle(titleText);
-  console.log(`[title-generator] Generated title via ${runtimeType}: "${cleaned}" (outcome=${outcome}, ${durationMs}ms, ${rounds.length} rounds)`);
+  console.log(
+    `[title-generator] Generated title via ${runtimeType}: "${cleaned}" (outcome=${outcome}, ${durationMs}ms, ${rounds.length} rounds)`,
+  );
   return cleaned.length > 0 ? cleaned : null;
 }

@@ -1,9 +1,16 @@
 import type { WorkbenchStorage } from "@/workbench-sdk";
 import { factionRecordPath } from "../../../shared/workbenches/novel/factionStorage";
 import { locationRecordPath } from "../../../shared/workbenches/novel/locationStorage";
+import {
+  MANUSCRIPT_TRACKING_INDEX_PATH,
+  MANUSCRIPT_TRACKING_LEGACY_PATH,
+  loadManuscriptTrackingFiles,
+  manuscriptTrackingBatchPath,
+} from "../../../shared/workbenches/novel/manuscriptTrackingStorage";
 import { narrativeRecordPath } from "../../../shared/workbenches/novel/narrativeEngineeringStorage";
 import { timelineRecordPath } from "../../../shared/workbenches/novel/timelineStorage";
 
+import { compileAppliedChapterFacts } from "./chapterFactCompiler";
 import {
   createNovelCharacterLibraryRepository,
   loadCharacterRecords,
@@ -17,6 +24,10 @@ import {
 import { createNovelLocationLibraryRepository } from "./modules/locations/data-access/locationLibraryRepository";
 import { MAP_LIBRARY_PATH, mapRecordPath } from "./mapSchema";
 import { createNovelMapRepository } from "./mapRepository";
+import {
+  parseManuscriptTrackingLedger,
+  type ManuscriptTrackingBatch,
+} from "./manuscriptTrackingSchema";
 import { createNovelRepository } from "./repository";
 import {
   SETTING_LIBRARY_PATHS,
@@ -31,9 +42,14 @@ import {
 import { createNovelTimelineLibraryRepository } from "./timelineLibraryRepository";
 import { createWorldInstant } from "./worldSimulationTime";
 import { resolveWorldSimulationRegionScope } from "./worldSimulationScope";
+import type {
+  NarrativeOutcome,
+  NarrativeSimulationConstraint,
+} from "./narrativeEngineeringSchema";
 import {
   WORLD_SIMULATION_SCHEMA_VERSION,
   type CharacterProjection,
+  type ChapterFactProjection,
   type ChapterProjection,
   type CultivationSystemProjection,
   type FactionProjection,
@@ -71,6 +87,56 @@ function numericText(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function compiledRuleSemantics(
+  title: string,
+  description: string,
+  calendar: WorldSimulationScenario["calendar"],
+): Pick<RuleProjection, "kind" | "intervalDays" | "aggregationLabel"> {
+  const text = `${title}\n${description}`;
+  const unitDays: Record<string, bigint> = {
+    日: 1n,
+    天: 1n,
+    十日: 10n,
+    月: BigInt(calendar.daysPerMonth),
+    季度: BigInt(calendar.daysPerMonth * 3),
+    季: BigInt(calendar.daysPerMonth * 3),
+    年: BigInt(calendar.daysPerMonth * calendar.monthsPerYear),
+    世纪: BigInt(calendar.daysPerMonth * calendar.monthsPerYear) * 100n,
+    千年: BigInt(calendar.daysPerMonth * calendar.monthsPerYear) * 1_000n,
+    万年: BigInt(calendar.daysPerMonth * calendar.monthsPerYear) * 10_000n,
+  };
+  const periodic = text.match(
+    /每\s*(?:(\d+)\s*)?(十日|季度|季|千年|万年|世纪|年|月|日|天)(?=一次|开启|打开|举行|发生|轮回|重现|来临|祭祀|节)/u,
+  );
+  const fallbackPeriodic = text.match(
+    /(\d+)\s*(千年|万年|世纪|年|月|日|天)[^。；;\n]{0,18}(?:一次|开启|举行|发生|轮回|重现)/u,
+  );
+  const match = periodic ?? fallbackPeriodic;
+  if (match) {
+    const amount = BigInt(match[1] || "1");
+    const unit = match[2] ?? match[3];
+    const days = unit ? unitDays[unit] : undefined;
+    if (days && amount > 0n) {
+      const intervalDays = (amount * days).toString();
+      const aggregationLabel = /节|庆典|祭祀|风俗/u.test(text)
+        ? "按窗口聚合节庆与民间生活"
+        : /秘境|遗迹|宝库|开启|降临/u.test(text)
+          ? "按窗口聚合开启次数与传承后果"
+          : /战争|战事|争夺|冲突/u.test(text)
+            ? "按窗口聚合周期性冲突与资源压力"
+            : "按窗口聚合周期性世界过程";
+      return { kind: "periodic", intervalDays, aggregationLabel };
+    }
+  }
+  if (/寿命|寿元|出生|死亡|离世|继承|传承|代际/u.test(text))
+    return { kind: "lifecycle" };
+  if (/禁止|不得|不能|不可|封闭|仅限|无法.{0,4}(进入|跨越|移动)/u.test(text))
+    return { kind: "hard-boundary" };
+  if (/战争|战事|资源|争夺|节日|民间|贸易|生态|人口|修炼|灵气/u.test(text))
+    return { kind: "world-process" };
+  return { kind: "conditional" };
+}
+
 function fallbackHash(content: string): string {
   let hash = 0x811c9dc5;
   for (const value of new TextEncoder().encode(content)) {
@@ -104,6 +170,52 @@ function ref(
     authority,
     ...(entityId ? { entityId } : {}),
     ...(excerpt ? { excerpt: clip(excerpt, 320) } : {}),
+  };
+}
+
+function projectNarrativeOutcome(outcome: NarrativeOutcome) {
+  if (outcome.kind === "event") {
+    return {
+      id: outcome.id,
+      kind: outcome.kind,
+      eventKind: outcome.eventKind,
+      entityIds: [...outcome.entityIds],
+      regionIds: [...outcome.regionIds],
+    } as const;
+  }
+  return {
+    id: outcome.id,
+    kind: outcome.kind,
+    commandType: outcome.commandType,
+    entityType: outcome.entityType,
+    entityId: outcome.entityId,
+    field: outcome.field,
+    operator: outcome.operator,
+    value: outcome.value,
+  } as const;
+}
+
+function projectNarrativeSimulationConstraint(
+  constraint: NarrativeSimulationConstraint | undefined,
+) {
+  if (!constraint) {
+    return {
+      regionIds: [],
+      requiredOutcomes: [],
+      forbiddenOutcomes: [],
+      flexibility: 50,
+    } as const;
+  }
+  return {
+    regionIds: [...(constraint.requiredRegionIds ?? [])],
+    ...(constraint.timeWindow ? { timeWindow: constraint.timeWindow } : {}),
+    requiredOutcomes: (constraint.requiredOutcomes ?? []).map(
+      projectNarrativeOutcome,
+    ),
+    forbiddenOutcomes: (constraint.forbiddenOutcomes ?? []).map(
+      projectNarrativeOutcome,
+    ),
+    flexibility: constraint.flexibility ?? 50,
   };
 }
 
@@ -261,6 +373,73 @@ export async function buildWorldSimulationBaseline(
   );
 
   const diagnostics: SimulationDiagnostic[] = [];
+  const chapterSourceHashes = new Map(
+    await Promise.all(
+      project.chapters.map(
+        async (chapter) =>
+          [chapter.id, await hashSimulationSource(chapter.content)] as const,
+      ),
+    ),
+  );
+  let trackingLedger: {
+    readonly batches: readonly ManuscriptTrackingBatch[];
+  } | null = null;
+  const trackingFiles = new Map<string, string>();
+  const [trackingIndex, trackingLegacy] = await storage.stat([
+    MANUSCRIPT_TRACKING_INDEX_PATH,
+    MANUSCRIPT_TRACKING_LEGACY_PATH,
+  ]);
+  if (trackingIndex?.exists) {
+    if (trackingIndex.kind !== "file") {
+      diagnostics.push({
+        id: "chapter-fact-tracking-index-invalid",
+        severity: "warning",
+        title: "正文事实账本入口无效",
+        detail: `${MANUSCRIPT_TRACKING_INDEX_PATH} 不是可读取文件，章节事实不会进入本次基线。`,
+        sourceRefs: [],
+      });
+    } else {
+      try {
+        const loaded = await loadManuscriptTrackingFiles(
+          async (path) => (await storage.readText(path)).content,
+        );
+        trackingLedger = parseManuscriptTrackingLedger(
+          JSON.stringify(loaded.ledger),
+        );
+        loaded.files.forEach((content, path) =>
+          trackingFiles.set(path, content),
+        );
+      } catch (cause) {
+        diagnostics.push({
+          id: "chapter-fact-tracking-unreadable",
+          severity: "warning",
+          title: "正文事实账本无法读取",
+          detail: `章节事实不会进入本次基线：${errorDetail(cause)}`,
+          sourceRefs: [],
+        });
+      }
+    }
+  } else if (trackingLegacy?.exists) {
+    diagnostics.push({
+      id: "chapter-fact-tracking-legacy",
+      severity: "info",
+      title: "正文事实账本版本不兼容",
+      detail: `${MANUSCRIPT_TRACKING_LEGACY_PATH} 为旧单文件账本，当前不会自动迁移；请在正文工作台重新确认状态变化。`,
+      sourceRefs: [],
+    });
+  }
+  const trackingBatchHashes = new Map(
+    await Promise.all(
+      [...trackingFiles.entries()]
+        .filter(([path]) => path.startsWith("manuscript/state-ledger/batches/"))
+        .map(async ([path, content]) => {
+          const id = path
+            .replace(/^manuscript\/state-ledger\/batches\//u, "")
+            .replace(/\.json$/u, "");
+          return [id, await hashSimulationSource(content)] as const;
+        }),
+    ),
+  );
   const metadataHash = await hashSimulationSource(project.metadataContent);
   const chapterIndexHash = await hashSimulationSource(
     project.chapterIndexContent,
@@ -320,24 +499,43 @@ export async function buildWorldSimulationBaseline(
     timeline.library,
     MAIN_TIMELINE_BRANCH_ID,
   ).map((entry) => entry.event);
+  const chapterFactCompilation = compileAppliedChapterFacts({
+    chapters: project.chapters.map((chapter, order) => ({
+      id: chapter.id,
+      title: chapter.title,
+      displayNumber: chapter.displayNumber,
+      order,
+      path: chapter.path,
+      content: chapter.content,
+      sourceHash: chapterSourceHashes.get(chapter.id) ?? "missing",
+    })),
+    ledger: trackingLedger,
+    batchSourceHashes: trackingBatchHashes,
+    timelineEvents: mainTimeline,
+    calendar: scenario.calendar,
+    entityIds: {
+      characterIds: new Set(characterRecords.map((character) => character.id)),
+      factionIds: new Set(
+        factions.library.factions.map((faction) => faction.id),
+      ),
+      itemIds: new Set(items.index.items.map((item) => item.id)),
+      locationIds: new Set(
+        locations.index.locations.map((location) => location.id),
+      ),
+      foreshadowingIds: new Set(
+        mainTimeline.flatMap((event) =>
+          event.foreshadowings.map((foreshadowing) => foreshadowing.id),
+        ),
+      ),
+    },
+  });
+  const chapterFacts = chapterFactCompilation.facts;
+  diagnostics.push(...chapterFactCompilation.diagnostics);
   const factsThroughIndex = timeline.library.factsThroughEventId
     ? mainTimeline.findIndex(
         (event) => event.id === timeline.library.factsThroughEventId,
       )
     : -1;
-  if (factsThroughIndex < 0) {
-    diagnostics.push({
-      id: "timeline-facts-anchor-missing",
-      severity: scenario.start.mode === "facts-anchor" ? "blocking" : "warning",
-      title: "尚未设置事实截止点",
-      detail:
-        scenario.start.mode === "facts-anchor"
-          ? "当前方案要求从事实终点开始，但时间线未设置 factsThroughEventId。请先锁定已发生事实，或改用自定义起点。"
-          : "时间线事件不会自动成为事实。当前使用自定义起点，推演不会把任何时间线事件当作既成事实。",
-      sourceRefs: [ref("timeline/index.json", timelineHash, "planned")],
-    });
-  }
-
   const selectedChapter = scenario.chapterContext.chapterId
     ? (project.chapters.find(
         (chapter) => chapter.id === scenario.chapterContext.chapterId,
@@ -354,6 +552,30 @@ export async function buildWorldSimulationBaseline(
     );
     return index >= 0 && index <= factsThroughIndex;
   });
+  const chapterOrderById = new Map(
+    project.chapters.map((chapter, index) => [chapter.id, index]),
+  );
+  const selectedChapterOrder = selectedChapter
+    ? (chapterOrderById.get(selectedChapter.id) ?? null)
+    : null;
+  const activeChapterFacts: readonly ChapterFactProjection[] =
+    scenario.chapterContext.mode === "none" || selectedChapterOrder === null
+      ? []
+      : chapterFacts.filter((fact) =>
+          scenario.chapterContext.mode === "after"
+            ? fact.chapterOrder <= selectedChapterOrder
+            : fact.chapterOrder < selectedChapterOrder,
+        );
+  const selectedChapterFacts =
+    selectedChapterOrder === null
+      ? []
+      : chapterFacts.filter(
+          (fact) => fact.chapterOrder === selectedChapterOrder,
+        );
+  const worldTickForTimelineEvent = (event: TimelineEvent): bigint =>
+    BigInt(event.worldSortKey ?? Math.trunc(event.sortKey));
+  // 未设置事实截止点时，运行从世界日 0 建立基线。这是创建推演的默认
+  // 行为，不是需要作者补填的启动问题；后续确认的事实只会影响新建运行。
 
   let effectiveFactsThroughIndex = factsThroughIndex;
   let anchorSortKey =
@@ -370,44 +592,62 @@ export async function buildWorldSimulationBaseline(
         detail: "当前方案启用了章节推演，但没有选择有效章节。",
         sourceRefs: [],
       });
-    } else if (chapterActualEvents.length === 0) {
+    } else if (
+      chapterActualEvents.length === 0 &&
+      selectedChapterFacts.length === 0
+    ) {
       diagnostics.push({
         id: "chapter-timeline-unlinked",
         severity: "blocking",
-        title: "章节没有已发生时间锚点",
+        title: "章节没有可验证事实锚点",
         detail:
-          "章节上下文只能建立在已发生时间线事件上。请把章节关联到事实时间线，或关闭章节上下文后重新运行。",
+          "章节上下文需要已确认的正式时间线事件，或已应用且证据、时间均有效的正文事实。请关联时间线、确认正文追踪批次，或关闭章节上下文后重新运行。",
         sourceRefs: [
           ref(
             selectedChapter.path,
-            await hashSimulationSource(selectedChapter.content),
+            chapterSourceHashes.get(selectedChapter.id) ?? "missing",
             "planned",
             selectedChapter.id,
           ),
         ],
       });
     } else {
-      const first = chapterActualEvents[0]!;
-      const last = chapterActualEvents[chapterActualEvents.length - 1]!;
-      const firstIndex = mainTimeline.findIndex(
-        (event) => event.id === first.id,
+      const chapterAnchorTicks = [
+        ...chapterActualEvents.map(worldTickForTimelineEvent),
+        ...selectedChapterFacts.map((fact) => BigInt(fact.time.sortKey)),
+      ];
+      const firstTick = chapterAnchorTicks.reduce((lowest, value) =>
+        value < lowest ? value : lowest,
       );
-      const lastIndex = mainTimeline.findIndex((event) => event.id === last.id);
+      const lastTick = chapterAnchorTicks.reduce((highest, value) =>
+        value > highest ? value : highest,
+      );
       if (
         scenario.chapterContext.mode === "before" ||
         scenario.chapterContext.mode === "branch"
       ) {
         // 重演与分支都必须固定章节开始前的世界状态；目标章节本身只能
         // 作为观察项或替代路径，不能被预先混入基线。
-        effectiveFactsThroughIndex = Math.max(-1, firstIndex - 1);
-        anchorSortKey = (
-          BigInt(first.worldSortKey ?? Math.trunc(first.sortKey)) - 1n
-        ).toString();
+        while (
+          effectiveFactsThroughIndex >= 0 &&
+          worldTickForTimelineEvent(
+            mainTimeline[effectiveFactsThroughIndex]!,
+          ) >= firstTick
+        ) {
+          effectiveFactsThroughIndex -= 1;
+        }
+        anchorSortKey = (firstTick - 1n).toString();
       } else {
         // 从章节后继续时，章节后的正式事实仍是未来资料，绝不能因为
         // 全局事实截止点更晚而泄漏到较早章节的沙盒状态中。
-        effectiveFactsThroughIndex = lastIndex;
-        anchorSortKey = last.worldSortKey ?? String(Math.trunc(last.sortKey));
+        while (
+          effectiveFactsThroughIndex >= 0 &&
+          worldTickForTimelineEvent(mainTimeline[effectiveFactsThroughIndex]!) >
+            lastTick
+        ) {
+          effectiveFactsThroughIndex -= 1;
+        }
+        anchorSortKey = lastTick.toString();
       }
     }
   }
@@ -435,9 +675,14 @@ export async function buildWorldSimulationBaseline(
   const timelineFacts = actualTimelineEvents.map((event) =>
     timelineProjection(event, "actual", timelineHash, scenario.calendar),
   );
-  const timelinePlans = plannedTimelineEvents.map((event) =>
-    timelineProjection(event, "planned", timelineHash, scenario.calendar),
+  const activeChapterTimelineEventIds = new Set(
+    activeChapterFacts.map((fact) => fact.timelineEventId),
   );
+  const timelinePlans = plannedTimelineEvents
+    .filter((event) => !activeChapterTimelineEventIds.has(event.id))
+    .map((event) =>
+      timelineProjection(event, "planned", timelineHash, scenario.calendar),
+    );
 
   const regionNodes = settings.spatialTree.nodes;
   const locationByNodeId = new Map(
@@ -568,7 +813,7 @@ export async function buildWorldSimulationBaseline(
     if (!error) return;
     diagnostics.push({
       id: `map-record-unavailable-${entry.id}`,
-      severity: "warning",
+      severity: "info",
       title: `地图记录无法载入：${entry.name}`,
       detail: `已跳过该地图的邻接关系推导。${error}`,
       sourceRefs: [ref(mapRecordPath(entry.id), sourceHash, "canon", entry.id)],
@@ -722,8 +967,7 @@ export async function buildWorldSimulationBaseline(
         : undefined;
       const locationId =
         latestLocationByCharacter.get(character.id) ??
-        inferLocationId(character.hometown, regionNodes) ??
-        null;
+        inferLocationId(character.hometown, regionNodes);
       return {
         id: character.id,
         name: character.name,
@@ -862,7 +1106,7 @@ export async function buildWorldSimulationBaseline(
     if (!error) return;
     diagnostics.push({
       id: `item-record-unavailable-${entry.id}`,
-      severity: "warning",
+      severity: "info",
       title: `物品记录无法载入：${entry.name}`,
       detail: `已跳过该物品的能力、位置和归属投影。${error}`,
       sourceRefs: [ref(entry.recordPath, sourceHash, "canon", entry.id)],
@@ -1002,6 +1246,11 @@ export async function buildWorldSimulationBaseline(
         ),
         severity: "hard",
         regionId: setting.nodeId,
+        ...compiledRuleSemantics(
+          setting.name,
+          [pageContent, entriesText].filter(Boolean).join("\n"),
+          scenario.calendar,
+        ),
         sourceRefs: [
           ref(setting.pagePath, pageHash, "canon", setting.id, pageContent),
           ref(
@@ -1023,6 +1272,7 @@ export async function buildWorldSimulationBaseline(
         description: constraint,
         severity: "hard",
         regionId: null,
+        kind: "hard-boundary",
         sourceRefs: system.sourceRefs,
       });
     }),
@@ -1136,6 +1386,11 @@ export async function buildWorldSimulationBaseline(
   const knownCharacterIds = new Set(
     characterProjections.map((character) => character.id),
   );
+  const knownFactionIds = new Set(
+    factionProjections.map((faction) => faction.id),
+  );
+  const knownRegionIds = new Set(regions.map((region) => region.id));
+  const knownItemIds = new Set(itemProjections.map((item) => item.id));
   const plotLineById = new Map(
     project.narrative.library.lines.map((line) => [line.id, line]),
   );
@@ -1177,6 +1432,73 @@ export async function buildWorldSimulationBaseline(
         ),
       ],
     });
+  };
+  const validateStructuredConstraint = (
+    constraintId: string,
+    title: string,
+    constraint: NarrativeSimulationConstraint | undefined,
+  ) => {
+    if (!constraint) return;
+    const missing = (
+      values: readonly string[],
+      known: ReadonlySet<string>,
+      label: string,
+    ) =>
+      values.forEach((value) => {
+        if (known.has(value)) return;
+        const diagnosticId = `narrative-constraint-${constraintId}-${label}-${value}`;
+        if (narrativeReferenceDiagnosticIds.has(diagnosticId)) return;
+        narrativeReferenceDiagnosticIds.add(diagnosticId);
+        diagnostics.push({
+          id: diagnosticId,
+          severity: narrativeMode === "strict" ? "blocking" : "warning",
+          title: `${title}的结构化约束引用${label}不存在`,
+          detail: `结构化剧情约束“${title}”引用了不存在的${label} ${value}，该谓词不会命中。`,
+          sourceRefs: [
+            ref(
+              "narrative/index.json",
+              narrativeHash,
+              narrativeMode === "strict" ? "constraint" : "planned",
+            ),
+          ],
+        });
+      });
+    missing(constraint.requiredActorIds ?? [], knownCharacterIds, "人物");
+    missing(constraint.requiredRegionIds ?? [], knownRegionIds, "地域");
+    const outcomes = [
+      ...(constraint.requiredOutcomes ?? []),
+      ...(constraint.forbiddenOutcomes ?? []),
+    ];
+    outcomes.forEach((outcome) => {
+      if (outcome.kind === "event") {
+        missing(
+          outcome.entityIds,
+          new Set<string>([...knownCharacterIds, ...knownFactionIds]),
+          "主体",
+        );
+        missing(outcome.regionIds, knownRegionIds, "地域");
+        return;
+      }
+      if (!outcome.entityId || !outcome.entityType) return;
+      const known =
+        outcome.entityType === "character"
+          ? knownCharacterIds
+          : outcome.entityType === "faction"
+            ? knownFactionIds
+            : outcome.entityType === "region"
+              ? knownRegionIds
+              : knownItemIds;
+      missing([outcome.entityId], known, outcome.entityType);
+    });
+    const start = constraint.timeWindow?.startSortKey;
+    const end = constraint.timeWindow?.endSortKey;
+    if (start && end && BigInt(start) > BigInt(end)) {
+      warnNarrativeReference(
+        `narrative-constraint-invalid-window-${constraintId}`,
+        "剧情约束时间窗无效",
+        `结构化剧情约束“${title}”的时间窗结束坐标早于开始坐标，该约束不会参与裁定。`,
+      );
+    }
   };
   const resolveNarrativeEntityIds = (input: {
     readonly constraintId: string;
@@ -1291,7 +1613,12 @@ export async function buildWorldSimulationBaseline(
         scenario.narrativeContext.selectedPlotLineIds,
         "plot-line",
         "剧情线",
-      ).forEach((line) =>
+      ).forEach((line) => {
+        validateStructuredConstraint(
+          `plot-line-${line.id}`,
+          line.title,
+          line.simulationConstraint,
+        );
         narrativeConstraints.push({
           id: `plot-line-${line.id}`,
           kind: "plot-line",
@@ -1308,11 +1635,15 @@ export async function buildWorldSimulationBaseline(
           mode: narrativeMode,
           entityIds: resolveNarrativeEntityIds({
             constraintId: `plot-line-${line.id}`,
-            characterIds: [line.protagonistCharacterId],
+            characterIds: [
+              line.protagonistCharacterId,
+              ...(line.simulationConstraint?.requiredActorIds ?? []),
+            ],
           }),
+          ...projectNarrativeSimulationConstraint(line.simulationConstraint),
           sourceRefs: [narrativeEntityRef("lines", line.id, line.content)],
-        }),
-      );
+        });
+      });
     }
     if (scenario.narrativeContext.useStoryArcs) {
       selectedNarrative(
@@ -1320,7 +1651,12 @@ export async function buildWorldSimulationBaseline(
         scenario.narrativeContext.selectedStoryArcIds,
         "story-arc",
         "故事弧",
-      ).forEach((arc) =>
+      ).forEach((arc) => {
+        validateStructuredConstraint(
+          `story-arc-${arc.id}`,
+          arc.title,
+          arc.simulationConstraint,
+        );
         narrativeConstraints.push({
           id: `story-arc-${arc.id}`,
           kind: "story-arc",
@@ -1336,12 +1672,16 @@ export async function buildWorldSimulationBaseline(
           mode: narrativeMode,
           entityIds: resolveNarrativeEntityIds({
             constraintId: `story-arc-${arc.id}`,
-            characterIds: [arc.characterId],
+            characterIds: [
+              arc.characterId,
+              ...(arc.simulationConstraint?.requiredActorIds ?? []),
+            ],
             lineIds: arc.lineIds,
           }),
+          ...projectNarrativeSimulationConstraint(arc.simulationConstraint),
           sourceRefs: [narrativeEntityRef("arcs", arc.id, arc.content)],
-        }),
-      );
+        });
+      });
     }
     if (scenario.narrativeContext.useDirectoryOutline) {
       selectedNarrative(
@@ -1350,6 +1690,11 @@ export async function buildWorldSimulationBaseline(
         "directory",
         "大纲目录",
       ).forEach((directory) => {
+        validateStructuredConstraint(
+          `outline-${directory.id}`,
+          directory.title,
+          directory.simulationConstraint,
+        );
         const directoryIds = new Set([directory.id]);
         let previousSize = -1;
         while (previousSize !== directoryIds.size) {
@@ -1370,13 +1715,18 @@ export async function buildWorldSimulationBaseline(
               chapterPlanEntityIds(chapter, `outline-${directory.id}`),
             ),
         );
+        const requiredActorIds =
+          directory.simulationConstraint?.requiredActorIds ?? [];
         narrativeConstraints.push({
           id: `outline-${directory.id}`,
           kind: "outline",
           title: directory.title,
           content: directory.description,
           mode: narrativeMode,
-          entityIds,
+          entityIds: uniqueIds([...entityIds, ...requiredActorIds]),
+          ...projectNarrativeSimulationConstraint(
+            directory.simulationConstraint,
+          ),
           sourceRefs: [
             narrativeEntityRef(
               "directories",
@@ -1393,7 +1743,12 @@ export async function buildWorldSimulationBaseline(
         scenario.narrativeContext.selectedChapterPlanIds,
         "chapter-plan",
         "章节计划",
-      ).forEach((chapter) =>
+      ).forEach((chapter) => {
+        validateStructuredConstraint(
+          `chapter-plan-${chapter.id}`,
+          chapter.title,
+          chapter.simulationConstraint,
+        );
         narrativeConstraints.push({
           id: `chapter-plan-${chapter.id}`,
           kind: "chapter-plan",
@@ -1409,15 +1764,16 @@ export async function buildWorldSimulationBaseline(
               .join("\n"),
           ),
           mode: narrativeMode,
-          entityIds: chapterPlanEntityIds(
-            chapter,
-            `chapter-plan-${chapter.id}`,
-          ),
+          entityIds: uniqueIds([
+            ...chapterPlanEntityIds(chapter, `chapter-plan-${chapter.id}`),
+            ...(chapter.simulationConstraint?.requiredActorIds ?? []),
+          ]),
+          ...projectNarrativeSimulationConstraint(chapter.simulationConstraint),
           sourceRefs: [
             narrativeEntityRef("chapters", chapter.id, chapter.description),
           ],
-        }),
-      );
+        });
+      });
     }
   }
 
@@ -1438,7 +1794,7 @@ export async function buildWorldSimulationBaseline(
       sourceRefs: [
         ref(
           chapter.path,
-          await hashSimulationSource(chapter.content),
+          chapterSourceHashes.get(chapter.id) ?? "missing",
           scenario.chapterContext.chapterId === chapter.id
             ? "constraint"
             : "planned",
@@ -1452,15 +1808,16 @@ export async function buildWorldSimulationBaseline(
   if (regions.length === 0)
     diagnostics.push({
       id: "regions-empty",
-      severity: "blocking",
+      severity: "info",
       title: "没有可推演地域",
-      detail: "请先在世界架构中建立至少一个空间节点。",
+      detail:
+        "当前没有地域资料，推演仍可创建并推进世界时钟；补充地域后新建运行即可获得地域事件。",
       sourceRefs: [],
     });
   if (characterProjections.length === 0 && factionProjections.length === 0)
     diagnostics.push({
       id: "actors-empty",
-      severity: "warning",
+      severity: "info",
       title: "没有人物或势力",
       detail: "世界过程仍可运行，但不会产生主体决策。",
       sourceRefs: [],
@@ -1495,16 +1852,6 @@ export async function buildWorldSimulationBaseline(
         severity: "blocking",
         title: `${character.name}尚未可参与推演`,
         detail: `人物当前状态为“${character.status}”。请先在人物库将其设为有效角色，或取消选中。`,
-        sourceRefs: character.sourceRefs,
-      });
-    }
-    if (!character.locationId) {
-      diagnostics.push({
-        id: `selected-character-location-missing-${character.id}`,
-        severity: "blocking",
-        title: `${character.name}缺少初始地点`,
-        detail:
-          "人物没有可验证的起始地域，不能生成旅行、感知或地域行动。请在人物资料或事实时间线中补充地点。",
         sourceRefs: character.sourceRefs,
       });
     }
@@ -1547,10 +1894,9 @@ export async function buildWorldSimulationBaseline(
   const eligibleCharacters = characterProjections.filter(
     (character) =>
       !isDraftOrArchivedStatus(character.status) &&
-      character.locationId !== null &&
       (selectedCharacterIds.size > 0
         ? selectedCharacterIds.has(character.id)
-        : scopedRegionIds.has(character.locationId)),
+        : character.locationId === null || scopedRegionIds.has(character.locationId)),
   );
   const eligibleFactions = factionProjections.filter((faction) => {
     if (/draft|archived|草稿|归档|dissolved|解散|灭亡/iu.test(faction.status))
@@ -1575,10 +1921,10 @@ export async function buildWorldSimulationBaseline(
   if (eligibleCharacters.length === 0 && eligibleFactions.length === 0) {
     diagnostics.push({
       id: "actionable-subjects-missing",
-      severity: "blocking",
+      severity: "info",
       title: "没有可行动的推演主体",
       detail:
-        "当前范围内没有已启用且具备初始地点的人物，也没有带有明确冲突或资源争夺的势力。请补充人物地点、事实事件，或势力关系与资源后再创建运行。",
+        "当前范围内还没有可行动人物或带有冲突的势力；推演仍可创建，世界时钟、周期规则和地域过程会继续结算。",
       sourceRefs: [
         ...characterProjections.flatMap((character) => character.sourceRefs),
         ...factionProjections.flatMap((faction) => faction.sourceRefs),
@@ -1627,6 +1973,7 @@ export async function buildWorldSimulationBaseline(
       : []),
     ...timelineFacts.flatMap((event) => event.sourceRefs),
     ...timelinePlans.flatMap((event) => event.sourceRefs),
+    ...chapterFacts.flatMap((fact) => fact.sourceRefs),
     ...characterProjections.flatMap((character) => character.sourceRefs),
     ...factionProjections.flatMap((faction) => faction.sourceRefs),
     ...regions.flatMap((region) => [
@@ -1678,6 +2025,7 @@ export async function buildWorldSimulationBaseline(
     rules: ruleProjections,
     timelineFacts,
     timelinePlans,
+    chapterFacts,
     narrativeConstraints,
     chapters,
     diagnostics,

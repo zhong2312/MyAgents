@@ -142,6 +142,84 @@ export type ManuscriptTrackingChange = z.infer<
   typeof manuscriptTrackingChangeSchema
 >;
 
+export interface ManuscriptTrackingReferenceCatalog {
+  readonly characterIds?: ReadonlySet<string>;
+  readonly itemIds?: ReadonlySet<string>;
+  readonly locationIds?: ReadonlySet<string>;
+  readonly factionIds?: ReadonlySet<string>;
+  readonly foreshadowingIds?: ReadonlySet<string>;
+}
+
+/** 校验状态操作是否具备同步所需的实体引用；目录参数缺省时只校验结构。 */
+export function getManuscriptTrackingReferenceIssue(
+  change: Pick<ManuscriptTrackingChange, "title" | "entityId" | "operation">,
+  catalog?: ManuscriptTrackingReferenceCatalog,
+): string | null {
+  const operation = change.operation;
+  if (!operation) return `“${change.title}”缺少可执行的状态操作`;
+
+  const requireEntity = (
+    entityId: string | null,
+    label: string,
+    ids?: ReadonlySet<string>,
+  ): string | null => {
+    if (!entityId) return `“${change.title}”缺少关联${label}`;
+    if (ids && !ids.has(entityId)) {
+      return `“${change.title}”关联的${label}不存在：${entityId}`;
+    }
+    return null;
+  };
+
+  if (
+    operation.kind === "character-appearance" ||
+    operation.kind === "character-field" ||
+    operation.kind === "relationship" ||
+    operation.kind === "inventory"
+  ) {
+    const characterIssue = requireEntity(
+      change.entityId,
+      "人物",
+      catalog?.characterIds,
+    );
+    if (characterIssue) return characterIssue;
+    if (
+      operation.kind === "relationship" &&
+      catalog?.characterIds &&
+      !catalog.characterIds.has(operation.targetCharacterId)
+    ) {
+      return `“${change.title}”关联的目标人物不存在：${operation.targetCharacterId}`;
+    }
+    if (
+      operation.kind === "inventory" &&
+      operation.itemId &&
+      catalog?.itemIds &&
+      !catalog.itemIds.has(operation.itemId)
+    ) {
+      return `“${change.title}”关联的物品不存在：${operation.itemId}`;
+    }
+    return null;
+  }
+
+  if (operation.kind === "location-field") {
+    return requireEntity(change.entityId, "地点", catalog?.locationIds);
+  }
+  if (operation.kind === "faction-field") {
+    return requireEntity(change.entityId, "势力", catalog?.factionIds);
+  }
+  if (operation.kind === "foreshadow" && operation.status !== "planted") {
+    if (!operation.foreshadowingId) {
+      return `“${change.title}”缺少要更新的伏笔 ID`;
+    }
+    if (
+      catalog?.foreshadowingIds &&
+      !catalog.foreshadowingIds.has(operation.foreshadowingId)
+    ) {
+      return `“${change.title}”关联的伏笔不存在：${operation.foreshadowingId}`;
+    }
+  }
+  return null;
+}
+
 export const manuscriptTrackingMutationSchema = z
   .object({
     targetKey: z.string().trim().min(1),
@@ -177,6 +255,11 @@ export const manuscriptTrackingBatchSchema = z
     createdAt: z.string().datetime(),
     appliedAt: z.string().datetime().nullable(),
     revertedAt: z.string().datetime().nullable(),
+    /**
+     * 正文叙事顺序不等于世界时间。只有作者确认的时间线事件可为该批
+     * 事实提供世界坐标；旧批次缺省时保持未定时语义。
+     */
+    timeAnchorEventId: stableIdSchema.nullable().optional(),
     changes: z.array(manuscriptTrackingChangeSchema),
     mutations: z.array(manuscriptTrackingMutationSchema),
   })

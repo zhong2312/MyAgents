@@ -6,6 +6,7 @@ import { createEmptyMapScene } from "../entities/mapSchema";
 import { createMapArtworkAssetCatalog } from "../business/mapArtwork";
 import {
   collectMapArtworkExportVariants,
+  mapCanvasRenderSize,
   mapPngExportFileName,
 } from "./mapSceneExporter";
 
@@ -15,6 +16,27 @@ describe("mapSceneExporter", () => {
       "北境：远征-终稿-高清.png",
     );
     expect(mapPngExportFileName("...")).toBe("地图-高清.png");
+  });
+
+  it("候选预览限制像素尺寸，但不改变地图世界坐标尺寸", () => {
+    expect(
+      mapCanvasRenderSize({ width: 3_200, height: 2_000 }, { maxEdge: 960 }),
+    ).toEqual({
+      worldWidth: 3_200,
+      worldHeight: 2_000,
+      outputWidth: 960,
+      outputHeight: 600,
+      scale: 0.3,
+    });
+    expect(
+      mapCanvasRenderSize({ width: 640, height: 400 }, { maxEdge: 960 }),
+    ).toEqual({
+      worldWidth: 640,
+      worldHeight: 400,
+      outputWidth: 640,
+      outputHeight: 400,
+      scale: 1,
+    });
   });
 
   it("预加载连续素材的改色变体，保证导出不丢失改色笔刷", () => {

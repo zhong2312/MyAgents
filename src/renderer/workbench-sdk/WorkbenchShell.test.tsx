@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { i18n } from "@/i18n";
@@ -49,6 +49,44 @@ describe("WorkbenchShell", () => {
     expect(onNavigate).toHaveBeenCalledWith("documents");
   });
 
+  it("opens a visible child route while keeping hidden internal routes out of the menu", () => {
+    const onNavigate = vi.fn();
+    const nestedManifest = {
+      ...manifest,
+      id: "io.myagents.nested-testbench",
+      navigation: [
+        { id: "overview", label: "Overview", order: 0 },
+        { id: "utilities", label: "辅助", order: 10 },
+        { id: "diagnostics", label: "诊断", parentId: "utilities", order: 10 },
+        {
+          id: "diagnostics-internal",
+          label: "内部诊断",
+          parentId: "utilities",
+          order: 10,
+          hidden: true,
+        },
+      ],
+    };
+    const registry = createWorkbenchRegistry([
+      defineWorkbench(nestedManifest, async () => ({ default: () => null })),
+    ]);
+    render(
+      <WorkbenchShell
+        target={{ workbenchId: nestedManifest.id, route: "overview" }}
+        workspacePath="C:\\Work\\Novel"
+        isActive
+        onNavigate={onNavigate}
+        registry={registry}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "辅助" }));
+    expect(screen.getByRole("button", { name: "世界推演" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "运行控制台" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "世界推演" }));
+    expect(onNavigate).toHaveBeenCalledWith("simulation");
+  });
+
   it("routes full Agent Session requests through the MyAgents host", async () => {
     const onOpenAgentSession = vi.fn(async () => undefined);
     const registry = createWorkbenchRegistry([
@@ -88,6 +126,39 @@ describe("WorkbenchShell", () => {
         title: "世界架构向导",
         promptId: "novel.world.guide",
       }),
+    );
+  });
+
+  it("routes one-shot AI cancellation through the MyAgents host", async () => {
+    const onCancelAiRun = vi.fn(async () => undefined);
+    const registry = createWorkbenchRegistry([
+      defineWorkbench(manifest, async () => ({
+        default: ({ context }) => (
+          <button
+            type="button"
+            onClick={() =>
+              void context.aiRuns.cancel("full-generation-test-run")
+            }
+          >
+            取消生成
+          </button>
+        ),
+      })),
+    ]);
+    render(
+      <WorkbenchShell
+        target={{ workbenchId: manifest.id, route: "overview" }}
+        workspacePath="C:\\Work\\Novel"
+        isActive
+        onNavigate={vi.fn()}
+        onCancelAiRun={onCancelAiRun}
+        registry={registry}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "取消生成" }));
+    await waitFor(() =>
+      expect(onCancelAiRun).toHaveBeenCalledWith("full-generation-test-run"),
     );
   });
 
@@ -174,6 +245,9 @@ describe("WorkbenchShell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "返回正文" }));
     expect(onNavigate).toHaveBeenCalledWith("manuscript");
+    fireEvent.click(screen.getByRole("button", { name: "展开工作台导航" }));
+    fireEvent.click(screen.getByRole("button", { name: "返回正文" }));
+    expect(onNavigate).toHaveBeenCalledTimes(2);
   });
 
   it("contains unknown and incompatible workbenches inside the shell", () => {

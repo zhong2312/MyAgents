@@ -57,7 +57,7 @@ describe("azgaarExportAdapter", () => {
     expect(features.map((feature) => feature.kind)).toEqual([
       "marker",
       "route",
-      "polygon",
+      "area",
     ]);
     expect(features[0]?.points).toEqual([{ x: 100, y: 200 }]);
     expect(features[1]?.points).toEqual([

@@ -14,6 +14,8 @@ export type MapBackgroundImagePlacement = {
   readonly y: number;
   readonly width: number;
   readonly height: number;
+  /** 生成器底图的自动对齐矩形不参与再次收紧；作者变换后才是边界事实。 */
+  readonly source?: "automatic" | "author";
 };
 
 export const MAP_BACKGROUND_PRESETS: readonly BackgroundPresetDefinition[] =
@@ -83,6 +85,13 @@ export function mapCanvasBackgroundStyle(
     backgroundImage: preset.image,
     backgroundSize: preset.size,
   };
+}
+
+/** 底图显示状态只影响渲染；底图来源仍属于 MapDocument 的事实。 */
+export function isMapBackgroundImageVisible(
+  canvas: MapDocument["canvas"],
+): boolean {
+  return canvas.backgroundImageVisible !== false;
 }
 
 /**

@@ -34,20 +34,32 @@ import type Geometry from "ol/geom/Geometry";
 import type { Coordinate } from "ol/coordinate";
 
 import { MAP_COMPONENT_DRAG_MIME } from "../business/mapComponents";
-import type { MapCanvasTool } from "../business/mapCanvasSession";
+import {
+  DEFAULT_MAP_CANVAS_SETTINGS,
+  type MapCanvasSettings,
+  type MapCanvasTool,
+} from "../business/mapCanvasSession";
 import {
   getMapArtworkAssetVariant,
   getMapArtworkStampAsset,
   mapArtworkVariantIndex,
 } from "../business/mapArtwork";
-import { mapCanvasBackgroundStyle } from "../business/mapBackgrounds";
+import {
+  isMapBackgroundImageVisible,
+  mapCanvasBackgroundStyle,
+} from "../business/mapBackgrounds";
 import { mapFeaturesInRenderOrder } from "../business/mapLayerOrder";
 import {
+  DEFAULT_MAP_RIVER_PROPS,
   getMapRiverStyle,
   isMapRiverFeature,
   mapRiverWidthAt,
   smoothMapPath,
 } from "../business/mapHydrography";
+import {
+  DEFAULT_MAP_FREEFORM_AREA_PROPS,
+  getMapFeatureAreaStyle,
+} from "../business/mapFeatureAreaStyle";
 import {
   getMapLabelLayout,
   getMapLabelStyle,
@@ -60,6 +72,12 @@ import {
   mapRouteStrokeLayers,
 } from "../business/mapRoutes";
 import {
+  isMapBrushPathClosed,
+  resampleMapBrushPoints,
+} from "../business/mapFeatureShapes";
+import { mapBrushCurvePoints } from "../business/mapFeatureShapes";
+import {
+  isMapFeatureFreeformArea,
   type MapArtworkStamp,
   type MapDocument,
   type MapFeature,
@@ -75,6 +93,7 @@ export type {
 interface MapCanvasProps {
   readonly document: MapDocument;
   readonly tool: MapCanvasTool;
+  readonly settings?: MapCanvasSettings;
   readonly activeLayerId: string;
   readonly selectedFeatureId: string | null;
   readonly focusRequest?: number;
@@ -142,12 +161,16 @@ function pointsFromGeometry(
   return [];
 }
 
-function geometryFromFeature(
+export function geometryFromFeature(
   feature: MapFeature,
   canvasWidth: number,
   canvasHeight: number,
 ): Geometry {
-  const coordinates = feature.points.map((point) =>
+  const renderedPoints =
+    feature.props.curve === "arc"
+      ? mapBrushCurvePoints(feature.points, "arc", feature.kind === "area")
+      : feature.points;
+  const coordinates = renderedPoints.map((point) =>
     pointToCoordinate(point, canvasHeight),
   );
   if (["marker", "label", "node"].includes(feature.kind)) {
@@ -155,12 +178,17 @@ function geometryFromFeature(
   }
   if (feature.kind === "route") return new LineString(coordinates);
   if (feature.kind === "area") {
-    const center = coordinates[0] ?? [canvasWidth / 2, canvasHeight / 2];
-    const radius = Number(feature.props.radius ?? 70);
-    return new CircleGeometry(
-      center,
-      Number.isFinite(radius) && radius > 0 ? radius : 70,
-    );
+    // 只有明确保存 radius 的旧版圆形要素才继续使用 CircleGeometry。
+    // 自由画笔、画笔多边形以及弧线闭合区域必须保留真实边界，否则
+    // OpenLayers 兼容画布会把它们全部退化成圆形，用户无法看到自由轮廓。
+    const radius = Number(feature.props.radius);
+    if (Number.isFinite(radius) && radius > 0 && coordinates.length <= 1) {
+      const center = coordinates[0] ?? [canvasWidth / 2, canvasHeight / 2];
+      return new CircleGeometry(center, radius);
+    }
+    const ring =
+      coordinates.length >= 3 ? [...coordinates, coordinates[0]!] : coordinates;
+    return new Polygon([ring]);
   }
   const ring =
     coordinates.length >= 3 ? [...coordinates, coordinates[0]] : coordinates;
@@ -174,9 +202,17 @@ function featureStyle(
   zIndex: number,
   canvasHeight: number,
 ): Style | Style[] {
+  // 兼容画布也必须消费与主场景相同的曲线事实。历史要素没有 curve
+  // 时保留旧的平滑策略；显式选择直线或弧线时不再静默退化。
+  const pathPoints = feature.props.curve
+    ? mapBrushCurvePoints(
+        feature.points,
+        feature.props.curve === "arc" ? "arc" : "line",
+      )
+    : smoothMapPath(feature.points);
   if (isMapRiverFeature(feature)) {
     const riverStyle = getMapRiverStyle(feature);
-    const smoothed = smoothMapPath(feature.points);
+    const smoothed = pathPoints;
     const styles: Style[] = [];
     smoothed.slice(1).forEach((point, index) => {
       const progress = (index + 1) / (smoothed.length - 1);
@@ -253,7 +289,7 @@ function featureStyle(
   }
   if (isMapStyledRoute(feature)) {
     const routeStyle = getMapRouteStyle(feature)!;
-    const smoothed = smoothMapPath(feature.points);
+    const smoothed = pathPoints;
     const geometry = new LineString(
       smoothed.map((point) => pointToCoordinate(point, canvasHeight)),
     );
@@ -312,9 +348,11 @@ function featureStyle(
           : "#b26d45"),
     opacity,
   );
+  const isArea = isMapFeatureFreeformArea(feature.kind);
+  const areaStyle = isArea ? getMapFeatureAreaStyle(feature) : null;
   const fill = withOpacity(
-    feature.props.fill ?? (terrain === "region" ? "#c9675540" : "#b26d4540"),
-    opacity,
+    areaStyle?.fill ?? (terrain === "region" ? "#c9675540" : "#b26d4540"),
+    opacity * (areaStyle?.opacity ?? 1),
   );
   const parsedWidth = Number(feature.props.lineWidth ?? 2);
   const width =
@@ -600,6 +638,7 @@ function featureStyleCacheKey(
 export default function MapCanvas({
   document,
   tool,
+  settings = DEFAULT_MAP_CANVAS_SETTINGS,
   activeLayerId,
   selectedFeatureId,
   focusRequest = 0,
@@ -836,7 +875,12 @@ export default function MapCanvas({
       viewport.style.cursor = "grab";
     }
     const pointerMoveKey = map.on("pointermove", (event) => {
-      if (toolRef.current !== "select" || !viewport) return;
+      if (
+        (toolRef.current !== "select" && toolRef.current !== "move") ||
+        !viewport
+      ) {
+        return;
+      }
       const hit = map.forEachFeatureAtPixel(
         event.pixel,
         (feature) => {
@@ -859,7 +903,11 @@ export default function MapCanvas({
         },
         { hitTolerance: 8, layerFilter: (layer) => layer === vector },
       );
-      viewport.style.cursor = hit ? "grab" : "default";
+      viewport.style.cursor = hit
+        ? toolRef.current === "move"
+          ? "grab"
+          : "pointer"
+        : "default";
     });
     const resizeTarget = elementRef.current;
     const updateMapSize = () => map.updateSize();
@@ -956,34 +1004,37 @@ export default function MapCanvas({
     if (!map || !source) return;
     map.getInteractions().forEach((interaction) => {
       if (interaction instanceof DragPan) interaction.setActive(tool === "pan");
-      if (
-        interaction instanceof Select ||
-        interaction instanceof Modify ||
-        interaction instanceof Translate
-      ) {
+      if (interaction instanceof Select || interaction instanceof Modify) {
         interaction.setActive(tool === "select");
       }
+      if (interaction instanceof Translate)
+        interaction.setActive(tool === "move");
       if (interaction instanceof Snap) {
         interaction.setActive(
           tool !== "select" &&
+            tool !== "move" &&
             tool !== "pan" &&
             tool !== "artwork-brush" &&
             tool !== "artwork-stamp" &&
+            tool !== "component-path-brush" &&
             tool !== "scene-eraser" &&
             tool !== "terrain-land" &&
             tool !== "terrain-water" &&
             tool !== "terrain-region-land" &&
             tool !== "terrain-region-water" &&
             tool !== "terrain-prefab" &&
-            tool !== "terrain-material",
+            tool !== "terrain-material" &&
+            tool !== "freehand" &&
+            tool !== "route" &&
+            tool !== "river",
         );
       }
     });
     map.getInteractions().forEach((interaction) => {
       if (interaction instanceof Draw) map.removeInteraction(interaction);
     });
-    if (tool === "select" || tool === "pan") {
-      const cursor = tool === "pan" ? "grab" : "default";
+    if (tool === "select" || tool === "move" || tool === "pan") {
+      const cursor = tool === "pan" || tool === "move" ? "grab" : "default";
       map.getTargetElement().style.cursor = cursor;
       const viewport = map
         .getTargetElement()
@@ -996,6 +1047,7 @@ export default function MapCanvas({
     if (
       tool === "scene-eraser" ||
       tool === "artwork-stamp" ||
+      tool === "component-path-brush" ||
       tool === "terrain-land" ||
       tool === "terrain-water" ||
       tool === "terrain-region-land" ||
@@ -1061,12 +1113,15 @@ export default function MapCanvas({
         viewportElement.removeEventListener("pointercancel", pointerUp);
       };
     }
+    const usesFreehandArea =
+      tool === "freehand" ||
+      (tool === "area" && settings.areaShape === "freehand");
     const drawType =
       tool === "marker" || tool === "label" || tool === "node"
         ? "Point"
-        : tool === "route"
+        : tool === "route" || tool === "river" || usesFreehandArea
           ? "LineString"
-          : tool === "polygon"
+          : tool === "area"
             ? "Polygon"
             : "Circle";
     const draw = new Draw({
@@ -1074,7 +1129,10 @@ export default function MapCanvas({
       type: drawType,
       stopClick: true,
       // 河流、道路、山脉等路线沿鼠标轨迹连续取样，手感接近 Wonderdraft 笔刷。
-      freehand: tool === "route",
+      freehand:
+        tool === "route" ||
+        tool === "river" ||
+        usesFreehandArea,
     });
     draw.on("drawend", (event) => {
       const geometry = event.feature.getGeometry();
@@ -1093,30 +1151,78 @@ export default function MapCanvas({
                 y: documentRef.current.canvas.height / 2,
               },
             ];
+      const freehandClosed =
+        usesFreehandArea && isMapBrushPathClosed(safePoints);
+      const normalizedPoints =
+        (usesFreehandArea || tool === "route" || tool === "river") &&
+        safePoints.length > 1
+          ? resampleMapBrushPoints(
+              safePoints,
+              settings.brushPointCount,
+              settings.brushPointCurve,
+              freehandClosed,
+            )
+          : safePoints;
+      const kind: MapFeature["kind"] = usesFreehandArea
+        ? freehandClosed
+          ? "area"
+          : "route"
+        : tool === "river"
+          ? "route"
+          : tool === "component-surface-brush"
+            ? "area"
+          : tool;
+      const curveProps: Record<string, string> =
+        kind === "area" || kind === "route"
+          ? { curve: settings.brushPointCurve }
+          : {};
       const feature: MapFeature = {
         id,
-        kind: tool,
+        kind,
         name:
           tool === "marker"
             ? "新地点"
             : tool === "label"
               ? "新标签"
-              : tool === "area" || tool === "polygon"
-                ? "新区域"
-                : tool === "route"
-                  ? "新路线"
-                  : "新节点",
+              : tool === "river"
+                ? "新河流"
+              : usesFreehandArea
+                ? "自由画笔"
+                : tool === "area"
+                  ? "新区域"
+                  : tool === "route"
+                    ? "新路线"
+                    : "新节点",
         entityRef: null,
         layerId: activeLayerId,
-        points: safePoints,
+        points: normalizedPoints,
         timeFrom: null,
         timeTo: null,
         props:
-          tool === "area" && geometry instanceof CircleGeometry
-            ? {
-                radius: String(Math.max(1, Math.round(geometry.getRadius()))),
-              }
-            : {},
+          tool === "river"
+            ? { ...DEFAULT_MAP_RIVER_PROPS, ...curveProps }
+            : usesFreehandArea
+              ? {
+                  ...(freehandClosed
+                    ? DEFAULT_MAP_FREEFORM_AREA_PROPS
+                    : {}),
+                  freehand: "true",
+                  closed: freehandClosed ? "true" : "false",
+                  ...curveProps,
+                }
+              : kind === "area"
+                ? {
+                    ...DEFAULT_MAP_FREEFORM_AREA_PROPS,
+                    ...curveProps,
+                    ...(geometry instanceof CircleGeometry
+                      ? {
+                          radius: String(
+                            Math.max(1, Math.round(geometry.getRadius())),
+                          ),
+                        }
+                      : {}),
+                  }
+                : curveProps,
         description: "",
       };
       onCreate(feature);
@@ -1126,7 +1232,16 @@ export default function MapCanvas({
     return () => {
       map.removeInteraction(draw);
     };
-  }, [activeLayerId, artworkBrushAssetId, onArtworkStampBrush, onCreate, tool]);
+  }, [
+    activeLayerId,
+    artworkBrushAssetId,
+    onArtworkStampBrush,
+    onCreate,
+    settings.areaShape,
+    settings.brushPointCount,
+    settings.brushPointCurve,
+    tool,
+  ]);
 
   useEffect(() => {
     layerRef.current?.changed();
@@ -1198,16 +1313,17 @@ export default function MapCanvas({
         );
       }}
     >
-      {document.canvas.backgroundImage && (
-        <div
-          className="pointer-events-none absolute inset-0 z-0 bg-center bg-no-repeat bg-contain"
-          style={{
-            backgroundImage: `url(${document.canvas.backgroundImage})`,
-            opacity: document.canvas.backgroundOpacity ?? 1,
-          }}
-          aria-hidden="true"
-        />
-      )}
+      {document.canvas.backgroundImage &&
+        isMapBackgroundImageVisible(document.canvas) && (
+          <div
+            className="pointer-events-none absolute inset-0 z-0 bg-center bg-no-repeat bg-contain"
+            style={{
+              backgroundImage: `url(${document.canvas.backgroundImage})`,
+              opacity: document.canvas.backgroundOpacity ?? 1,
+            }}
+            aria-hidden="true"
+          />
+        )}
       {document.canvas.showGrid && (
         <div className="pointer-events-none absolute inset-0 z-[2] opacity-45 [background-image:linear-gradient(#8b806f22_1px,transparent_1px),linear-gradient(90deg,#8b806f22_1px,transparent_1px)] [background-size:32px_32px]" />
       )}

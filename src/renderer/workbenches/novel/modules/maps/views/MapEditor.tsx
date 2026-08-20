@@ -2,23 +2,27 @@ import {
   Check,
   Clock3,
   CircleDashed,
+  Columns2,
   Copy,
   Eye,
   EyeOff,
   Eraser,
   Globe2,
+  GitBranch,
   Hand,
+  LassoSelect,
   Layers3,
   Lock,
   Loader2,
   LocateFixed,
   GitCompareArrows,
+  Maximize2,
   Map as MapIcon,
   MapPin,
   MousePointer2,
+  Move,
   Network,
   Paintbrush,
-  Pentagon,
   Plus,
   Route,
   Save,
@@ -29,6 +33,7 @@ import {
   X,
   Undo2,
   Redo2,
+  Rows2,
   Sparkles,
   ArrowUp,
   ArrowDown,
@@ -38,6 +43,7 @@ import {
 } from "lucide-react";
 import {
   type ChangeEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -57,10 +63,13 @@ import MapGeneratorDialog, {
   type MapAgentGenerationRequest,
 } from "./MapGeneratorDialog";
 import MapComponentPalette from "./MapComponentPalette";
+import TopologyComponentPalette from "./TopologyComponentPalette";
 import {
   DEFAULT_MAP_CANVAS_SETTINGS,
   type MapCanvasSettings,
   type MapCanvasTool,
+  type MapAreaShape,
+  type MapBrushPointCurve,
 } from "../business/mapCanvasSession";
 import NarrativeUnsavedChangesGuard from "../../../NarrativeUnsavedChangesGuard";
 
@@ -74,6 +83,7 @@ import {
   MAP_PROJECTION_LABELS,
   mapEntityKindSchema,
   type MapDocument,
+  type MapIndexEntry,
   type MapEntityKind,
   type MapFeature,
   type MapFeatureKind,
@@ -89,13 +99,20 @@ import {
   type MapBackgroundPreset,
   type MapProjectionType,
   createEmptyMapScene,
+  isMapFeatureFreeformArea,
   type MapArtworkProjectAsset,
   type MapSceneLayerKind,
 } from "../entities/mapSchema";
 import {
+  DOMAIN_ENTITY_KIND_LABELS,
   buildDomainIndex,
   type DomainEntityRef,
 } from "../../../shared/business/domainIndex";
+import { SETTING_LIBRARY_PATHS } from "../../../settingLibraryRepository";
+import {
+  parseSettingLibraryMeta,
+  parseSettingLibrarySpatialTree,
+} from "../../../settingLibrarySchema";
 import { type TimelineEvent } from "../../../timelineLibrarySchema";
 import { createNovelTimelineLibraryRepository } from "../../../timelineLibraryRepository";
 import { TIMELINE_INDEX_PATH } from "../../../../../../shared/workbenches/novel/timelineStorage";
@@ -105,10 +122,50 @@ import {
 } from "../business/mapGenerators";
 import { mapRendererForProjection } from "../business/mapRenderer";
 import {
-  moveTopologyNode,
+  arrangeTopologyNodes,
+  createTopologyEdgeFeature,
+  canEditTopologyNodes,
+  createConnectedTopologyNode,
+  duplicateTopologyFeatures,
+  getTopologyNodeKindOption,
+  getTopologyNodeKind,
+  getTopologyNodeLocked,
+  getTopologyNodeLinkedMapId,
+  getTopologyNodeConnections,
+  getTopologyNodeAncestors,
+  getTopologyNodeStatus,
+  getTopologyInvalidRouteDiagnostics,
+  getTopologySummary,
+  getTopologyRouteDirection,
+  getTopologyRouteRelation,
+  getTopologyRouteRelationLabel,
+  importTopologySettingSubtree,
+  moveTopologyNodes,
+  reconnectTopologyEdge,
   removeTopologyFeature,
+  removeTopologyFeatures,
+  insertTopologyNodeOnEdge,
+  reverseTopologyEdge,
+  TOPOLOGY_NODE_KIND_OPTIONS,
+  TOPOLOGY_NODE_DRAG_MIME,
+  TOPOLOGY_NODE_STATUS_OPTIONS,
+  TOPOLOGY_ROUTE_RELATION_OPTIONS,
+  type TopologyNodeKind,
+  type TopologyNodeStatus,
+  type TopologyRouteDirection,
+  type TopologyRouteRelation,
+  type TopologySettingLevelSource,
+  type TopologySettingNodeSource,
+  topologyNodeKindForProjection,
+  topologyNodeKindForSettingMapKind,
+  topologyAdjacentNodePoint,
+  topologyHierarchyAdjacentNodePoint,
+  topologyProjectionForNodeKind,
+  updateTopologyRoute,
+  updateTopologyNodeProps,
 } from "../business/topologyMap";
 import {
+  getMapBackgroundImagePlacement,
   getMapBackgroundPreset,
   MAP_BACKGROUND_PRESETS,
 } from "../business/mapBackgrounds";
@@ -116,9 +173,11 @@ import {
   MAP_COMPONENT_PRESETS,
   createMapComponentPrefabRegions,
   createMapComponentPrefabFeature,
+  createMapComponentSurfaceBrushPoints,
   mapComponentPlacement,
   type MapComponentPlacementGesture,
 } from "../business/mapComponents";
+import { getMapFeatureAreaStyle } from "../business/mapFeatureAreaStyle";
 import {
   addMapArtworkLayer,
   addMapArtworkStamp,
@@ -135,6 +194,7 @@ import {
   removeMapArtworkStamp,
   updateMapArtworkLayer,
   updateMapArtworkStamp,
+  type MapArtworkStampAsset,
 } from "../business/mapArtwork";
 import {
   mapArtworkLayerRenderPhase,
@@ -158,7 +218,10 @@ import {
   addMapSceneRegion,
   createMapSceneRegion,
   createMapSceneStroke,
+  mapSceneHasLandSurface,
+  mapSceneHasWaterSurface,
   moveMapSceneLayer,
+  removeMapSceneLayer,
   removeMapSceneRegion,
   removeMapSceneStroke,
   sceneLayerIdForKind,
@@ -167,8 +230,10 @@ import {
   updateMapSceneStroke,
   updateMapTerrainStyle,
 } from "../business/mapScene";
+import { eraseMapSceneContent } from "../business/mapSceneEraser";
 import {
   getMapTerrainMaterialPreset,
+  MAP_TERRAIN_MATERIAL_PRESETS,
   type MapTerrainMaterialPreset,
 } from "../business/mapTerrainMaterials";
 import {
@@ -187,24 +252,30 @@ import {
   MAP_ROUTE_STYLE_OPTIONS,
 } from "../business/mapRoutes";
 import {
-  expandMapCanvasToContent,
   expandMapCanvasToContentWithTranslation,
+  fitMapCanvasToContentWhenEmpty,
+  fitMapCanvasToDefaultContent,
   MAP_CANVAS_CONTENT_PADDING,
   mapDocumentGainedContent,
+  mapDocumentHasGeneratorOutput,
 } from "../business/mapCanvasBounds";
 import {
   canEditMapSelectableItems,
+  createMapSelectableGroup,
   duplicateMapSelectableItems,
+  expandMapSelectableItemIds,
   moveMapSelectableItems,
   removeMapSelectableItems,
+  ungroupMapSelectableItems,
 } from "../business/mapSelection";
 
 const FEATURE_KIND_LABELS: Readonly<Record<MapFeatureKind, string>> =
   Object.freeze({
-    marker: "标记点",
-    label: "文本标签",
-    area: "区域",
-    polygon: "多边形",
+    marker: "标记",
+    label: "标签",
+    area: "画笔",
+    // 历史 polygon 与新画笔共用同一语义和编辑体验。
+    polygon: "画笔",
     route: "路线",
     node: "拓扑节点",
   });
@@ -213,32 +284,49 @@ const FEATURE_KIND_ICONS: Readonly<Record<MapFeatureKind, typeof MapPin>> =
   Object.freeze({
     marker: MapPin,
     label: Type,
-    area: CircleDashed,
-    polygon: Pentagon,
+    area: Paintbrush,
+    polygon: LassoSelect,
     route: Route,
     node: Network,
   });
 
 const TOOL_LABELS: Readonly<Partial<Record<MapCanvasTool, string>>> =
   Object.freeze({
-    select: "选择与移动",
+    select: "选择对象",
+    move: "移动对象",
     pan: "平移画布",
+    river: "河流画笔",
     "terrain-land": "增加陆地",
     "terrain-water": "切回水域",
+    freehand: "自由画笔",
     "terrain-region-land": "勾画陆地区域",
     "terrain-region-water": "勾画水域区域",
-    "terrain-prefab": "放置大陆预制件",
+    "terrain-prefab": "放置预设区域",
     "terrain-material": "地貌材质",
     "artwork-brush": "素材笔刷",
     "artwork-stamp": "素材印章",
-    "scene-eraser": "地形橡皮",
-    marker: "标记点",
-    label: "文本标签",
-    area: "圆形区域",
-    polygon: "多边形区域",
+    "component-surface-brush": "表面构件笔刷",
+    "component-path-brush": "路径笔刷",
+    "scene-eraser": "图层橡皮",
+    marker: "标记",
+    label: "标签",
+    area: "画笔",
     route: "路线笔",
     node: "拓扑节点",
   });
+
+const MAP_AREA_SHAPE_OPTIONS: {
+  readonly value: MapAreaShape;
+  readonly label: string;
+  readonly icon?: ReactNode;
+}[] = [
+  // 自由画笔放在首项，避免窄窗口或下拉菜单滚动时被规则形状遮住。
+  // 选择它会切换到独立的 `freehand` 工具，而不是把手绘轨迹当成多边形。
+  { value: "freehand", label: "自由画笔", icon: <Paintbrush className="h-3.5 w-3.5" /> },
+  { value: "polygon", label: "多边形" },
+  { value: "circle", label: "圆形" },
+  { value: "ellipse", label: "椭圆" },
+];
 
 const ARTWORK_LAYER_KIND_LABELS: Readonly<Record<MapArtworkLayerKind, string>> =
   Object.freeze({
@@ -272,6 +360,94 @@ const ARTWORK_RENDER_PHASE_LABELS: Readonly<
 });
 
 const EMPTY_PROJECT_ARTWORK_ASSETS: readonly MapArtworkProjectAsset[] = [];
+
+type MapHistoryEntry = LoadedMapDocument & {
+  /** 从当前快照进入下一个快照时，MapDocument 坐标发生的整体平移。 */
+  readonly forwardRebase: MapScenePoint;
+};
+
+const ZERO_MAP_REBASE: MapScenePoint = Object.freeze({ x: 0, y: 0 });
+
+function invertMapRebase(translation: MapScenePoint): MapScenePoint {
+  return { x: -translation.x, y: -translation.y };
+}
+
+function mapHistoryEntry(
+  document: LoadedMapDocument,
+  forwardRebase: MapScenePoint = ZERO_MAP_REBASE,
+): MapHistoryEntry {
+  return { ...document, forwardRebase };
+}
+
+function newTopologyItemId(prefix: "node" | "route"): string {
+  return `${prefix}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function newMapObjectGroupId(): string {
+  return `group-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+type TopologySettingOption = TopologySettingNodeSource & {
+  readonly label: string;
+  readonly typeName: string;
+  readonly mapKind: string | undefined;
+};
+
+type TopologySettingTree = {
+  readonly nodes: readonly TopologySettingNodeSource[];
+  readonly levelTypes: readonly TopologySettingLevelSource[];
+  readonly options: readonly TopologySettingOption[];
+};
+
+const EMPTY_TOPOLOGY_SETTING_TREE: TopologySettingTree = Object.freeze({
+  nodes: [],
+  levelTypes: [],
+  options: [],
+});
+
+function buildTopologySettingTree(
+  nodes: readonly TopologySettingNodeSource[],
+  levelTypes: readonly TopologySettingLevelSource[],
+): TopologySettingTree {
+  const nodesById = new Map(nodes.map((node) => [node.id, node] as const));
+  const levelById = new Map(
+    levelTypes.map((level) => [level.id, level] as const),
+  );
+  const pathById = new Map<string, string>();
+  const getPath = (nodeId: string): string => {
+    const cached = pathById.get(nodeId);
+    if (cached) return cached;
+    const path: string[] = [];
+    const visited = new Set<string>();
+    let current = nodesById.get(nodeId);
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id);
+      path.unshift(current.name);
+      current = current.parentId ? nodesById.get(current.parentId) : undefined;
+    }
+    const result = path.join(" / ");
+    pathById.set(nodeId, result);
+    return result;
+  };
+  const options = [...nodes]
+    .sort(
+      (left, right) =>
+        (left.order ?? 0) - (right.order ?? 0) ||
+        left.name.localeCompare(right.name, "zh-CN") ||
+        left.id.localeCompare(right.id),
+    )
+    .map((node) => {
+      const level = levelById.get(node.typeId);
+      const path = getPath(node.id);
+      return {
+        ...node,
+        label: level?.name ? `${path} · ${level.name}` : path,
+        typeName: level?.name ?? node.typeId,
+        mapKind: level?.mapKind,
+      };
+    });
+  return { nodes: [...nodes], levelTypes: [...levelTypes], options };
+}
 
 async function imageDimensions(file: File): Promise<{
   readonly width: number;
@@ -337,7 +513,7 @@ export default function MapEditor({
     [storage],
   );
   const [tab, setTab] = useState<"tree" | "maps">("maps");
-  const [maps, setMaps] = useState<readonly { id: string; name: string }[]>([]);
+  const [maps, setMaps] = useState<readonly MapIndexEntry[]>([]);
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
   const [doc, setDoc] = useState<LoadedMapDocument | null>(null);
   const [documentRebase, setDocumentRebase] = useState<{
@@ -353,13 +529,14 @@ export default function MapEditor({
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(
     null,
   );
-  /**
-   * 多选只服务大陆/星球画布的可独立变换对象；MapDocument 不保存选择态。
-   * `selectedFeatureId` 仍是检查器的主选择对象，保证已有编辑面板契约不变。
-   */
+  /** 多选是两类画布共享的会话状态，不写入 MapDocument。 */
   const [selectedFeatureIds, setSelectedFeatureIds] = useState<
     readonly string[]
   >([]);
+  // 画布连续操作和全局键盘事件都可能发生在 React 下一帧提交之前；保留
+  // 选区镜像，保证 Shift 追加后立即按方向键仍作用于完整选区。
+  const selectedFeatureIdsRef = useRef<readonly string[]>([]);
+  const primarySelectedFeatureIdRef = useRef<string | null>(null);
   const multiSelectionUpdateRef = useRef(false);
   const [deleteMapTarget, setDeleteMapTarget] = useState<string | null>(null);
   const [deleteArtworkLayerTarget, setDeleteArtworkLayerTarget] = useState<{
@@ -367,16 +544,22 @@ export default function MapEditor({
     readonly targetLayerId: string;
   } | null>(null);
   const [entityOptions, setEntityOptions] = useState<DomainEntityRef[]>([]);
-  const [history, setHistory] = useState<
-    { content: string; map: MapDocument }[]
-  >([]);
-  const [future, setFuture] = useState<{ content: string; map: MapDocument }[]>(
-    [],
+  const [topologySettingTree, setTopologySettingTree] =
+    useState<TopologySettingTree>(EMPTY_TOPOLOGY_SETTING_TREE);
+  const topologySettingTreeRef = useRef<TopologySettingTree>(
+    EMPTY_TOPOLOGY_SETTING_TREE,
   );
+  const [topologyImportRootId, setTopologyImportRootId] = useState("");
+  /** 拓扑画布筛选仅作用于视图，不能改变 MapDocument 的事实集合。 */
+  const [topologyQuery, setTopologyQuery] = useState("");
+  const [history, setHistory] = useState<MapHistoryEntry[]>([]);
+  const [future, setFuture] = useState<MapHistoryEntry[]>([]);
   const [newMapOpen, setNewMapOpen] = useState(false);
   const [newMapName, setNewMapName] = useState("");
   const [newMapProjection, setNewMapProjection] =
     useState<MapProjectionType>("continent");
+  /** 新地图由拓扑节点发起时，创建成功后必须回写这个节点的 linkedMapId。 */
+  const [newMapLinkNodeId, setNewMapLinkNodeId] = useState<string | null>(null);
   const quickCreateHandledRef = useRef<number | null>(null);
   const [proposalReviewOpen, setProposalReviewOpen] = useState(false);
   const [generatorOpen, setGeneratorOpen] = useState(false);
@@ -401,7 +584,23 @@ export default function MapEditor({
   );
   const [activeTerrainMaterial, setActiveTerrainMaterial] =
     useState<MapTerrainMaterial | null>(null);
+  const [activeTopologyNodeKind, setActiveTopologyNodeKind] =
+    useState<TopologyNodeKind>("world");
+  const [activeTopologyNodeName, setActiveTopologyNodeName] = useState("");
+  const [activeTopologyNodeStatus, setActiveTopologyNodeStatus] =
+    useState<TopologyNodeStatus>("active");
+  const [activeTopologyRouteRelation, setActiveTopologyRouteRelation] =
+    useState<TopologyRouteRelation>("passage");
+  const [activeTopologyRouteDirection, setActiveTopologyRouteDirection] =
+    useState<TopologyRouteDirection>("two-way");
+  const [activeTopologyLinkedMapId, setActiveTopologyLinkedMapId] = useState<
+    string | null
+  >(null);
+  const [activeTopologyEntityRef, setActiveTopologyEntityRef] =
+    useState<MapFeature["entityRef"]>(null);
   const [activeLayerId, setActiveLayerId] = useState("layer-main");
+  /** 当前绘图图层只属于编辑会话；笔刷和橡皮的写入目标由此确定。 */
+  const [activeSceneLayerId, setActiveSceneLayerId] = useState("scene-terrain");
   const [activeArtworkLayerId, setActiveArtworkLayerId] =
     useState("artwork-stamps");
   const [timelineEvents, setTimelineEvents] = useState<
@@ -425,13 +624,79 @@ export default function MapEditor({
         (component) => component.id === activeComponentId,
       ) ?? null)
     : null;
+  const topologyLinkedMapNames = useMemo(
+    () => new Map(maps.map((map) => [map.id, map.name] as const)),
+    [maps],
+  );
+  const topologySettingOptions = useMemo(() => {
+    if (topologySettingTree.options.length > 0) {
+      return topologySettingTree.options;
+    }
+    return entityOptions
+      .filter((entity) => entity.kind === "setting")
+      .map((entity) => ({
+        id: entity.id,
+        parentId: null,
+        name: entity.name,
+        typeId: "setting",
+        label: entity.name,
+        typeName: "设定",
+        mapKind: undefined,
+      }));
+  }, [entityOptions, topologySettingTree.options]);
+  const topologySettingById = useMemo(
+    () => new Map(topologySettingOptions.map((option) => [option.id, option])),
+    [topologySettingOptions],
+  );
+  const topologyEntityNames = useMemo(() => {
+    const names = new Map(
+      entityOptions.map(
+        (entity) => [`${entity.kind}:${entity.id}`, entity.name] as const,
+      ),
+    );
+    for (const setting of topologySettingOptions) {
+      names.set(`setting:${setting.id}`, setting.label);
+    }
+    return names;
+  }, [entityOptions, topologySettingOptions]);
 
   const chooseTool = useCallback((nextTool: MapCanvasTool) => {
     setTool(nextTool);
+    // 独立的自由画笔入口不再受上一次区域形状选择影响；切入时明确
+    // 使用手绘轨迹，圆形和椭圆仍可从“画笔形状”下拉框主动选择。
+    if (nextTool === "freehand") {
+      setCanvasSettings((current) =>
+        current.areaShape === "freehand"
+          ? current
+          : { ...current, areaShape: "freehand" },
+      );
+    }
+    // 节点工具会在画布空白处直接创建事实；清除筛选可避免新节点
+    // 因为名称不匹配而刚创建就从视图中消失。
+    if (nextTool === "node") setTopologyQuery("");
     setActiveComponentId(null);
     if (nextTool !== "artwork-brush") setArtworkBrushAssetId(null);
     if (nextTool !== "artwork-stamp") setActiveStampAssetId(null);
     if (nextTool !== "terrain-material") setActiveTerrainMaterial(null);
+  }, []);
+
+  /** 形状决定画笔的落图语义，切换时必须同步切换实际绘制工具。 */
+  const chooseAreaShape = useCallback(
+    (areaShape: MapAreaShape) => {
+      setCanvasSettings((current) =>
+        current.areaShape === areaShape ? current : { ...current, areaShape },
+      );
+      chooseTool(areaShape === "freehand" ? "freehand" : "area");
+    },
+    [chooseTool],
+  );
+
+  const chooseBrushCurve = useCallback((curve: MapBrushPointCurve) => {
+    setCanvasSettings((current) =>
+      current.brushPointCurve === curve
+        ? current
+        : { ...current, brushPointCurve: curve },
+    );
   }, []);
 
   const replaceDoc = useCallback((next: LoadedMapDocument | null) => {
@@ -440,12 +705,24 @@ export default function MapEditor({
     setDoc(next);
   }, []);
 
+  const applyDocumentRebase = useCallback((translation: MapScenePoint) => {
+    if (translation.x === 0 && translation.y === 0) return;
+    documentRebaseRevisionRef.current += 1;
+    setDocumentRebase({
+      revision: documentRebaseRevisionRef.current,
+      translation,
+    });
+  }, []);
+
   useEffect(() => {
+    primarySelectedFeatureIdRef.current = selectedFeatureId;
     if (multiSelectionUpdateRef.current) {
       multiSelectionUpdateRef.current = false;
       return;
     }
-    setSelectedFeatureIds(selectedFeatureId ? [selectedFeatureId] : []);
+    const next = selectedFeatureId ? [selectedFeatureId] : [];
+    selectedFeatureIdsRef.current = next;
+    setSelectedFeatureIds(next);
   }, [selectedFeatureId]);
 
   const updateMapSelection = useCallback(
@@ -455,17 +732,40 @@ export default function MapEditor({
         primaryId && next.includes(primaryId)
           ? primaryId
           : (next.at(-1) ?? null);
+      const current = selectedFeatureIdsRef.current;
+      if (
+        primary === primarySelectedFeatureIdRef.current &&
+        current.length === next.length &&
+        current.every((id, index) => id === next[index])
+      ) {
+        return;
+      }
       // React 对相同 state 值不会触发 effect；只有主选择会变化时才需要
       // 跳过下一次同步，避免 Shift 取消非主对象后遗留过期标记。
-      multiSelectionUpdateRef.current = primary !== selectedFeatureId;
+      multiSelectionUpdateRef.current =
+        primary !== primarySelectedFeatureIdRef.current;
+      primarySelectedFeatureIdRef.current = primary;
+      selectedFeatureIdsRef.current = next;
       setSelectedFeatureIds(next);
       setSelectedFeatureId(primary);
     },
-    [selectedFeatureId],
+    [],
+  );
+
+  const updateTopologyQuery = useCallback(
+    (value: string) => {
+      setTopologyQuery(value);
+      // 筛选会改变画布上的可见对象；清掉旧选区，避免后续复制、删除
+      // 继续作用于已经被筛掉的节点或通道。
+      if (value.trim()) updateMapSelection([], null);
+    },
+    [updateMapSelection],
   );
 
   useEffect(() => {
     multiSelectionUpdateRef.current = false;
+    primarySelectedFeatureIdRef.current = null;
+    selectedFeatureIdsRef.current = [];
     setSelectedFeatureIds([]);
   }, [doc?.map.id]);
 
@@ -495,6 +795,7 @@ export default function MapEditor({
     quickCreateHandledRef.current = quickCreateRequest.token;
     setNewMapName("");
     setNewMapProjection("continent");
+    setNewMapLinkNodeId(null);
     setNewMapOpen(true);
   }, [isActive, quickCreateRequest]);
 
@@ -515,6 +816,43 @@ export default function MapEditor({
       cancelled = true;
     };
   }, [isActive, projection, storage]);
+
+  // 拓扑节点只保存 setting id；空间树和层级类型作为可重建的 UI 索引读取，
+  // 这样检查器可以显示完整父子路径，并支持按范围导入节点而不复制设定正文。
+  useEffect(() => {
+    if (!isActive) return;
+    // 切换项目或工作台时先清空上一项目的空间树；异步读取期间不能继续
+    // 把旧项目的设定显示为当前拓扑节点可选项。
+    setTopologySettingTree(EMPTY_TOPOLOGY_SETTING_TREE);
+    let cancelled = false;
+    void storage
+      .stat([SETTING_LIBRARY_PATHS.spatialTree, SETTING_LIBRARY_PATHS.meta])
+      .then(async (infos) => {
+        if (infos.some((info) => !info?.exists || info.kind !== "file")) {
+          return EMPTY_TOPOLOGY_SETTING_TREE;
+        }
+        const [treeFile, metaFile] = await Promise.all([
+          storage.readText(SETTING_LIBRARY_PATHS.spatialTree),
+          storage.readText(SETTING_LIBRARY_PATHS.meta),
+        ]);
+        const tree = parseSettingLibrarySpatialTree(treeFile.content);
+        const meta = parseSettingLibraryMeta(metaFile.content);
+        return buildTopologySettingTree(tree.nodes, meta.levelTypes);
+      })
+      .then((tree) => {
+        if (!cancelled) setTopologySettingTree(tree);
+      })
+      .catch(() => {
+        if (!cancelled) setTopologySettingTree(EMPTY_TOPOLOGY_SETTING_TREE);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isActive, storage]);
+
+  useEffect(() => {
+    topologySettingTreeRef.current = topologySettingTree;
+  }, [topologySettingTree]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -547,28 +885,55 @@ export default function MapEditor({
         // 历史地图、Agent 提案和外部导入都可能携带超出旧尺寸的坐标。
         // 打开时重新计算一次边界，保证画布尺寸仍然覆盖全部事实；若尺寸
         // 发生变化，把原记录放入撤销栈，作者可以直接保存或撤销这次修复。
-        const normalizedMap = expandMapCanvasToContent(loaded.map);
+        const expansion = expandMapCanvasToContentWithTranslation(
+          fitMapCanvasToDefaultContent(loaded.map),
+        );
+        const normalizedMap = expansion.map;
         const normalized =
           normalizedMap === loaded.map
             ? loaded
             : { ...loaded, map: normalizedMap };
         replaceDoc(normalized);
+        applyDocumentRebase(expansion.translation);
         setSelectedMapId(mapId);
+        if (
+          mapRendererForProjection(normalizedMap.projectionType) === "topology"
+        ) {
+          // 拓扑节点模板属于当前地图投影的编辑上下文。切换多元宇宙和
+          // 平行世界时重置为对应语义，避免沿用上一张地图的“世界”默认值。
+          setActiveTopologyNodeKind(
+            topologyNodeKindForProjection(normalizedMap.projectionType),
+          );
+        }
+        if (mapDocumentHasGeneratorOutput(normalized.map)) {
+          // Agent / Azgaar 提案可能保留完整底图矩形，不能按 SVG 内部像素
+          // 裁切；首次打开仍按可编辑生成要素构图，避免默认视角只显示空海域。
+          setFocusRequest((request) => request + 1);
+        }
         setSelectedFeatureId(null);
+        setActiveTopologyLinkedMapId(null);
+        setActiveTopologyEntityRef(null);
+        setTopologyImportRootId("");
+        setTopologyQuery("");
         chooseTool("select");
         setArtworkBrushLayerKind("vegetation");
+        setActiveSceneLayerId("scene-terrain");
         setActiveLayerId(normalized.map.layers[0]?.id ?? "layer-main");
         setActiveArtworkLayerId(
           findMapArtworkLayer(normalized.map.artwork)?.id ?? "artwork-stamps",
         );
         setFeatureQuery("");
-        setHistory(normalizedMap === loaded.map ? [] : [loaded]);
+        setHistory(
+          normalizedMap === loaded.map
+            ? []
+            : [mapHistoryEntry(loaded, expansion.translation)],
+        );
         setFuture([]);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
       }
     },
-    [chooseTool, replaceDoc, repository],
+    [applyDocumentRebase, chooseTool, replaceDoc, repository],
   );
 
   useEffect(() => {
@@ -580,22 +945,92 @@ export default function MapEditor({
 
   const createMap = useCallback(async () => {
     const id = `map-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const sourceDocument = newMapLinkNodeId ? docRef.current : null;
+    const linkedNode = sourceDocument?.map.features.find(
+      (feature) => feature.id === newMapLinkNodeId && feature.kind === "node",
+    );
+    if (newMapLinkNodeId && (!sourceDocument || !linkedNode)) {
+      setError("关联的拓扑节点已不存在，无法创建关联地图。");
+      setNewMapLinkNodeId(null);
+      return;
+    }
     try {
-      await repository.createMap({
+      const created = await repository.createMap({
         id,
         name: newMapName.trim() || "未命名地图",
         projectionType: newMapProjection,
       });
+      if (sourceDocument && linkedNode) {
+        const linkedSourceMap: MapDocument = {
+          ...sourceDocument.map,
+          features: sourceDocument.map.features.map((feature) =>
+            feature.id === linkedNode.id
+              ? {
+                  ...feature,
+                  props: updateTopologyNodeProps(feature.props, {
+                    linkedMapId: created.map.id,
+                  }),
+                }
+              : feature,
+          ),
+        };
+        try {
+          await repository.saveMap(sourceDocument, linkedSourceMap);
+        } catch (linkCause) {
+          const cleaned = await repository.deleteMap(created.map.id).then(
+            () => true,
+            () => false,
+          );
+          if (!cleaned) {
+            throw new Error(
+              `关联拓扑节点失败；已创建“${created.map.name}”，请在节点属性中手动关联。`,
+              { cause: linkCause },
+            );
+          }
+          throw linkCause;
+        }
+      }
       setNewMapOpen(false);
       setNewMapName("");
+      setNewMapLinkNodeId(null);
       await loadMaps();
-      await openMap(id);
+      await openMap(created.map.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-  }, [loadMaps, newMapName, newMapProjection, openMap, repository]);
+  }, [
+    loadMaps,
+    newMapLinkNodeId,
+    newMapName,
+    newMapProjection,
+    openMap,
+    repository,
+  ]);
+
+  const beginMapCreation = useCallback(() => {
+    setNewMapName("");
+    setNewMapProjection("continent");
+    setNewMapLinkNodeId(null);
+    setNewMapOpen(true);
+  }, []);
 
   const currentMapId = doc?.map.id ?? null;
+  const backgroundPlacement = useMemo(() => {
+    const canvas = doc?.map.canvas;
+    if (!canvas?.backgroundImage) return null;
+    if (canvas.backgroundImagePlacement) return canvas.backgroundImagePlacement;
+    if (
+      typeof canvas.backgroundImageWidth !== "number" ||
+      typeof canvas.backgroundImageHeight !== "number"
+    ) {
+      return null;
+    }
+    return getMapBackgroundImagePlacement(
+      canvas,
+      canvas.backgroundImageWidth,
+      canvas.backgroundImageHeight,
+    );
+  }, [doc]);
   const currentProjectArtwork = useMemo(
     () => doc?.map.artwork.assets ?? EMPTY_PROJECT_ARTWORK_ASSETS,
     [doc?.map.artwork.assets],
@@ -608,6 +1043,18 @@ export default function MapEditor({
         findMapArtworkLayer(doc.map.artwork, currentLayerId)?.id ??
         findMapArtworkLayer(doc.map.artwork)?.id ??
         "artwork-stamps",
+    );
+  }, [doc]);
+
+  useEffect(() => {
+    if (!doc) return;
+    const scene = doc.map.scene ?? createEmptyMapScene();
+    setActiveSceneLayerId((currentLayerId) =>
+      scene.layers.some((layer) => layer.id === currentLayerId)
+        ? currentLayerId
+        : (scene.layers.find((layer) => layer.id === "scene-terrain")?.id ??
+          scene.layers[0]?.id ??
+          "scene-terrain"),
     );
   }, [doc]);
 
@@ -656,7 +1103,7 @@ export default function MapEditor({
       const current = docRef.current;
       if (!current) return;
       const expansion = expandMapCanvasToContentWithTranslation(
-        mutator(current.map),
+        fitMapCanvasToContentWhenEmpty(current.map, mutator(current.map)),
       );
       const nextMap = expansion.map;
       if (nextMap === current.map) return;
@@ -669,15 +1116,12 @@ export default function MapEditor({
         content: current.content,
       };
       docRef.current = next;
-      setHistory((previous) => [...previous.slice(-49), current]);
+      setHistory((previous) => [
+        ...previous.slice(-49),
+        mapHistoryEntry(current, expansion.translation),
+      ]);
       setFuture([]);
-      if (expansion.translation.x !== 0 || expansion.translation.y !== 0) {
-        documentRebaseRevisionRef.current += 1;
-        setDocumentRebase({
-          revision: documentRebaseRevisionRef.current,
-          translation: expansion.translation,
-        });
-      }
+      applyDocumentRebase(expansion.translation);
       setDoc(next);
       // 仅在空地图首次获得真实内容时构图。之后放置、移动或绘制时不改变
       // 作者已经调好的相机，避免连续创作过程中出现突然跳镜。
@@ -685,7 +1129,7 @@ export default function MapEditor({
         setFocusRequest((request) => request + 1);
       }
     },
-    [],
+    [applyDocumentRebase],
   );
 
   const undo = useCallback(() => {
@@ -694,9 +1138,13 @@ export default function MapEditor({
     if (!current || !previous) return;
     replaceDoc(previous);
     setHistory((entries) => entries.slice(0, -1));
-    setFuture((entries) => [...entries, current]);
+    setFuture((entries) => [
+      ...entries,
+      mapHistoryEntry(current, previous.forwardRebase),
+    ]);
+    applyDocumentRebase(invertMapRebase(previous.forwardRebase));
     setSelectedFeatureId(null);
-  }, [history, replaceDoc]);
+  }, [applyDocumentRebase, history, replaceDoc]);
 
   const redo = useCallback(() => {
     const current = docRef.current;
@@ -704,15 +1152,65 @@ export default function MapEditor({
     if (!current || !next) return;
     replaceDoc(next);
     setFuture((entries) => entries.slice(0, -1));
-    setHistory((entries) => [...entries, current]);
+    setHistory((entries) => [
+      ...entries,
+      mapHistoryEntry(current, next.forwardRebase),
+    ]);
+    applyDocumentRebase(next.forwardRebase);
     setSelectedFeatureId(null);
-  }, [future, replaceDoc]);
+  }, [applyDocumentRebase, future, replaceDoc]);
 
   const nudgeSelection = useCallback(
     (deltaX: number, deltaY: number) => {
-      const selectionIds = [...new Set(selectedFeatureIds)];
+      const selectionIds = [
+        ...new Set(
+          selectedFeatureIdsRef.current.length > 0
+            ? selectedFeatureIdsRef.current
+            : [selectedFeatureId].filter((id): id is string => Boolean(id)),
+        ),
+      ];
+      const currentMap = docRef.current?.map;
+      if (
+        currentMap &&
+        mapRendererForProjection(currentMap.projectionType) === "topology"
+      ) {
+        const topologyNodeIds = selectionIds.filter((id) =>
+          currentMap.features.some(
+            (feature) => feature.id === id && feature.kind === "node",
+          ),
+        );
+        if (topologyNodeIds.length === 0) {
+          setError("拓扑连线由两端世界节点决定，请移动或重连节点。");
+          return;
+        }
+        if (!canEditTopologyNodes(currentMap, topologyNodeIds)) {
+          setError("选区包含锁定、隐藏或不存在的拓扑节点，无法移动。");
+          return;
+        }
+        mutateDoc((map) =>
+          moveTopologyNodes(
+            map,
+            topologyNodeIds.flatMap((nodeId) => {
+              const point = map.features.find(
+                (feature) => feature.id === nodeId && feature.kind === "node",
+              )?.points[0];
+              return point
+                ? [
+                    {
+                      id: nodeId,
+                      point: {
+                        x: point.x + deltaX,
+                        y: point.y + deltaY,
+                      },
+                    },
+                  ]
+                : [];
+            }),
+          ),
+        );
+        return;
+      }
       if (selectionIds.length > 1) {
-        const currentMap = docRef.current?.map;
         if (
           !currentMap ||
           !canEditMapSelectableItems(currentMap, selectionIds)
@@ -795,7 +1293,7 @@ export default function MapEditor({
         return changed ? { ...map, features, artwork, scene } : map;
       });
     },
-    [mutateDoc, selectedFeatureId, selectedFeatureIds],
+    [mutateDoc, selectedFeatureId],
   );
 
   const duplicateSelectedMapItems = useCallback(
@@ -816,10 +1314,26 @@ export default function MapEditor({
         setError("选区包含隐藏、锁定或不支持复制的对象。");
         return false;
       }
+      const topologyNodeIds = ids.filter((id) =>
+        currentMap.features.some(
+          (feature) => feature.id === id && feature.kind === "node",
+        ),
+      );
+      if (
+        mapRendererForProjection(currentMap.projectionType) === "topology" &&
+        topologyNodeIds.length > 0 &&
+        !canEditTopologyNodes(currentMap, topologyNodeIds)
+      ) {
+        setError("选区包含锁定、隐藏或不存在的拓扑节点，无法复制。");
+        return false;
+      }
 
       let duplicatedIds: readonly string[] = [];
       mutateDoc((map) => {
-        const duplication = duplicateMapSelectableItems(map, ids);
+        const duplication =
+          mapRendererForProjection(map.projectionType) === "topology"
+            ? duplicateTopologyFeatures(map, ids)
+            : duplicateMapSelectableItems(map, ids);
         duplicatedIds = duplication.duplicatedIds;
         return duplication.map;
       });
@@ -954,7 +1468,9 @@ export default function MapEditor({
         }
         const shortcuts: Readonly<Partial<Record<string, MapCanvasTool>>> = {
           v: "select",
+          m: "move",
           h: "pan",
+          f: "freehand",
           l: "terrain-land",
           w: "terrain-water",
           e: "scene-eraser",
@@ -975,16 +1491,32 @@ export default function MapEditor({
           sceneLayers.find((layer) => layer.id === "scene-terrain")?.visible &&
             !sceneLayers.find((layer) => layer.id === "scene-terrain")?.locked,
         );
+        const activeMaterialSurface = activeTerrainMaterial
+          ? getMapTerrainMaterialPreset(activeTerrainMaterial).surface
+          : null;
+        const canMaterial = Boolean(
+          doc &&
+            ((activeMaterialSurface === "land" &&
+              canLand &&
+              mapSceneHasLandSurface(doc.map.scene ?? createEmptyMapScene())) ||
+              (activeMaterialSurface === "water" &&
+                canWater &&
+                mapSceneHasWaterSurface(
+                  doc.map.scene ?? createEmptyMapScene(),
+                ))),
+        );
         const canErase = Boolean(
-          sceneLayers.find((layer) => layer.id === "scene-terrain")?.visible &&
-            !sceneLayers.find((layer) => layer.id === "scene-terrain")?.locked,
+          sceneLayers.find((layer) => layer.id === activeSceneLayerId)
+            ?.visible &&
+            !sceneLayers.find((layer) => layer.id === activeSceneLayerId)
+              ?.locked,
         );
         if (
           nextTool &&
           (nextTool !== "terrain-land" || canLand) &&
           (nextTool !== "terrain-water" || canWater) &&
           (nextTool !== "terrain-material" ||
-            (canLand && Boolean(activeTerrainMaterial))) &&
+            (canMaterial && Boolean(activeTerrainMaterial))) &&
           (nextTool !== "scene-eraser" || canErase)
         ) {
           event.preventDefault();
@@ -1019,6 +1551,7 @@ export default function MapEditor({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
+    activeSceneLayerId,
     activeTerrainMaterial,
     artworkBrushAssetId,
     chooseTool,
@@ -1036,17 +1569,26 @@ export default function MapEditor({
 
   const createFeature = useCallback(
     (feature: MapFeature) => {
+      // 新建闭合区域统一写入 area；polygon 仅允许作为旧 MapDocument 的读兼容值。
+      const normalizedFeature =
+        feature.kind === "polygon"
+          ? { ...feature, kind: "area" as const }
+          : feature;
       const componentFeature =
         activeComponent &&
-        mapComponentPlacement(activeComponent) === "path" &&
-        activeComponent.drawKind === feature.kind
+        (mapComponentPlacement(activeComponent) === "path" ||
+          mapComponentPlacement(activeComponent) === "overlay") &&
+        activeComponent.drawKind === normalizedFeature.kind
           ? {
-              ...feature,
+              ...normalizedFeature,
               name: `未命名${activeComponent.name}`,
-              props: { ...activeComponent.props },
+              props: {
+                ...normalizedFeature.props,
+                ...activeComponent.props,
+              },
               description: activeComponent.description,
             }
-          : feature;
+          : normalizedFeature;
       const currentMap = docRef.current?.map;
       const targetLayer = currentMap?.layers.find(
         (layer) => layer.id === componentFeature.layerId,
@@ -1059,10 +1601,10 @@ export default function MapEditor({
         ...map,
         features: [...map.features, componentFeature],
       }));
-      setSelectedFeatureId(componentFeature.id);
+      updateMapSelection([componentFeature.id], componentFeature.id);
       if (activeComponent) chooseTool("select");
     },
-    [activeComponent, chooseTool, mutateDoc],
+    [activeComponent, chooseTool, mutateDoc, updateMapSelection],
   );
 
   const insertComponent = useCallback(
@@ -1076,7 +1618,8 @@ export default function MapEditor({
         x: doc.map.canvas.width / 2,
         y: doc.map.canvas.height / 2,
       };
-      if (component.terrainPrefab) {
+      const placement = mapComponentPlacement(component);
+      if (placement === "terrain-prefab" && component.terrainPrefab) {
         const scene = doc.map.scene ?? createEmptyMapScene();
         const sceneLayerId =
           component.terrainPrefab.kind === "land"
@@ -1195,7 +1738,10 @@ export default function MapEditor({
         setActiveTerrainMaterial(null);
         setActiveComponentId(component.id);
         setSelectedFeatureId(null);
-        setTool("terrain-prefab");
+        // 路径构件的主卡就是连续路径笔刷；只有拖入画布时才走一次性
+        // 预制件落图。此前这里无论构件类型都进入 terrain-prefab，
+        // 导致点击路径构件后只能放置固定短线，弧线/触点设置也不会生效。
+        setTool(placement === "path" ? "component-path-brush" : "terrain-prefab");
         return;
       }
       const activeLayer = doc.map.layers.find(
@@ -1210,9 +1756,104 @@ export default function MapEditor({
       setActiveTerrainMaterial(null);
       setActiveComponentId(component.id);
       setSelectedFeatureId(null);
-      setTool(component.drawKind);
+      const isFreehandArea =
+        component.drawKind === "area" || component.drawKind === "polygon";
+      // 普通“画笔”构件的契约是自由手绘。不能沿用用户上一次选择的
+      // 圆形/椭圆形状，否则组件入口会悄悄退化成规则几何，用户会看到
+      // “只有多边形、圆形、椭圆，没有自由画笔”的混合状态。
+      if (isFreehandArea) {
+        setCanvasSettings((current) =>
+          current.areaShape === "freehand"
+            ? current
+            : { ...current, areaShape: "freehand" },
+        );
+        setTool("freehand");
+      } else {
+        setTool(component.drawKind);
+      }
     },
     [activeLayerId, doc, pickArtworkStamp],
+  );
+
+  /**
+   * 连续表面笔刷只用于疆域等覆盖层。大陆和水域预设必须经
+   * `terrain-prefab` 放置，保留其自身轮廓而不是把手势扩成一条带。
+   */
+  const paintComponentSurface = useCallback(
+    (
+      componentId: string,
+      points: readonly MapScenePoint[],
+      closed: boolean,
+      curve: MapBrushPointCurve,
+    ) => {
+      const current = docRef.current;
+      const component = MAP_COMPONENT_PRESETS.find(
+        (candidate) => candidate.id === componentId,
+      );
+      if (!current || !component || component.interaction !== "surface") {
+        return;
+      }
+      const width = Math.max(24, Math.min(4096, canvasSettings.brushSize));
+      const placement = mapComponentPlacement(component);
+      if (placement !== "overlay") return;
+      const targetLayer = current.map.layers.find(
+        (candidate) => candidate.id === activeLayerId,
+      );
+      if (!targetLayer?.visible || targetLayer.locked) {
+        setError("当前绘图层已隐藏或锁定。无法绘制疆域覆盖层。");
+        return;
+      }
+      const areaPoints = createMapComponentSurfaceBrushPoints({
+        points,
+        width,
+        closed,
+      });
+      if (areaPoints.length < 3) return;
+      const featureId = `surface-${componentId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+      const feature: MapFeature = {
+        id: featureId,
+        kind: "area",
+        name: `未命名${component.name}`,
+        entityRef: null,
+        layerId: activeLayerId,
+        points: areaPoints,
+        timeFrom: null,
+        timeTo: null,
+        props: {
+          ...component.props,
+          freehand: "true",
+          closed: "true",
+          curve,
+        },
+        description: component.description,
+      };
+      mutateDoc((map) => ({
+        ...map,
+        features: [...map.features, feature],
+      }));
+      setSelectedFeatureId(featureId);
+    },
+    [activeLayerId, canvasSettings.brushSize, mutateDoc],
+  );
+
+  const activatePathBrush = useCallback(
+    (component: (typeof MAP_COMPONENT_PRESETS)[number]) => {
+      if (!doc || mapComponentPlacement(component) !== "path") return;
+      const activeLayer = doc.map.layers.find(
+        (layer) => layer.id === activeLayerId,
+      );
+      if (!activeLayer?.visible || activeLayer.locked) {
+        setError("当前绘图层已隐藏或锁定。无法使用路径笔刷。");
+        return;
+      }
+      setArtworkBrushAssetId(null);
+      setActiveStampAssetId(null);
+      setActiveTerrainMaterial(null);
+      setActiveComponentId(component.id);
+      setSelectedFeatureId(null);
+      setTool("component-path-brush");
+    },
+    [activeLayerId, doc],
   );
 
   const placeArtworkStamp = useCallback(
@@ -1293,6 +1934,7 @@ export default function MapEditor({
       );
       if (!sceneLayer?.visible || sceneLayer.locked) return;
       setArtworkBrushLayerKind(targetLayerKind);
+      setActiveSceneLayerId(sceneLayer.id);
       setActiveComponentId(null);
       setArtworkBrushAssetId(asset.id);
       setArtworkBrushColor(asset.component ? asset.color : null);
@@ -1302,16 +1944,16 @@ export default function MapEditor({
     [artworkBrushLayerKind, artworkCatalog, doc],
   );
 
-  const paintSceneStroke = useCallback(
-    (
-      assetId: string,
-      points: readonly { readonly x: number; readonly y: number }[],
-    ) => {
-      if (!doc || points.length === 0) return;
-      const asset = artworkCatalog?.get(assetId);
-      if (!asset?.brush) return;
-      const strokePoints = points.map((point) => ({ ...point }));
-      const sceneLayerId = sceneLayerIdForKind(artworkBrushLayerKind);
+  const appendArtworkBrushStroke = useCallback(
+    (input: {
+      readonly asset: MapArtworkStampAsset;
+      readonly points: readonly { readonly x: number; readonly y: number }[];
+      readonly layerKind: MapSceneLayerKind;
+      readonly color: string;
+    }) => {
+      if (!input.asset.brush || input.points.length === 0) return;
+      const strokePoints = input.points.map((point) => ({ ...point }));
+      const sceneLayerId = sceneLayerIdForKind(input.layerKind);
       mutateDoc((map) => {
         const scene = map.scene ?? createEmptyMapScene();
         const sceneLayer = scene.layers.find(
@@ -1323,14 +1965,13 @@ export default function MapEditor({
         const stroke = createMapSceneStroke({
           id: `stroke-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
           layerId: sceneLayer.id,
-          brushAssetId: assetId,
+          brushAssetId: input.asset.id,
+          curve: canvasSettings.brushPointCurve,
           points: strokePoints,
-          color: asset.component
-            ? (artworkBrushColor ?? asset.color)
-            : asset.color,
+          color: input.color,
           width: Math.max(12, Math.min(8192, canvasSettings.brushSize)),
           spacing: Math.max(2, Math.min(2048, canvasSettings.brushSpacing)),
-          scatter: asset.brush ? canvasSettings.brushScatter : 0,
+          scatter: canvasSettings.brushScatter,
           opacity: canvasSettings.brushOpacity,
         });
         return {
@@ -1340,14 +1981,54 @@ export default function MapEditor({
       });
       setSelectedFeatureId(null);
     },
+    [canvasSettings, mutateDoc],
+  );
+
+  const paintSceneStroke = useCallback(
+    (
+      assetId: string,
+      points: readonly { readonly x: number; readonly y: number }[],
+    ) => {
+      if (!doc || points.length === 0) return;
+      const asset = artworkCatalog?.get(assetId);
+      if (!asset?.brush) return;
+      appendArtworkBrushStroke({
+        asset,
+        points,
+        layerKind: asset.component
+          ? sceneLayerKindForComponentCategory(asset.component.category)
+          : artworkBrushLayerKind,
+        color: asset.component
+          ? (artworkBrushColor ?? asset.color)
+          : asset.color,
+      });
+    },
     [
+      appendArtworkBrushStroke,
       artworkBrushColor,
       artworkBrushLayerKind,
       artworkCatalog,
-      canvasSettings,
       doc,
-      mutateDoc,
     ],
+  );
+
+  const dropArtworkBrush = useCallback(
+    (assetId: string, point: MapScenePoint): boolean => {
+      if (!doc) return false;
+      const asset = artworkCatalog?.get(assetId);
+      if (!asset?.brush) return false;
+      appendArtworkBrushStroke({
+        asset,
+        points: [point],
+        layerKind: asset.component
+          ? sceneLayerKindForComponentCategory(asset.component.category)
+          : artworkBrushLayerKind,
+        // 拖入资产库即等价于刚选择该素材后的首个落点，使用素材默认颜色。
+        color: asset.color,
+      });
+      return true;
+    },
+    [appendArtworkBrushStroke, artworkBrushLayerKind, artworkCatalog, doc],
   );
 
   const importProjectArtwork = useCallback(
@@ -1510,29 +2191,28 @@ export default function MapEditor({
       mutateDoc((map) => {
         const scene = map.scene ?? createEmptyMapScene();
         const sceneLayer = scene.layers.find(
-          (layer) => layer.id === "scene-terrain",
+          (layer) => layer.id === activeSceneLayerId,
         );
         if (!sceneLayer?.visible || sceneLayer.locked) return map;
-        const stroke = createMapSceneStroke({
-          id: `erase-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
-          layerId: sceneLayer.id,
-          tool: "erase",
-          brushAssetId: null,
-          shape: canvasSettings.terrainBrushShape,
-          points: strokePoints,
-          color: scene.terrainStyle.shallowWaterColor,
-          width: Math.max(12, Math.min(8192, canvasSettings.brushSize)),
-          spacing: Math.max(2, Math.min(2048, canvasSettings.brushSpacing)),
-          opacity: 1,
-        });
         return {
           ...map,
-          scene: addMapSceneStroke(scene, stroke),
+          scene: eraseMapSceneContent(scene, {
+            layerId: sceneLayer.id,
+            points: strokePoints,
+            curve: canvasSettings.brushPointCurve,
+            width: Math.max(12, Math.min(8192, canvasSettings.brushSize)),
+          }),
         };
       });
       setSelectedFeatureId(null);
     },
-    [canvasSettings, doc, mutateDoc],
+    [
+      activeSceneLayerId,
+      canvasSettings.brushPointCurve,
+      canvasSettings.brushSize,
+      doc,
+      mutateDoc,
+    ],
   );
 
   const paintTerrainStroke = useCallback(
@@ -1555,6 +2235,7 @@ export default function MapEditor({
           tool: isWater ? "erase" : "paint",
           brushAssetId: null,
           shape: canvasSettings.terrainBrushShape,
+          curve: canvasSettings.brushPointCurve,
           points: strokePoints,
           color: isWater
             ? scene.terrainStyle.shallowWaterColor
@@ -1574,6 +2255,7 @@ export default function MapEditor({
     [
       canvasSettings.brushSize,
       canvasSettings.brushSpacing,
+      canvasSettings.brushPointCurve,
       canvasSettings.terrainBrushShape,
       doc,
       mutateDoc,
@@ -1583,14 +2265,30 @@ export default function MapEditor({
   const activateTerrainMaterial = useCallback(
     (material: MapTerrainMaterialPreset) => {
       if (!doc) return;
-      const terrainLayer = (doc.map.scene ?? createEmptyMapScene()).layers.find(
-        (layer) => layer.id === "scene-terrain",
+      const scene = doc.map.scene ?? createEmptyMapScene();
+      const targetLayerId =
+        material.surface === "water" ? "scene-water" : "scene-terrain";
+      const targetLayer = scene.layers.find(
+        (layer) => layer.id === targetLayerId,
       );
-      if (!terrainLayer?.visible || terrainLayer.locked) return;
+      if (!targetLayer?.visible || targetLayer.locked) return;
+      const hasTargetSurface =
+        material.surface === "water"
+          ? mapSceneHasWaterSurface(scene)
+          : mapSceneHasLandSurface(scene);
+      if (!hasTargetSurface) {
+        setError(
+          material.surface === "water"
+            ? "请先绘制或勾画水域，再在水面上叠加浅海或深海材质。"
+            : "请先绘制或勾画陆地，再在陆地上叠加地貌材质。",
+        );
+        return;
+      }
       setArtworkBrushAssetId(null);
       setActiveStampAssetId(null);
       setActiveComponentId(null);
       setActiveTerrainMaterial(material.id);
+      setActiveSceneLayerId(targetLayer.id);
       setSelectedFeatureId(null);
       setTool("terrain-material");
     },
@@ -1605,17 +2303,33 @@ export default function MapEditor({
       if (!doc || points.length === 0) return;
       const strokePoints = points.map((point) => ({ ...point }));
       const preset = getMapTerrainMaterialPreset(material);
+      const currentScene = doc.map.scene ?? createEmptyMapScene();
+      const hasTargetSurface =
+        preset.surface === "water"
+          ? mapSceneHasWaterSurface(currentScene)
+          : mapSceneHasLandSurface(currentScene);
+      if (!hasTargetSurface) {
+        setError(
+          preset.surface === "water"
+            ? "当前没有可混合材质的水域。请先绘制水域。"
+            : "当前没有可混合材质的陆地。请先绘制陆地。",
+        );
+        return;
+      }
       mutateDoc((map) => {
         const scene = map.scene ?? createEmptyMapScene();
-        const terrainLayer = scene.layers.find(
-          (layer) => layer.id === "scene-terrain",
+        const targetLayer = scene.layers.find(
+          (layer) =>
+            layer.id ===
+            (preset.surface === "water" ? "scene-water" : "scene-terrain"),
         );
-        if (!terrainLayer?.visible || terrainLayer.locked) return map;
+        if (!targetLayer?.visible || targetLayer.locked) return map;
         const stroke = createMapSceneStroke({
           id: `material-${material}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
-          layerId: terrainLayer.id,
+          layerId: targetLayer.id,
           terrainMaterial: material,
           shape: canvasSettings.terrainBrushShape,
+          curve: canvasSettings.brushPointCurve,
           points: strokePoints,
           color: preset.color,
           width: Math.max(12, Math.min(8192, canvasSettings.brushSize)),
@@ -1662,6 +2376,7 @@ export default function MapEditor({
         Pick<
           MapSceneStroke,
           | "color"
+          | "curve"
           | "opacity"
           | "points"
           | "scatter"
@@ -1722,6 +2437,7 @@ export default function MapEditor({
     (
       kind: MapSceneRegion["kind"],
       points: readonly { readonly x: number; readonly y: number }[],
+      curve: MapSceneRegion["curve"] = canvasSettings.brushPointCurve,
     ) => {
       if (points.length < 3) return;
       const regionId = `region-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
@@ -1740,13 +2456,14 @@ export default function MapEditor({
               layerId: layer.id,
               kind,
               points: regionPoints,
+              curve,
             }),
           ),
         };
       });
       setSelectedFeatureId(regionId);
     },
-    [mutateDoc],
+    [canvasSettings.brushPointCurve, mutateDoc],
   );
 
   const removeSceneRegion = useCallback(
@@ -1777,7 +2494,14 @@ export default function MapEditor({
       patch: Partial<
         Pick<
           MapSceneRegion,
-          "edgeColor" | "edgeWidth" | "fill" | "opacity" | "points" | "texture"
+          | "edgeColor"
+          | "edgeWidth"
+          | "fill"
+          | "opacity"
+          | "points"
+          | "curve"
+          | "texture"
+          | "terrainMaterial"
         >
       >,
     ) => {
@@ -1831,11 +2555,11 @@ export default function MapEditor({
   const focusFeature = useCallback(
     (feature: MapFeature) => {
       setActiveLayerId(feature.layerId);
-      setSelectedFeatureId(feature.id);
+      updateMapSelection([feature.id], feature.id);
       chooseTool("select");
       setFocusRequest((request) => request + 1);
     },
-    [chooseTool],
+    [chooseTool, updateMapSelection],
   );
 
   const isDirty = Boolean(doc && history.length > 0);
@@ -1863,6 +2587,92 @@ export default function MapEditor({
     [mutateDoc],
   );
 
+  /** 将普通自由画笔提升为场景区域，保留原几何与可见样式。 */
+  const promoteFreeformArea = useCallback(
+    (
+      featureId: string,
+      kind: MapSceneRegion["kind"],
+      terrainMaterial: MapTerrainMaterial | null = null,
+    ) => {
+      const currentMap = docRef.current?.map;
+      const feature = currentMap?.features.find(
+        (candidate) => candidate.id === featureId,
+      );
+      if (!currentMap || !feature || !isMapFeatureFreeformArea(feature.kind)) {
+        setError("只有自由画笔区域可以转为地形区域。");
+        return;
+      }
+      const sourceLayer = currentMap.layers.find(
+        (layer) => layer.id === feature.layerId,
+      );
+      const scene = currentMap.scene ?? createEmptyMapScene();
+      const targetLayerId = kind === "land" ? "scene-terrain" : "scene-water";
+      const targetLayer = scene.layers.find(
+        (layer) => layer.id === targetLayerId,
+      );
+      if (
+        !isEditableMapLayer(sourceLayer) ||
+        !isEditableMapLayer(targetLayer)
+      ) {
+        setError("源图层或目标地形图层已隐藏或锁定，无法转换区域。");
+        return;
+      }
+      if (
+        terrainMaterial &&
+        getMapTerrainMaterialPreset(terrainMaterial).surface !== kind
+      ) {
+        setError("附加材质必须与目标区域的陆地或水域表面一致。");
+        return;
+      }
+      const areaStyle = getMapFeatureAreaStyle(feature);
+      const regionId = `region-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+      const region = createMapSceneRegion({
+        id: regionId,
+        layerId: targetLayer.id,
+        kind,
+        points: feature.points,
+        fill: areaStyle.fill,
+        opacity: areaStyle.opacity,
+        edgeColor:
+          feature.props.color ?? (kind === "land" ? "#5c5038" : "#2f6377"),
+        edgeWidth: Math.max(
+          0.75,
+          Math.min(256, Number(feature.props.lineWidth ?? 2) || 2),
+        ),
+        curve: feature.props.curve === "line" ? "line" : "arc",
+        terrainMaterial,
+      });
+      mutateDoc((map) => {
+        const currentScene = map.scene ?? createEmptyMapScene();
+        const nextScene = addMapSceneRegion(currentScene, region);
+        if (nextScene === currentScene) return map;
+        return {
+          ...map,
+          features: map.features.filter(
+            (candidate) => candidate.id !== featureId,
+          ),
+          scene: nextScene,
+          groups: map.groups
+            ?.map((group) =>
+              group.itemIds.includes(featureId)
+                ? {
+                    ...group,
+                    itemIds: group.itemIds.map((itemId) =>
+                      itemId === featureId ? regionId : itemId,
+                    ),
+                  }
+                : group,
+            )
+            .filter((group) => group.itemIds.length >= 2),
+        };
+      });
+      setActiveSceneLayerId(targetLayer.id);
+      updateMapSelection([regionId], regionId);
+      chooseTool("select");
+    },
+    [chooseTool, mutateDoc, updateMapSelection],
+  );
+
   const duplicateFeature = useCallback(
     (featureId: string) => {
       duplicateSelectedMapItems([featureId]);
@@ -1888,6 +2698,10 @@ export default function MapEditor({
         !isEditableMapLayer(targetLayer)
       ) {
         setError("源图层或目标图层已隐藏或锁定。无法移动地图要素。");
+        return;
+      }
+      if (source.kind === "node" && getTopologyNodeLocked(source)) {
+        setError("当前拓扑节点已锁定，无法移动所属图层。");
         return;
       }
       mutateDoc((map) => ({
@@ -1995,22 +2809,594 @@ export default function MapEditor({
     [mutateDoc],
   );
 
-  const updateTopologyNodePosition = useCallback(
-    (featureId: string, point: { readonly x: number; readonly y: number }) => {
+  const updateTopologyNodePositions = useCallback(
+    (
+      moves: readonly {
+        readonly id: string;
+        readonly point: { readonly x: number; readonly y: number };
+      }[],
+    ) => {
+      const currentMap = docRef.current?.map;
+      const invalidMove = moves.find((move) => {
+        const feature = currentMap?.features.find(
+          (item) => item.id === move.id && item.kind === "node",
+        );
+        const layer = currentMap?.layers.find(
+          (item) => item.id === feature?.layerId,
+        );
+        return !feature || !isEditableMapLayer(layer);
+      });
+      if (
+        !currentMap ||
+        invalidMove ||
+        !canEditTopologyNodes(
+          currentMap,
+          moves.map((move) => move.id),
+        )
+      ) {
+        setError("选区包含隐藏、锁定或不存在的拓扑节点，无法移动。");
+        return;
+      }
+      mutateDoc((map) => moveTopologyNodes(map, moves));
+      setError(null);
+    },
+    [mutateDoc],
+  );
+
+  const createConnectedTopologyNodeFromSelection = useCallback(
+    (
+      direction: "incoming" | "outgoing",
+      anchorFeatureId: string | null = selectedFeatureId,
+      routeTemplate: Partial<{
+        readonly relation: TopologyRouteRelation;
+        readonly direction: TopologyRouteDirection;
+      }> = {},
+      placement: "sequence" | "hierarchy" = "sequence",
+    ) => {
+      const currentMap = docRef.current?.map;
+      const anchor = currentMap?.features.find(
+        (feature) => feature.id === anchorFeatureId && feature.kind === "node",
+      );
+      if (!currentMap || !anchor?.points[0]) {
+        setError("请先选择一个拓扑节点，再创建相邻节点。");
+        return;
+      }
+      const layer = currentMap.layers.find(
+        (candidate) => candidate.id === anchor.layerId,
+      );
+      if (!isEditableMapLayer(layer)) {
+        setError("当前拓扑节点所在图层已隐藏或锁定，无法创建相邻节点。");
+        return;
+      }
+      if (getTopologyNodeLocked(anchor)) {
+        setError("当前拓扑节点已锁定，无法创建相邻节点。");
+        return;
+      }
+      const linkedMap = maps.find(
+        (map) =>
+          map.id === activeTopologyLinkedMapId && map.id !== currentMap.id,
+      );
+      const entity = activeTopologyEntityRef
+        ? entityOptions.find(
+            (candidate) =>
+              candidate.kind === activeTopologyEntityRef.kind &&
+              candidate.id === activeTopologyEntityRef.id,
+          )
+        : undefined;
+      const setting =
+        activeTopologyEntityRef?.kind === "setting"
+          ? topologySettingById.get(activeTopologyEntityRef.id)
+          : undefined;
+      const nodeId = newTopologyItemId("node");
+      const edgeId = newTopologyItemId("route");
+      const point =
+        placement === "hierarchy"
+          ? topologyHierarchyAdjacentNodePoint(
+              currentMap,
+              anchor.id,
+              direction === "incoming" ? "parent" : "child",
+            )
+          : topologyAdjacentNodePoint(currentMap, anchor.id, direction);
+      if (!point) {
+        setError("当前节点没有有效坐标，无法创建相邻节点。");
+        return;
+      }
+      let createdNodeId: string | null = null;
+      mutateDoc((map) => {
+        const result = createConnectedTopologyNode(map, {
+          anchorNodeId: anchor.id,
+          nodeId,
+          edgeId,
+          direction,
+          point,
+          node: {
+            kind: activeTopologyNodeKind,
+            status: activeTopologyNodeStatus,
+            name:
+              activeTopologyNodeName.trim() ||
+              (linkedMap?.name ??
+                setting?.name ??
+                entity?.name ??
+                getTopologyNodeKindOption(activeTopologyNodeKind).defaultName),
+            color: getTopologyNodeKindOption(activeTopologyNodeKind).color,
+            linkedMapId: linkedMap?.id ?? null,
+            entityRef: activeTopologyEntityRef,
+          },
+          relation: routeTemplate.relation ?? activeTopologyRouteRelation,
+          routeDirection:
+            routeTemplate.direction ?? activeTopologyRouteDirection,
+        });
+        if (!result) return map;
+        createdNodeId = result.nodeId;
+        return result.map;
+      });
+      if (createdNodeId) {
+        updateMapSelection([createdNodeId], createdNodeId);
+        chooseTool("select");
+        setError(null);
+      }
+    },
+    [
+      activeTopologyEntityRef,
+      activeTopologyLinkedMapId,
+      activeTopologyNodeKind,
+      activeTopologyNodeName,
+      activeTopologyNodeStatus,
+      activeTopologyRouteDirection,
+      activeTopologyRouteRelation,
+      chooseTool,
+      entityOptions,
+      maps,
+      mutateDoc,
+      selectedFeatureId,
+      topologySettingById,
+      updateMapSelection,
+    ],
+  );
+
+  const insertTopologyNodeFromSelection = useCallback(() => {
+    const currentMap = docRef.current?.map;
+    const edge = currentMap?.features.find(
+      (feature) => feature.id === selectedFeatureId && feature.kind === "route",
+    );
+    if (!currentMap || !edge) {
+      setError("请先选择一条拓扑通道，再插入节点。");
+      return;
+    }
+    const layer = currentMap.layers.find(
+      (candidate) => candidate.id === edge.layerId,
+    );
+    if (!isEditableMapLayer(layer)) {
+      setError("当前拓扑通道所在图层已隐藏或锁定，无法插入节点。");
+      return;
+    }
+    const linkedMap = maps.find(
+      (map) => map.id === activeTopologyLinkedMapId && map.id !== currentMap.id,
+    );
+    const entity = activeTopologyEntityRef
+      ? entityOptions.find(
+          (candidate) =>
+            candidate.kind === activeTopologyEntityRef.kind &&
+            candidate.id === activeTopologyEntityRef.id,
+        )
+      : undefined;
+    const setting =
+      activeTopologyEntityRef?.kind === "setting"
+        ? topologySettingById.get(activeTopologyEntityRef.id)
+        : undefined;
+    const nodeId = newTopologyItemId("node");
+    const trailingEdgeId = newTopologyItemId("route");
+    let createdNodeId: string | null = null;
+    mutateDoc((map) => {
+      const result = insertTopologyNodeOnEdge(map, {
+        edgeId: edge.id,
+        nodeId,
+        trailingEdgeId,
+        node: {
+          kind: activeTopologyNodeKind,
+          status: activeTopologyNodeStatus,
+          name:
+            activeTopologyNodeName.trim() ||
+            (linkedMap?.name ??
+              setting?.name ??
+              entity?.name ??
+              getTopologyNodeKindOption(activeTopologyNodeKind).defaultName),
+          color: getTopologyNodeKindOption(activeTopologyNodeKind).color,
+          linkedMapId: linkedMap?.id ?? null,
+          entityRef: activeTopologyEntityRef,
+        },
+      });
+      if (!result) return map;
+      createdNodeId = result.nodeId;
+      return result.map;
+    });
+    if (createdNodeId) {
+      updateMapSelection([createdNodeId], createdNodeId);
+      chooseTool("select");
+      setError(null);
+    }
+  }, [
+    activeTopologyEntityRef,
+    activeTopologyLinkedMapId,
+    activeTopologyNodeKind,
+    activeTopologyNodeName,
+    activeTopologyNodeStatus,
+    chooseTool,
+    entityOptions,
+    maps,
+    mutateDoc,
+    selectedFeatureId,
+    topologySettingById,
+    updateMapSelection,
+  ]);
+
+  const createConnectedTopologyNodeFromCanvas = useCallback(
+    (featureId: string, direction: "incoming" | "outgoing") => {
+      createConnectedTopologyNodeFromSelection(direction, featureId);
+    },
+    [createConnectedTopologyNodeFromSelection],
+  );
+
+  const createHierarchyTopologyNodeFromSelection = useCallback(
+    (
+      direction: "incoming" | "outgoing",
+      anchorFeatureId: string | null = selectedFeatureId,
+    ) => {
+      createConnectedTopologyNodeFromSelection(
+        direction,
+        anchorFeatureId,
+        { relation: "branch", direction: "one-way" },
+        "hierarchy",
+      );
+    },
+    [createConnectedTopologyNodeFromSelection, selectedFeatureId],
+  );
+
+  const createHierarchyTopologyNodeFromCanvas = useCallback(
+    (featureId: string, direction: "incoming" | "outgoing") => {
+      createHierarchyTopologyNodeFromSelection(direction, featureId);
+    },
+    [createHierarchyTopologyNodeFromSelection],
+  );
+
+  /**
+   * 多选节点后直接建立当前关系模板的通道。选择顺序就是单向通道的来源
+   * 与目标顺序；双向通道仍由业务层按无序端点做重复检查。这个入口与画布
+   * 点选/端口拖拽共用 createTopologyEdgeFeature，不能绕开拓扑事实约束。
+   */
+  const connectSelectedTopologyNodes = useCallback(
+    (nodeIds: readonly string[]) => {
+      const [sourceNodeId, targetNodeId] = nodeIds;
+      const currentMap = docRef.current?.map;
+      const activeLayer = currentMap?.layers.find(
+        (layer) => layer.id === activeLayerId,
+      );
+      if (
+        !currentMap ||
+        !sourceNodeId ||
+        !targetNodeId ||
+        !isEditableMapLayer(activeLayer)
+      ) {
+        setError("请选择两个可连接的拓扑节点，并确保当前图层可编辑。");
+        return;
+      }
+
+      const routeId = newTopologyItemId("route");
+      let createdRouteId: string | null = null;
+      mutateDoc((map) => {
+        const route = createTopologyEdgeFeature({
+          id: routeId,
+          layerId: activeLayer.id,
+          connection: { source: sourceNodeId, target: targetNodeId },
+          document: map,
+          relation: activeTopologyRouteRelation,
+          direction: activeTopologyRouteDirection,
+        });
+        if (!route) return map;
+        createdRouteId = route.id;
+        return { ...map, features: [...map.features, route] };
+      });
+      if (!createdRouteId) {
+        setError("所选节点不可连接，或当前关系的通道已经存在。");
+        return;
+      }
+      updateMapSelection([createdRouteId], createdRouteId);
+      chooseTool("select");
+      setError(null);
+    },
+    [
+      activeLayerId,
+      activeTopologyRouteDirection,
+      activeTopologyRouteRelation,
+      chooseTool,
+      mutateDoc,
+      updateMapSelection,
+    ],
+  );
+
+  const toggleTopologyNodeLock = useCallback(
+    (featureId: string, locked: boolean) => {
       const currentMap = docRef.current?.map;
       const feature = currentMap?.features.find(
-        (item) => item.id === featureId,
+        (item) => item.id === featureId && item.kind === "node",
       );
       const layer = currentMap?.layers.find(
         (item) => item.id === feature?.layerId,
       );
-      if (!isEditableMapLayer(layer)) {
-        setError("当前拓扑图层已隐藏或锁定。无法移动节点。");
+      if (!feature || !isEditableMapLayer(layer)) {
+        setError("当前拓扑节点所在图层已隐藏或锁定，无法修改节点锁定状态。");
         return;
       }
-      mutateDoc((map) => moveTopologyNode(map, featureId, point));
+      mutateDoc((map) => ({
+        ...map,
+        features: map.features.map((item) =>
+          item.id === featureId
+            ? {
+                ...item,
+                props: updateTopologyNodeProps(item.props, { locked }),
+              }
+            : item,
+        ),
+      }));
+      setError(null);
     },
     [mutateDoc],
+  );
+
+  const reverseSelectedTopologyRoute = useCallback(() => {
+    if (!selectedFeatureId) return;
+    const currentMap = docRef.current?.map;
+    const feature = currentMap?.features.find(
+      (candidate) =>
+        candidate.id === selectedFeatureId && candidate.kind === "route",
+    );
+    const layer = currentMap?.layers.find(
+      (candidate) => candidate.id === feature?.layerId,
+    );
+    if (!currentMap || !feature || !isEditableMapLayer(layer)) {
+      setError("当前拓扑通道不可编辑。");
+      return;
+    }
+    const next = reverseTopologyEdge(currentMap, feature.id);
+    if (!next) {
+      setError("通道端点无效、图层不可编辑或反转后会产生重复关系。");
+      return;
+    }
+    mutateDoc((map) => reverseTopologyEdge(map, feature.id) ?? map);
+    setError(null);
+  }, [mutateDoc, selectedFeatureId]);
+
+  const openTopologyNodeMap = useCallback(
+    (featureId: string) => {
+      const feature = docRef.current?.map.features.find(
+        (item) => item.id === featureId && item.kind === "node",
+      );
+      const linkedMapId = feature ? getTopologyNodeLinkedMapId(feature) : null;
+      if (!linkedMapId) {
+        setError("当前拓扑节点尚未关联地图。");
+        return;
+      }
+      if (!maps.some((map) => map.id === linkedMapId)) {
+        setError(`关联地图“${linkedMapId}”不存在，请在节点检查器中解除关联。`);
+        return;
+      }
+      void openMap(linkedMapId);
+    },
+    [maps, openMap],
+  );
+
+  const selectTopologyInvalidRoute = useCallback(
+    (featureId: string) => {
+      const currentMap = docRef.current?.map;
+      const feature = currentMap?.features.find(
+        (item) => item.id === featureId && item.kind === "route",
+      );
+      if (!currentMap || !feature) return;
+      setActiveLayerId(feature.layerId);
+      updateMapSelection([feature.id], feature.id);
+      chooseTool("select");
+      setError(
+        getTopologyInvalidRouteDiagnostics(currentMap).find(
+          (diagnostic) => diagnostic.route.id === feature.id,
+        )?.reasonLabel ?? "该通道端点无效，请重新选择端点或删除通道。",
+      );
+    },
+    [chooseTool, updateMapSelection],
+  );
+
+  const beginTopologyNodeMapCreation = useCallback((featureId: string) => {
+    const feature = docRef.current?.map.features.find(
+      (item) => item.id === featureId && item.kind === "node",
+    );
+    if (!feature) return;
+    const kind = getTopologyNodeKind(feature);
+    setNewMapName(feature.name);
+    setNewMapProjection(topologyProjectionForNodeKind(kind));
+    setNewMapLinkNodeId(feature.id);
+    setNewMapOpen(true);
+  }, []);
+
+  const reconnectTopologyRoute = useCallback(
+    (featureId: string, sourceNodeId: string, targetNodeId: string) => {
+      const currentMap = docRef.current?.map;
+      const feature = currentMap?.features.find(
+        (item) => item.id === featureId && item.kind === "route",
+      );
+      const layer = currentMap?.layers.find(
+        (item) => item.id === feature?.layerId,
+      );
+      if (!currentMap || !feature || !isEditableMapLayer(layer)) {
+        setError("当前拓扑图层已隐藏或锁定。无法重连通道。");
+        return;
+      }
+      const next = reconnectTopologyEdge(currentMap, featureId, {
+        sourceNodeId,
+        targetNodeId,
+      });
+      if (!next) {
+        setError("通道需要连接两个不同且存在的世界节点，且不能产生重复关系。");
+        return;
+      }
+      mutateDoc(
+        (map) =>
+          reconnectTopologyEdge(map, featureId, {
+            sourceNodeId,
+            targetNodeId,
+          }) ?? map,
+      );
+    },
+    [mutateDoc],
+  );
+
+  const updateTopologyRouteFromInspector = useCallback(
+    (
+      featureId: string,
+      patch: Partial<{
+        readonly relation: TopologyRouteRelation;
+        readonly direction: TopologyRouteDirection;
+      }>,
+    ) => {
+      const currentMap = docRef.current?.map;
+      const next = currentMap
+        ? updateTopologyRoute(currentMap, featureId, patch)
+        : null;
+      if (!next) {
+        setError("通道关系或方向会产生重复连接，未修改。");
+        return;
+      }
+      mutateDoc(() => next);
+      setError(null);
+    },
+    [mutateDoc],
+  );
+
+  const autoLayoutTopology = useCallback(
+    (direction: "horizontal" | "vertical") => {
+      const currentMap = docRef.current?.map;
+      const nodeIds =
+        currentMap?.features
+          .filter((feature) => feature.kind === "node")
+          .map((feature) => feature.id) ?? [];
+      if (!currentMap || nodeIds.length < 2) {
+        setError("至少需要两个拓扑节点才能自动布局。");
+        return;
+      }
+      if (
+        !canEditMapSelectableItems(currentMap, nodeIds) ||
+        !canEditTopologyNodes(currentMap, nodeIds)
+      ) {
+        setError("自动布局需要所有拓扑节点所在图层可见且未锁定。");
+        return;
+      }
+      mutateDoc((map) => arrangeTopologyNodes(map, direction));
+      setError(null);
+      setFocusRequest((request) => request + 1);
+    },
+    [mutateDoc],
+  );
+
+  const importTopologyNodesFromWorldArchitecture = useCallback(() => {
+    const currentMap = docRef.current?.map;
+    const activeLayer = currentMap?.layers.find(
+      (layer) => layer.id === activeLayerId,
+    );
+    if (!currentMap || !isEditableMapLayer(activeLayer)) {
+      setError("当前拓扑图层已隐藏或锁定，无法导入世界架构。");
+      return;
+    }
+    if (!topologyImportRootId || topologySettingTree.nodes.length === 0) {
+      setError("请先选择一个世界架构节点。");
+      return;
+    }
+    let importedNodeIds: readonly string[] = [];
+    let importedRouteIds: readonly string[] = [];
+    let rootNodeId: string | null = null;
+    mutateDoc((map) => {
+      const result = importTopologySettingSubtree(map, {
+        rootSettingId: topologyImportRootId,
+        settingNodes: topologySettingTree.nodes,
+        levelTypes: topologySettingTree.levelTypes,
+        layerId: activeLayer.id,
+      });
+      importedNodeIds = result.importedNodeIds;
+      importedRouteIds = result.importedRouteIds;
+      rootNodeId = result.rootNodeId;
+      return result.map;
+    });
+    if (importedNodeIds.length === 0 && importedRouteIds.length === 0) {
+      setError("所选世界架构范围已完整存在于当前拓扑中。");
+      return;
+    }
+    if (rootNodeId) {
+      updateMapSelection([rootNodeId], rootNodeId);
+      setFocusRequest((request) => request + 1);
+    }
+    chooseTool("select");
+    setError(null);
+  }, [
+    activeLayerId,
+    chooseTool,
+    mutateDoc,
+    topologyImportRootId,
+    topologySettingTree,
+    updateMapSelection,
+  ]);
+
+  const importTopologySettingSubtreeFromNode = useCallback(
+    (featureId: string) => {
+      const currentMap = docRef.current?.map;
+      const node = currentMap?.features.find(
+        (feature) => feature.id === featureId && feature.kind === "node",
+      );
+      if (!currentMap || !node) {
+        setError("当前拓扑节点已不存在，无法导入世界架构子树。");
+        return;
+      }
+      if (node.entityRef?.kind !== "setting") {
+        setError("当前节点尚未关联世界架构设定，无法导入子树。");
+        return;
+      }
+      const layer = currentMap.layers.find(
+        (candidate) => candidate.id === node.layerId,
+      );
+      if (!isEditableMapLayer(layer)) {
+        setError("当前拓扑节点所在图层已隐藏或锁定，无法导入世界架构。");
+        return;
+      }
+      const settingTree = topologySettingTreeRef.current;
+      if (settingTree.nodes.length === 0) {
+        setError("当前项目没有可读取的世界架构空间树。");
+        return;
+      }
+
+      let importedNodeIds: readonly string[] = [];
+      let importedRouteIds: readonly string[] = [];
+      let rootNodeId: string | null = null;
+      mutateDoc((map) => {
+        const result = importTopologySettingSubtree(map, {
+          rootSettingId: node.entityRef!.id,
+          settingNodes: settingTree.nodes,
+          levelTypes: settingTree.levelTypes,
+          layerId: node.layerId,
+        });
+        importedNodeIds = result.importedNodeIds;
+        importedRouteIds = result.importedRouteIds;
+        rootNodeId = result.rootNodeId;
+        return result.map;
+      });
+      if (importedNodeIds.length === 0 && importedRouteIds.length === 0) {
+        setError("该世界架构范围已完整存在于当前拓扑中。");
+        return;
+      }
+      updateMapSelection(
+        rootNodeId ? [rootNodeId] : [featureId],
+        rootNodeId ?? featureId,
+      );
+      setFocusRequest((request) => request + 1);
+      chooseTool("select");
+      setError(null);
+    },
+    [chooseTool, mutateDoc, updateMapSelection],
   );
 
   const moveSelectableMapItems = useCallback(
@@ -2030,6 +3416,48 @@ export default function MapEditor({
     [mutateDoc],
   );
 
+  const createMapObjectGroup = useCallback(
+    (itemIds: readonly string[]) => {
+      const currentMap = docRef.current?.map;
+      if (!currentMap) return;
+      const ids = expandMapSelectableItemIds(currentMap, itemIds);
+      if (ids.length < 2) {
+        setError("至少选择两个地图对象后才能组合。");
+        return;
+      }
+      if (!canEditMapSelectableItems(currentMap, ids)) {
+        setError("组合包含隐藏、锁定或不存在的对象，无法组合。");
+        return;
+      }
+      const groupId = newMapObjectGroupId();
+      mutateDoc((map) =>
+        createMapSelectableGroup(map, {
+          id: groupId,
+          name: "组合",
+          itemIds: ids,
+        }),
+      );
+      updateMapSelection(ids, ids.at(-1) ?? null);
+      chooseTool("select");
+      setError(null);
+    },
+    [chooseTool, mutateDoc, updateMapSelection],
+  );
+
+  const ungroupMapObject = useCallback(
+    (groupId: string) => {
+      const currentMap = docRef.current?.map;
+      const group = currentMap?.groups?.find(
+        (candidate) => candidate.id === groupId,
+      );
+      if (!currentMap || !group) return;
+      mutateDoc((map) => ungroupMapSelectableItems(map, groupId));
+      updateMapSelection(group.itemIds, group.itemIds.at(-1) ?? null);
+      setError(null);
+    },
+    [mutateDoc, updateMapSelection],
+  );
+
   const removeSelectableMapItems = useCallback(
     (itemIds: readonly string[]) => {
       const ids = [...new Set(itemIds)];
@@ -2039,11 +3467,46 @@ export default function MapEditor({
         setError("选区包含隐藏、锁定或不存在的对象，无法批量删除。");
         return false;
       }
-      mutateDoc((map) => removeMapSelectableItems(map, ids));
+      const topologyNodeIds = ids.filter((id) =>
+        currentMap.features.some(
+          (feature) => feature.id === id && feature.kind === "node",
+        ),
+      );
+      if (
+        mapRendererForProjection(currentMap.projectionType) === "topology" &&
+        topologyNodeIds.length > 0 &&
+        !canEditTopologyNodes(currentMap, topologyNodeIds)
+      ) {
+        setError("选区包含锁定、隐藏或不存在的拓扑节点，无法删除。");
+        return false;
+      }
+      const nextMap =
+        mapRendererForProjection(currentMap.projectionType) === "topology"
+          ? removeTopologyFeatures(currentMap, ids)
+          : removeMapSelectableItems(currentMap, ids);
+      if (nextMap === currentMap) {
+        setError("选区包含锁定通道的拓扑节点，解锁关联节点后才能删除。");
+        return false;
+      }
+      mutateDoc(() => nextMap);
       updateMapSelection([], null);
       return true;
     },
     [mutateDoc, updateMapSelection],
+  );
+
+  // React Flow 删除节点时可能随后再次发出关联边的删除事件。过滤掉已经
+  // 由节点级联删除的事实，避免第二个事件被误报为“对象不存在”。
+  const removeTopologyCanvasItems = useCallback(
+    (itemIds: readonly string[]) => {
+      const currentMap = docRef.current?.map;
+      if (!currentMap) return;
+      const existingIds = itemIds.filter((id) =>
+        currentMap.features.some((feature) => feature.id === id),
+      );
+      if (existingIds.length > 0) removeSelectableMapItems(existingIds);
+    },
+    [removeSelectableMapItems],
   );
 
   const updateCanvas = useCallback(
@@ -2051,6 +3514,34 @@ export default function MapEditor({
       mutateDoc((map) => ({ ...map, canvas: { ...map.canvas, ...patch } }));
     },
     [mutateDoc],
+  );
+
+  const updateBackgroundPlacement = useCallback(
+    (
+      patch: Partial<
+        NonNullable<MapDocument["canvas"]["backgroundImagePlacement"]>
+      >,
+    ) => {
+      const currentMap = docRef.current?.map;
+      if (!currentMap) return;
+      const canvas = currentMap.canvas;
+      const width = canvas.backgroundImageWidth;
+      const height = canvas.backgroundImageHeight;
+      const placement =
+        canvas.backgroundImagePlacement ??
+        (typeof width === "number" && typeof height === "number"
+          ? getMapBackgroundImagePlacement(canvas, width, height)
+          : null);
+      if (!placement) return;
+      updateCanvas({
+        backgroundImagePlacement: {
+          ...placement,
+          source: "author",
+          ...patch,
+        },
+      });
+    },
+    [updateCanvas],
   );
 
   const importBackground = useCallback(
@@ -2130,16 +3621,27 @@ export default function MapEditor({
         setError("当前绘图层已隐藏或锁定。无法删除地图要素。");
         return;
       }
-      mutateDoc((map) =>
-        mapRendererForProjection(map.projectionType) === "topology"
-          ? removeTopologyFeature(map, featureId)
+      if (
+        feature?.kind === "node" &&
+        !canEditTopologyNodes(currentMap!, [featureId])
+      ) {
+        setError("当前拓扑节点已锁定，无法删除。");
+        return;
+      }
+      const nextMap =
+        mapRendererForProjection(currentMap!.projectionType) === "topology"
+          ? removeTopologyFeature(currentMap!, featureId)
           : {
-              ...map,
-              features: map.features.filter(
-                (feature) => feature.id !== featureId,
+              ...currentMap!,
+              features: currentMap!.features.filter(
+                (candidate) => candidate.id !== featureId,
               ),
-            },
-      );
+            };
+      if (nextMap === currentMap) {
+        setError("该拓扑要素关联锁定通道，解锁关联节点后才能删除。");
+        return;
+      }
+      mutateDoc(() => nextMap);
       setSelectedFeatureId(null);
     },
     [mutateDoc],
@@ -2210,6 +3712,34 @@ export default function MapEditor({
       }));
     },
     [mutateDoc],
+  );
+
+  const removeSceneLayer = useCallback(
+    (layerId: string) => {
+      const scene = doc?.map.scene ?? createEmptyMapScene();
+      const layer = scene.layers.find((item) => item.id === layerId);
+      if (!layer) return;
+      if (layer.id === "scene-terrain" || layer.id === "scene-water") {
+        setError("海陆基础层不能删除。");
+        return;
+      }
+      const hasContent = layer.regions.length > 0 || layer.strokes.length > 0;
+      if (hasContent && !layer.id.startsWith("scene-generator-")) {
+        setError("当前绘图层仍包含内容，请先移动或删除区域和笔触。");
+        return;
+      }
+      mutateDoc((map) => ({
+        ...map,
+        scene: removeMapSceneLayer(map.scene ?? createEmptyMapScene(), layerId),
+      }));
+      if (activeSceneLayerId === layerId) {
+        setActiveSceneLayerId(
+          scene.layers.find((item) => item.id !== layerId)?.id ??
+            "scene-terrain",
+        );
+      }
+    },
+    [activeSceneLayerId, doc, mutateDoc],
   );
 
   const updateTerrainStyle = useCallback(
@@ -2378,10 +3908,117 @@ export default function MapEditor({
   const selectedRouteStyle = selectedFeature
     ? getMapRouteStyle(selectedFeature)
     : null;
+  const selectedAreaStyle =
+    selectedFeature && isMapFeatureFreeformArea(selectedFeature.kind)
+      ? getMapFeatureAreaStyle(selectedFeature)
+      : null;
+  /** 自由画笔只有首尾闭合后才具备“区域”语义；普通画笔区域与历史区域视为已闭合。 */
+  const selectedFreehandAreaClosed = Boolean(
+    selectedFeature &&
+      (!isMapFeatureFreeformArea(selectedFeature.kind) ||
+        selectedFeature.props.freehand !== "true" ||
+        selectedFeature.props.closed === "true"),
+  );
   const selectedLabelStyle =
     selectedFeature && mapFeatureHasLabel(selectedFeature)
       ? getMapLabelStyle(selectedFeature)
       : null;
+  const selectedTopologyNode =
+    doc &&
+    mapRendererForProjection(doc.map.projectionType) === "topology" &&
+    selectedFeature?.kind === "node"
+      ? {
+          kind: getTopologyNodeKind(selectedFeature),
+          showLabel: selectedFeature.props.showLabel !== "false",
+          status: getTopologyNodeStatus(selectedFeature),
+          locked: getTopologyNodeLocked(selectedFeature),
+          linkedMapId: getTopologyNodeLinkedMapId(selectedFeature),
+          entityRef: selectedFeature.entityRef,
+          settingRef:
+            selectedFeature.entityRef?.kind === "setting"
+              ? selectedFeature.entityRef
+              : null,
+          ...getTopologyNodeConnections(
+            doc.map,
+            selectedFeature.id,
+            timelineCursor,
+          ),
+          ancestorPath: getTopologyNodeAncestors(
+            doc.map,
+            selectedFeature.id,
+            timelineCursor,
+          )
+            .map(
+              (ancestorId) =>
+                doc.map.features.find((feature) => feature.id === ancestorId)
+                  ?.name ?? ancestorId,
+            )
+            .join(" / "),
+        }
+      : null;
+  const selectedTopologyRoute =
+    doc &&
+    mapRendererForProjection(doc.map.projectionType) === "topology" &&
+    selectedFeature?.kind === "route"
+      ? {
+          relation: getTopologyRouteRelation(selectedFeature),
+          direction: getTopologyRouteDirection(selectedFeature),
+          showLabel: selectedFeature.props.showLabel !== "false",
+          sourceNodeId: selectedFeature.props.sourceNodeId ?? "",
+          targetNodeId: selectedFeature.props.targetNodeId ?? "",
+        }
+      : null;
+  const selectedTopologyNodeRoutes =
+    selectedTopologyNode && selectedFeature
+      ? selectedTopologyNode.routes.map(({ route, direction }) => {
+          const sourceId = route.props.sourceNodeId;
+          const targetId = route.props.targetNodeId;
+          const source = doc!.map.features.find(
+            (feature) => feature.id === sourceId && feature.kind === "node",
+          );
+          const target = doc!.map.features.find(
+            (feature) => feature.id === targetId && feature.kind === "node",
+          );
+          return {
+            route,
+            sourceName: source?.name ?? "缺失节点",
+            targetName: target?.name ?? "缺失节点",
+            direction,
+          } as const;
+        })
+      : [];
+  const selectedTopologyLinkedMap = selectedTopologyNode?.linkedMapId
+    ? maps.find((map) => map.id === selectedTopologyNode.linkedMapId)
+    : undefined;
+  const selectedTopologySetting = selectedTopologyNode?.settingRef
+    ? topologySettingById.get(selectedTopologyNode.settingRef.id)
+    : undefined;
+  const selectedTopologyEntity = selectedTopologyNode?.entityRef
+    ? entityOptions.find(
+        (entity) =>
+          entity.kind === selectedTopologyNode.entityRef?.kind &&
+          entity.id === selectedTopologyNode.entityRef?.id,
+      )
+    : undefined;
+  const topologyNodeOptions = (doc?.map.features ?? [])
+    .filter((feature) => feature.kind === "node")
+    .map((feature) => ({ value: feature.id, label: feature.name }));
+  const topologySettingSelectOptions = topologySettingOptions.map(
+    (setting) => ({
+      value: `setting:${setting.id}`,
+      label: setting.label,
+    }),
+  );
+  const topologyEntitySelectOptions = entityOptions
+    .filter((entity) => entity.kind !== "setting")
+    .map((entity) => ({
+      value: `${entity.kind}:${entity.id}`,
+      label: `${entity.name}（${DOMAIN_ENTITY_KIND_LABELS[entity.kind]}）`,
+    }));
+  const topologyImportSelectOptions = topologySettingOptions.map((setting) => ({
+    value: setting.id,
+    label: setting.label,
+  }));
   const selectedArtworkStamp = doc
     ? findMapArtworkStamp(doc.map.artwork, selectedFeatureId ?? "")
     : undefined;
@@ -2414,6 +4051,9 @@ export default function MapEditor({
           (layer) => layer.id === selectedSceneRegion.layerId,
         )
       : undefined;
+  useEffect(() => {
+    if (selectedSceneLayer) setActiveSceneLayerId(selectedSceneLayer.id);
+  }, [selectedSceneLayer]);
   const selectedSceneStrokeIsTerrainShape = Boolean(
     selectedSceneStroke &&
       selectedSceneStroke.brushAssetId === null &&
@@ -2469,7 +4109,8 @@ export default function MapEditor({
       const target = event.target;
       if (
         target instanceof HTMLElement &&
-        target.closest("input, textarea, select, [contenteditable='true']")
+        (target.closest("input, textarea, select, [contenteditable='true']") ||
+          target.closest(".react-flow"))
       ) {
         return;
       }
@@ -2493,17 +4134,89 @@ export default function MapEditor({
   const activeArtworkBrushColor = activeArtworkBrushAsset?.component
     ? (artworkBrushColor ?? activeArtworkBrushAsset.color)
     : null;
+  const activeTopologyLinkedMap = maps.find(
+    (map) => map.id === activeTopologyLinkedMapId && map.id !== doc?.map.id,
+  );
+  const activeTopologyNodeOption = getTopologyNodeKindOption(
+    activeTopologyNodeKind,
+  );
+  const activeTopologyEntity = activeTopologyEntityRef
+    ? entityOptions.find(
+        (entity) =>
+          entity.kind === activeTopologyEntityRef.kind &&
+          entity.id === activeTopologyEntityRef.id,
+      )
+    : undefined;
+  const activeTopologySetting =
+    activeTopologyEntityRef?.kind === "setting"
+      ? topologySettingById.get(activeTopologyEntityRef.id)
+      : undefined;
+  const topologyNodeTemplate = {
+    kind: activeTopologyNodeKind,
+    status: activeTopologyNodeStatus,
+    name:
+      activeTopologyNodeName.trim() ||
+      (activeTopologyLinkedMap?.name ??
+        activeTopologySetting?.name ??
+        activeTopologyEntity?.name ??
+        activeTopologyNodeOption.defaultName),
+    color: activeTopologyNodeOption.color,
+    linkedMapId: activeTopologyLinkedMap?.id ?? null,
+    entityRef: activeTopologyEntityRef,
+  } as const;
+  const topologyRouteTemplate = {
+    relation: activeTopologyRouteRelation,
+    direction: activeTopologyRouteDirection,
+  } as const;
+  const selectTopologyNodePreset = useCallback(
+    (kind: TopologyNodeKind) => {
+      const kindChanged = kind !== activeTopologyNodeKind;
+      setActiveTopologyNodeKind(kind);
+      // 同类型预设只是切回放置工具，必须保留作者刚刚配置的名称、关联
+      // 地图和世界架构；这与将同一预设拖入画布的行为保持一致。只有
+      // 节点类型实际变化时才清除不再匹配的关联模板。
+      if (kindChanged) {
+        setActiveTopologyNodeName("");
+        setActiveTopologyLinkedMapId(null);
+        setActiveTopologyEntityRef(null);
+      }
+      chooseTool("node");
+    },
+    [activeTopologyNodeKind, chooseTool],
+  );
+  const selectTopologyRoutePreset = useCallback(
+    (relation: TopologyRouteRelation, direction: TopologyRouteDirection) => {
+      setActiveTopologyRouteRelation(relation);
+      setActiveTopologyRouteDirection(direction);
+      chooseTool("route");
+    },
+    [chooseTool],
+  );
   const rendererKind = doc
     ? mapRendererForProjection(doc.map.projectionType)
     : null;
+  const topologySummary =
+    doc && rendererKind === "topology"
+      ? getTopologySummary(doc.map, timelineCursor)
+      : null;
   const sceneLayers = doc
     ? (doc.map.scene ?? createEmptyMapScene()).layers
     : [];
   const terrainStyle = doc
     ? (doc.map.scene ?? createEmptyMapScene()).terrainStyle
     : null;
+  const activeSceneLayer = sceneLayers.find(
+    (layer) => layer.id === activeSceneLayerId,
+  );
   const canPaintScene = sceneLayers.some(
     (layer) => layer.visible && !layer.locked,
+  );
+  const canEraseSceneLayer = Boolean(
+    activeSceneLayer?.visible && !activeSceneLayer.locked,
+  );
+  const canDrawFeature = Boolean(
+    doc?.map.layers.find((layer) => layer.id === activeLayerId)?.visible &&
+      !doc?.map.layers.find((layer) => layer.id === activeLayerId)?.locked,
   );
   const canDrawLand = Boolean(
     sceneLayers.find((layer) => layer.id === "scene-terrain")?.visible &&
@@ -2513,10 +4226,44 @@ export default function MapEditor({
     sceneLayers.find((layer) => layer.id === "scene-terrain")?.visible &&
       !sceneLayers.find((layer) => layer.id === "scene-terrain")?.locked,
   );
-  const visibleFeatureKinds: readonly MapFeatureKind[] =
+  const canPaintWaterMaterial = Boolean(
+    sceneLayers.find((layer) => layer.id === "scene-water")?.visible &&
+      !sceneLayers.find((layer) => layer.id === "scene-water")?.locked,
+  );
+  const canPaintTerrainMaterial = Boolean(
+    doc &&
+      ((canDrawLand &&
+        mapSceneHasLandSurface(doc.map.scene ?? createEmptyMapScene())) ||
+        (canPaintWaterMaterial &&
+          mapSceneHasWaterSurface(doc.map.scene ?? createEmptyMapScene()))),
+  );
+  const terrainMaterialAvailability = {
+    land: Boolean(
+      canDrawLand &&
+        doc &&
+        mapSceneHasLandSurface(doc.map.scene ?? createEmptyMapScene()),
+    ),
+    water: Boolean(
+      canPaintWaterMaterial &&
+        doc &&
+        mapSceneHasWaterSurface(doc.map.scene ?? createEmptyMapScene()),
+    ),
+  } as const;
+  const visibleFeatureKinds: readonly Exclude<MapFeatureKind, "polygon">[] =
     rendererKind === "topology"
       ? ["node", "route"]
-      : (["marker", "label", "area", "polygon", "route", "node"] as const);
+      : (["marker", "label", "route"] as const);
+  const selectedTopologyNodeIds = useMemo(
+    () =>
+      rendererKind === "topology" && doc
+        ? selectedFeatureIds.filter((featureId) =>
+            doc.map.features.some(
+              (feature) => feature.id === featureId && feature.kind === "node",
+            ),
+          )
+        : [],
+    [doc, rendererKind, selectedFeatureIds],
+  );
   const listedFeatures = useMemo(() => {
     if (!doc) return [];
     const query = featureQuery.trim().toLocaleLowerCase("zh-CN");
@@ -2672,7 +4419,7 @@ export default function MapEditor({
               </span>
               <button
                 type="button"
-                onClick={() => setNewMapOpen(true)}
+                onClick={beginMapCreation}
                 title="新建地图"
                 className="flex h-6 w-6 items-center justify-center rounded text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
               >
@@ -3039,16 +4786,17 @@ export default function MapEditor({
                   {[...sceneLayers].reverse().map((layer) => {
                     const sceneLayerIndex = sceneLayers.indexOf(layer);
                     const baseLayer =
-                      layer.kind === "terrain" || layer.kind === "water";
+                      layer.id === "scene-terrain" ||
+                      layer.id === "scene-water";
                     const firstOverlayIndex = sceneLayers.findIndex(
                       (candidate) =>
-                        candidate.kind !== "terrain" &&
-                        candidate.kind !== "water",
+                        candidate.id !== "scene-terrain" &&
+                        candidate.id !== "scene-water",
                     );
                     return (
                       <div
                         key={layer.id}
-                        className="mb-1 rounded-md border border-transparent px-2 py-1.5 text-xs hover:bg-[var(--hover-bg)]"
+                        className={`mb-1 rounded-md border px-2 py-1.5 text-xs ${activeSceneLayerId === layer.id ? "border-[var(--accent-warm)] bg-[var(--accent-warm-subtle)]" : "border-transparent hover:bg-[var(--hover-bg)]"}`}
                       >
                         <div className="flex items-center gap-1.5">
                           <button
@@ -3070,6 +4818,24 @@ export default function MapEditor({
                               <Eye className="h-3.5 w-3.5" />
                             ) : (
                               <EyeOff className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            title={
+                              activeSceneLayerId === layer.id
+                                ? "当前绘图层"
+                                : "设为当前绘图层"
+                            }
+                            aria-label={`选择绘图层：${layer.name}`}
+                            aria-pressed={activeSceneLayerId === layer.id}
+                            onClick={() => setActiveSceneLayerId(layer.id)}
+                            className={`rounded p-1 hover:bg-[var(--paper-elevated)] ${activeSceneLayerId === layer.id ? "text-[var(--accent-warm)]" : "text-[var(--ink-subtle)]"}`}
+                          >
+                            {activeSceneLayerId === layer.id ? (
+                              <Check className="h-3.5 w-3.5" />
+                            ) : (
+                              <CircleDashed className="h-3.5 w-3.5" />
                             )}
                           </button>
                           <input
@@ -3127,6 +4893,16 @@ export default function MapEditor({
                             className="rounded p-1 text-[var(--ink-muted)] hover:bg-[var(--paper-elevated)] disabled:opacity-30"
                           >
                             <ArrowDown className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            title="删除绘图层"
+                            aria-label={`删除绘图层：${layer.name}`}
+                            disabled={baseLayer}
+                            onClick={() => removeSceneLayer(layer.id)}
+                            className="rounded p-1 text-[var(--ink-subtle)] hover:bg-[var(--error-bg)] hover:text-[var(--error)] disabled:opacity-30"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
                           </button>
                         </div>
                         <label className="mt-1.5 flex items-center gap-2 px-1 text-xs text-[var(--ink-muted)]">
@@ -3195,7 +4971,7 @@ export default function MapEditor({
                           type="button"
                           onClick={() => {
                             setActiveLayerId(feature.layerId);
-                            setSelectedFeatureId(feature.id);
+                            updateMapSelection([feature.id], feature.id);
                             chooseTool("select");
                           }}
                           className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
@@ -3242,11 +5018,20 @@ export default function MapEditor({
                   <button
                     type="button"
                     onClick={() => chooseTool("select")}
-                    title="选择并移动元素"
+                    title="选择、框选和编辑对象；Shift 点击重叠对象可逐层追加选择"
                     className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs ${tool === "select" ? "bg-[var(--ink)] text-[var(--paper)]" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
                   >
                     <MousePointer2 className="h-3.5 w-3.5" />
                     选择
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => chooseTool("move")}
+                    title="拖动已选对象；拖动未选对象会先选中再移动"
+                    className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs ${tool === "move" ? "bg-[var(--ink)] text-[var(--paper)]" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
+                  >
+                    <Move className="h-3.5 w-3.5" />
+                    移动
                   </button>
                   <button
                     type="button"
@@ -3265,7 +5050,10 @@ export default function MapEditor({
                       </span>
                       <button
                         type="button"
-                        onClick={() => chooseTool("terrain-land")}
+                        onClick={() => {
+                          setActiveSceneLayerId("scene-terrain");
+                          chooseTool("terrain-land");
+                        }}
                         disabled={!canDrawLand}
                         title="像画笔一样增加陆地，松开后自动生成海岸与浅滩"
                         aria-label="绘制陆地"
@@ -3276,7 +5064,10 @@ export default function MapEditor({
                       </button>
                       <button
                         type="button"
-                        onClick={() => chooseTool("terrain-water")}
+                        onClick={() => {
+                          setActiveSceneLayerId("scene-terrain");
+                          chooseTool("terrain-water");
+                        }}
                         disabled={!canDrawWater}
                         title="像画笔一样切回水域，可雕刻海湾、湖泊与海峡"
                         aria-label="绘制水域"
@@ -3287,7 +5078,33 @@ export default function MapEditor({
                       </button>
                       <button
                         type="button"
-                        onClick={() => chooseTool("terrain-region-land")}
+                        onClick={() => chooseAreaShape("freehand")}
+                        disabled={!canDrawFeature}
+                        title="自由绘制线条或闭合轮廓（F）；闭合后可在右侧转换为陆地、水域或附加材质区域"
+                        aria-label="自由画笔"
+                        aria-pressed={tool === "freehand"}
+                        className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs disabled:cursor-not-allowed disabled:opacity-35 ${tool === "freehand" ? "bg-[var(--accent-warm)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
+                      >
+                        <Paintbrush className="h-3.5 w-3.5" />
+                        自由画笔
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => chooseTool("river")}
+                        disabled={!canDrawFeature}
+                        title="沿轨迹绘制带源头和河口渐宽效果的河流"
+                        aria-label="河流画笔"
+                        className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs disabled:cursor-not-allowed disabled:opacity-35 ${tool === "river" ? "bg-[var(--accent-warm)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
+                      >
+                        <Waves className="h-3.5 w-3.5" />
+                        河流画笔
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveSceneLayerId("scene-terrain");
+                          chooseTool("terrain-region-land");
+                        }}
                         disabled={!canDrawLand}
                         title="拖动勾画不规则大陆边界，松开后落为连续陆地区域"
                         aria-label="勾画陆地区域"
@@ -3298,7 +5115,10 @@ export default function MapEditor({
                       </button>
                       <button
                         type="button"
-                        onClick={() => chooseTool("terrain-region-water")}
+                        onClick={() => {
+                          setActiveSceneLayerId("scene-water");
+                          chooseTool("terrain-region-water");
+                        }}
                         disabled={!canDrawWater}
                         title="拖动勾画湖泊、内海或海峡边界，松开后落为水域区域"
                         aria-label="勾画水域区域"
@@ -3310,9 +5130,9 @@ export default function MapEditor({
                       <button
                         type="button"
                         onClick={() => chooseTool("scene-eraser")}
-                        disabled={!canPaintScene}
-                        title="地形橡皮：削减陆地并重新生成海岸"
-                        aria-label="地形橡皮"
+                        disabled={!canEraseSceneLayer}
+                        title={`擦除当前绘图层“${activeSceneLayer?.name ?? "未选择"}”中命中的笔触`}
+                        aria-label={`擦除当前绘图层：${activeSceneLayer?.name ?? "未选择"}`}
                         className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs disabled:cursor-not-allowed disabled:opacity-35 ${tool === "scene-eraser" ? "bg-[var(--accent-warm)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
                       >
                         <Eraser className="h-3.5 w-3.5" />
@@ -3359,7 +5179,8 @@ export default function MapEditor({
                   <span className="mx-1 h-5 w-px bg-[var(--line-subtle)]" />
                   {visibleFeatureKinds.map((kind) =>
                     (() => {
-                      const label = FEATURE_KIND_LABELS[kind];
+                      const label =
+                        kind === "area" ? "自由画笔" : FEATURE_KIND_LABELS[kind];
                       const Icon = FEATURE_KIND_ICONS[kind];
                       const activeLayer = doc.map.layers.find(
                         (layer) => layer.id === activeLayerId,
@@ -3368,16 +5189,311 @@ export default function MapEditor({
                         <button
                           key={kind}
                           type="button"
-                          onClick={() => chooseTool(kind)}
+                          draggable={kind === "node" && !activeLayer?.locked}
+                          onClick={() =>
+                            kind === "area"
+                              ? chooseAreaShape("freehand")
+                              : chooseTool(kind)
+                          }
+                          onDragStart={(event) => {
+                            if (kind !== "node") return;
+                            event.dataTransfer.effectAllowed = "copy";
+                            event.dataTransfer.setData(
+                              TOPOLOGY_NODE_DRAG_MIME,
+                              "create",
+                            );
+                          }}
                           disabled={!activeLayer?.visible || activeLayer.locked}
-                          title={`绘制${label}`}
+                          title={
+                            kind === "area"
+                              ? "创建可编辑的标注区域；陆地和水域请使用地形工具"
+                              : kind === "node"
+                                ? `绘制${label}；点击画布创建，或拖到画布直接放置`
+                                : `绘制${label}`
+                          }
                           aria-label={`绘制${label}`}
-                          className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs disabled:cursor-not-allowed disabled:opacity-35 ${tool === kind ? "bg-[var(--accent-warm)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
+                          className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs disabled:cursor-not-allowed disabled:opacity-35 ${tool === kind || (kind === "area" && tool === "freehand") ? "bg-[var(--accent-warm)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
                         >
                           <Icon className="h-3.5 w-3.5" />+ {label}
                         </button>
                       );
                     })(),
+                  )}
+                  {rendererKind === "topology" && (
+                    <div className="ml-1 flex min-w-0 items-center gap-2 border-l border-[var(--line-subtle)] pl-2">
+                      <label
+                        className="relative flex h-8 w-44 shrink-0 items-center"
+                        title="按节点名称、世界设定路径或关联地图筛选拓扑"
+                      >
+                        <Search className="pointer-events-none absolute left-2 h-3.5 w-3.5 text-[var(--ink-subtle)]" />
+                        <input
+                          value={topologyQuery}
+                          onChange={(event) =>
+                            updateTopologyQuery(event.target.value)
+                          }
+                          placeholder="筛选拓扑节点"
+                          aria-label="筛选拓扑节点"
+                          className="h-8 w-full rounded border border-[var(--line)] bg-[var(--paper-elevated)] pl-7 pr-7 text-xs text-[var(--ink)] outline-none placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)]"
+                        />
+                        {topologyQuery && (
+                          <button
+                            type="button"
+                            onClick={() => updateTopologyQuery("")}
+                            title="清除拓扑筛选"
+                            aria-label="清除拓扑筛选"
+                            className="absolute right-1 grid h-6 w-6 place-items-center rounded text-[var(--ink-subtle)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </label>
+                      <span className="shrink-0 text-xs text-[var(--ink-subtle)]">
+                        新节点
+                      </span>
+                      <input
+                        value={activeTopologyNodeName}
+                        onChange={(event) => {
+                          setActiveTopologyNodeName(event.target.value);
+                          chooseTool("node");
+                        }}
+                        placeholder={activeTopologyNodeOption.defaultName}
+                        aria-label="新建拓扑节点名称"
+                        title="指定新节点名称；留空时按关联地图或设定名称生成"
+                        className="h-8 w-28 shrink-0 rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-2 text-xs text-[var(--ink)] outline-none placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)]"
+                      />
+                      <CustomSelect
+                        value={activeTopologyNodeKind}
+                        options={TOPOLOGY_NODE_KIND_OPTIONS.map((option) => ({
+                          value: option.value,
+                          label: option.label,
+                        }))}
+                        onChange={(kind) => {
+                          setActiveTopologyNodeKind(kind as TopologyNodeKind);
+                          chooseTool("node");
+                        }}
+                        ariaLabel="新建拓扑节点类型"
+                        className="w-28"
+                        size="toolbar"
+                      />
+                      <CustomSelect
+                        value={activeTopologyLinkedMap?.id ?? ""}
+                        options={[
+                          { value: "", label: "不关联地图" },
+                          ...maps
+                            .filter((map) => map.id !== doc.map.id)
+                            .map((map) => ({
+                              value: map.id,
+                              label: map.name,
+                              suffix: MAP_PROJECTION_LABELS[map.projectionType],
+                            })),
+                        ]}
+                        onChange={(mapId) => {
+                          const linkedMap = maps.find(
+                            (map) => map.id === mapId,
+                          );
+                          setActiveTopologyLinkedMapId(linkedMap?.id ?? null);
+                          if (linkedMap) {
+                            setActiveTopologyNodeKind(
+                              topologyNodeKindForProjection(
+                                linkedMap.projectionType,
+                              ),
+                            );
+                          }
+                          chooseTool("node");
+                        }}
+                        ariaLabel="新建拓扑节点关联地图"
+                        className="w-40"
+                        popoverMinWidth={220}
+                        size="toolbar"
+                        showSelectedSuffix
+                      />
+                      <CustomSelect
+                        value={
+                          activeTopologyEntityRef
+                            ? `${activeTopologyEntityRef.kind}:${activeTopologyEntityRef.id}`
+                            : ""
+                        }
+                        options={[
+                          { value: "", label: "不关联设定或实体" },
+                          ...topologySettingSelectOptions,
+                          ...entityOptions
+                            .filter((entity) => entity.kind !== "setting")
+                            .map((entity) => ({
+                              value: `${entity.kind}:${entity.id}`,
+                              label: `${entity.name}（${DOMAIN_ENTITY_KIND_LABELS[entity.kind]}）`,
+                            })),
+                        ]}
+                        onChange={(value) => {
+                          const separator = value.indexOf(":");
+                          const kind =
+                            separator > 0 ? value.slice(0, separator) : "";
+                          const id =
+                            separator > 0 ? value.slice(separator + 1) : "";
+                          const setting =
+                            kind === "setting"
+                              ? topologySettingById.get(id)
+                              : undefined;
+                          const entity = entityOptions.find(
+                            (candidate) =>
+                              candidate.kind === kind && candidate.id === id,
+                          );
+                          const hasKnownEntity = Boolean(setting || entity);
+                          setActiveTopologyEntityRef(
+                            hasKnownEntity
+                              ? {
+                                  kind: kind as MapEntityKind,
+                                  id,
+                                }
+                              : null,
+                          );
+                          if (setting) {
+                            setActiveTopologyNodeKind(
+                              topologyNodeKindForSettingMapKind(
+                                setting.mapKind,
+                                setting.typeName,
+                              ),
+                            );
+                          }
+                          chooseTool("node");
+                        }}
+                        ariaLabel="新建拓扑节点关联设定或实体"
+                        className="w-40"
+                        popoverMinWidth={220}
+                        size="toolbar"
+                      />
+                      <CustomSelect
+                        value={activeTopologyNodeStatus}
+                        options={TOPOLOGY_NODE_STATUS_OPTIONS.map((option) => ({
+                          value: option.value,
+                          label: option.label,
+                        }))}
+                        onChange={(status) => {
+                          setActiveTopologyNodeStatus(
+                            status as TopologyNodeStatus,
+                          );
+                          chooseTool("node");
+                        }}
+                        ariaLabel="新建拓扑节点状态"
+                        className="w-20"
+                        size="toolbar"
+                      />
+                      <span className="mx-1 h-5 w-px bg-[var(--line-subtle)]" />
+                      <span className="shrink-0 text-xs text-[var(--ink-subtle)]">
+                        新通道
+                      </span>
+                      <CustomSelect
+                        value={activeTopologyRouteRelation}
+                        options={TOPOLOGY_ROUTE_RELATION_OPTIONS.map(
+                          (option) => ({
+                            value: option.value,
+                            label: option.label,
+                          }),
+                        )}
+                        onChange={(relation) => {
+                          setActiveTopologyRouteRelation(
+                            relation as TopologyRouteRelation,
+                          );
+                          chooseTool("route");
+                        }}
+                        ariaLabel="新建拓扑通道关系"
+                        className="w-24"
+                        size="toolbar"
+                      />
+                      <CustomSelect
+                        value={activeTopologyRouteDirection}
+                        options={[
+                          { value: "two-way", label: "双向" },
+                          { value: "one-way", label: "单向" },
+                        ]}
+                        onChange={(direction) => {
+                          setActiveTopologyRouteDirection(
+                            direction as TopologyRouteDirection,
+                          );
+                          chooseTool("route");
+                        }}
+                        ariaLabel="新建拓扑通道方向"
+                        className="w-16"
+                        size="toolbar"
+                      />
+                      {selectedTopologyNodeIds.length === 2 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            connectSelectedTopologyNodes(
+                              selectedTopologyNodeIds,
+                            )
+                          }
+                          disabled={!canDrawFeature}
+                          title={`按选择顺序连接两个节点；当前为${activeTopologyRouteDirection === "one-way" ? "单向" : "双向"}${TOPOLOGY_ROUTE_RELATION_OPTIONS.find((option) => option.value === activeTopologyRouteRelation)?.label ?? "通道"}`}
+                          aria-label="连接已选拓扑节点"
+                          className="grid h-8 w-8 shrink-0 place-items-center rounded text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-35"
+                        >
+                          <Route className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => autoLayoutTopology("horizontal")}
+                        title="按通道关系从左到右自动排列拓扑节点"
+                        aria-label="拓扑节点横向自动布局"
+                        className="grid h-8 w-8 shrink-0 place-items-center rounded text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+                      >
+                        <Columns2 className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => autoLayoutTopology("vertical")}
+                        title="按通道关系从上到下自动排列拓扑节点"
+                        aria-label="拓扑节点纵向自动布局"
+                        className="grid h-8 w-8 shrink-0 place-items-center rounded text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+                      >
+                        <Rows2 className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setFocusRequest((request) => request + 1)
+                        }
+                        title="适配当前拓扑内容到画布视图"
+                        aria-label="适配拓扑内容"
+                        className="grid h-8 w-8 shrink-0 place-items-center rounded text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+                      >
+                        <Maximize2 className="h-3.5 w-3.5" />
+                      </button>
+                      <span className="mx-1 h-5 w-px bg-[var(--line-subtle)]" />
+                      <CustomSelect
+                        value={topologyImportRootId}
+                        options={[
+                          {
+                            value: "",
+                            label:
+                              topologySettingOptions.length > 0
+                                ? "选择架构范围"
+                                : "暂无世界架构",
+                          },
+                          ...topologyImportSelectOptions,
+                        ]}
+                        onChange={setTopologyImportRootId}
+                        ariaLabel="拓扑导入世界架构范围"
+                        className="w-44"
+                        popoverMinWidth={300}
+                        size="toolbar"
+                      />
+                      <button
+                        type="button"
+                        onClick={importTopologyNodesFromWorldArchitecture}
+                        disabled={
+                          !topologyImportRootId ||
+                          topologySettingTree.nodes.length === 0
+                        }
+                        title="导入所选世界架构节点及其后代，并建立父子通道"
+                        aria-label="从世界架构导入拓扑节点"
+                        className="flex h-8 shrink-0 items-center gap-1 rounded px-2 text-xs text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-35"
+                      >
+                        <Network className="h-3.5 w-3.5" />
+                        导入架构
+                      </button>
+                    </div>
                   )}
                   {rendererKind === "geographic" && (
                     <div className="ml-1 flex min-w-[245px] items-center gap-2 border-l border-[var(--line-subtle)] pl-2 text-xs text-[var(--ink-muted)]">
@@ -3415,6 +5531,19 @@ export default function MapEditor({
                           size="toolbar"
                         />
                       )}
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <span className="text-[var(--ink-subtle)]">形状</span>
+                        <CustomSelect
+                          value={canvasSettings.areaShape}
+                          options={MAP_AREA_SHAPE_OPTIONS}
+                          onChange={(areaShape) =>
+                            chooseAreaShape(areaShape as MapAreaShape)
+                          }
+                          ariaLabel="画笔形状"
+                          size="toolbar"
+                          disabled={!canDrawFeature}
+                        />
+                      </div>
                       <span className="font-medium text-[var(--ink)]">
                         {activeComponent
                           ? `预制件 · ${activeComponent.name}`
@@ -3423,6 +5552,104 @@ export default function MapEditor({
                                 .name
                             : (TOOL_LABELS[tool] ?? "工具")}
                       </span>
+                      {(tool === "area" ||
+                        tool === "freehand" ||
+                        tool === "route" ||
+                        tool === "river" ||
+                        tool === "component-path-brush" ||
+                        tool === "artwork-brush") && (
+                        <>
+                          <label
+                            className="flex items-center gap-1"
+                            title="沿笔画均匀重采样的触点数量"
+                          >
+                            <span className="text-[var(--ink-subtle)]">
+                              触点
+                            </span>
+                            <input
+                              type="number"
+                              min={3}
+                              max={96}
+                              step={1}
+                              value={canvasSettings.brushPointCount}
+                              onChange={(event) =>
+                                setCanvasSettings((current) => ({
+                                  ...current,
+                                  brushPointCount: Math.max(
+                                    3,
+                                    Math.min(
+                                      96,
+                                      Number(event.target.value) ||
+                                        current.brushPointCount,
+                                    ),
+                                  ),
+                                }))
+                              }
+                              aria-label="画笔触点数量"
+                              className="w-12 rounded border border-[var(--line-subtle)] bg-transparent px-1.5 py-1 text-center"
+                            />
+                          </label>
+                          <CustomSelect
+                            value={canvasSettings.brushPointCurve}
+                            options={[
+                              { value: "line", label: "直线触点" },
+                              { value: "arc", label: "弧线触点" },
+                            ]}
+                            onChange={(value) =>
+                              chooseBrushCurve(value as MapBrushPointCurve)
+                            }
+                            ariaLabel="画笔触点调整方式"
+                            size="toolbar"
+                          />
+                        </>
+                      )}
+                      {(tool === "scene-eraser" ||
+                        tool === "terrain-land" ||
+                        tool === "terrain-water" ||
+                        tool === "terrain-material" ||
+                        tool === "terrain-region-land" ||
+                        tool === "terrain-region-water") && (
+                        <>
+                          <CustomSelect
+                            value={canvasSettings.brushPointCurve}
+                            options={[
+                              { value: "line", label: "直线触点" },
+                              { value: "arc", label: "弧线触点" },
+                            ]}
+                            onChange={(value) =>
+                              chooseBrushCurve(value as MapBrushPointCurve)
+                            }
+                            ariaLabel="路径触点调整方式"
+                            size="toolbar"
+                          />
+                          <label
+                            className="flex items-center gap-1"
+                            title="沿笔画均匀分布触点的间距"
+                          >
+                            <span className="text-[var(--ink-subtle)]">
+                              间距
+                            </span>
+                            <input
+                              type="range"
+                              min={4}
+                              max={512}
+                              step={4}
+                              value={canvasSettings.brushSpacing}
+                              onChange={(event) =>
+                                setCanvasSettings((current) => ({
+                                  ...current,
+                                  brushSpacing: Number(event.target.value),
+                                }))
+                              }
+                              className="w-14"
+                              aria-label="路径触点间距"
+                            />
+                            <span className="w-7 text-right text-[var(--ink-subtle)]">
+                              {Math.round(canvasSettings.brushSpacing)}
+                            </span>
+                          </label>
+                        </>
+                      )}
                       {(tool === "artwork-brush" ||
                         tool === "scene-eraser" ||
                         tool === "terrain-land" ||
@@ -3461,7 +5688,7 @@ export default function MapEditor({
                           value={canvasSettings.terrainBrushShape}
                           options={[
                             { value: "round", label: "圆形笔锋" },
-                            { value: "organic", label: "有机海岸" },
+                            { value: "organic", label: "有机笔锋" },
                           ]}
                           onChange={(value) =>
                             setCanvasSettings((current) => ({
@@ -3654,11 +5881,33 @@ export default function MapEditor({
                     <MapComponentPalette
                       orientation="vertical"
                       disabled={!canPaintScene}
-                      terrainMaterialDisabled={!canDrawLand}
+                      terrainMaterialDisabled={!canPaintTerrainMaterial}
+                      terrainMaterialAvailability={terrainMaterialAvailability}
                       onInsert={activateComponent}
                       onPick={(component) => pickArtworkStamp(component.id)}
                       onBrush={(component) =>
-                        activateArtworkBrush(component.id)
+                        component.interaction === "scatter"
+                          ? activateArtworkBrush(component.id)
+                          : component.interaction === "path"
+                            ? activatePathBrush(component)
+                          : component.interaction === "surface" &&
+                              mapComponentPlacement(component) === "overlay"
+                            ? (() => {
+                                const layer = doc?.map.layers.find(
+                                  (candidate) => candidate.id === activeLayerId,
+                                );
+                                if (!layer?.visible || layer.locked) {
+                                  setError("当前绘图层已隐藏或锁定。");
+                                  return;
+                                }
+                                setArtworkBrushAssetId(null);
+                                setActiveStampAssetId(null);
+                                setActiveTerrainMaterial(null);
+                                setActiveComponentId(component.id);
+                                setSelectedFeatureId(null);
+                                setTool("component-surface-brush");
+                              })()
+                            : activateComponent(component)
                       }
                       onTerrainMaterial={activateTerrainMaterial}
                       projectArtworkAssets={projectArtworkAssets}
@@ -3683,6 +5932,21 @@ export default function MapEditor({
                       }
                     />
                   )}
+                  {rendererKind === "topology" && topologySummary && (
+                    <TopologyComponentPalette
+                      disabled={!canDrawFeature}
+                      nodeCount={topologySummary.nodeCount}
+                      routeCount={topologySummary.routeCount}
+                      isolatedNodeCount={topologySummary.isolatedNodeCount}
+                      invalidRouteCount={topologySummary.invalidRouteCount}
+                      activeNodeKind={activeTopologyNodeKind}
+                      activeRouteRelation={activeTopologyRouteRelation}
+                      activeRouteDirection={activeTopologyRouteDirection}
+                      topologyNodeTemplate={topologyNodeTemplate}
+                      onNodePreset={selectTopologyNodePreset}
+                      onRoutePreset={selectTopologyRoutePreset}
+                    />
+                  )}
                   <div className="min-h-0 min-w-0 flex-1 bg-[#d8d1c3] p-3">
                     <div className="h-full overflow-hidden rounded-md border border-[#746b6038] bg-[#f3f0e8] shadow-[0_12px_32px_rgba(55,47,39,0.12)]">
                       <MapRendererCanvas
@@ -3697,7 +5961,10 @@ export default function MapEditor({
                         timelineCursor={timelineCursor}
                         onSelect={setSelectedFeatureId}
                         onSelectionChange={updateMapSelection}
+                        onCreateGroup={createMapObjectGroup}
+                        onUngroup={ungroupMapObject}
                         onCreate={createFeature}
+                        onTopologyNodePlaced={() => chooseTool("select")}
                         artworkBrushAssetId={artworkBrushAssetId}
                         artworkBrushColor={activeArtworkBrushColor}
                         artworkBrushLayerKind={artworkBrushLayerKind}
@@ -3706,19 +5973,35 @@ export default function MapEditor({
                           activeComponent &&
                           (mapComponentPlacement(activeComponent) ===
                             "terrain-prefab" ||
-                            mapComponentPlacement(activeComponent) === "path")
+                            mapComponentPlacement(activeComponent) === "path" ||
+                            mapComponentPlacement(activeComponent) === "overlay")
                             ? activeComponent.id
                             : null
                         }
                         activeTerrainMaterial={activeTerrainMaterial}
                         projectArtworkSources={projectArtworkSources}
+                        topologyLinkedMapNames={topologyLinkedMapNames}
+                        topologyEntityNames={topologyEntityNames}
+                        topologyQuery={topologyQuery}
+                        topologyNodeTemplate={topologyNodeTemplate}
+                        topologyRouteTemplate={topologyRouteTemplate}
                         onSceneStroke={paintSceneStroke}
                         onSceneErase={eraseSceneStroke}
                         onTerrainStroke={paintTerrainStroke}
                         onTerrainMaterialStroke={paintTerrainMaterialStroke}
+                        onTerrainMaterialRejected={() =>
+                          setError(
+                            activeTerrainMaterial &&
+                              getMapTerrainMaterialPreset(activeTerrainMaterial)
+                                .surface === "water"
+                              ? "浅海和深海材质只能绘制在已有水域上。"
+                              : "地貌材质只能绘制在陆地上。",
+                          )
+                        }
                         onSceneStrokeMove={moveSceneStroke}
                         onSceneRegionCreate={createSceneRegion}
                         onSceneRegionMove={moveSceneRegion}
+                        onComponentSurface={paintComponentSurface}
                         onComponentDrop={(componentId, point, gesture) => {
                           const component = MAP_COMPONENT_PRESETS.find(
                             (item) => item.id === componentId,
@@ -3736,6 +6019,17 @@ export default function MapEditor({
                             mapComponentPlacement(component) === "path"
                           ) {
                             insertComponent(component, point, gesture);
+                            return;
+                          }
+                          if (
+                            component &&
+                            mapComponentPlacement(component) === "overlay"
+                          ) {
+                            insertComponent(component, point, gesture);
+                            return;
+                          }
+                          if (dropArtworkBrush(componentId, point)) {
+                            chooseTool("select");
                             return;
                           }
                           if (component) {
@@ -3756,7 +6050,31 @@ export default function MapEditor({
                         onArtworkStampTransform={updateArtworkStamp}
                         onArtworkStampPlace={placeArtworkStamp}
                         onGeometryChange={updateGeometry}
-                        onTopologyNodeMove={updateTopologyNodePosition}
+                        onTopologyNodesMove={updateTopologyNodePositions}
+                        onTopologyEdgeReconnect={reconnectTopologyRoute}
+                        onTopologyNodeAdjacent={
+                          createConnectedTopologyNodeFromCanvas
+                        }
+                        onTopologyNodeHierarchyAdjacent={
+                          createHierarchyTopologyNodeFromCanvas
+                        }
+                        onTopologyNodeLockToggle={toggleTopologyNodeLock}
+                        onTopologyDelete={removeTopologyCanvasItems}
+                        onTopologyNodeOpen={openTopologyNodeMap}
+                        onTopologyNodeCreateMap={beginTopologyNodeMapCreation}
+                        onTopologyNodeImportSettingSubtree={
+                          importTopologySettingSubtreeFromNode
+                        }
+                        onTopologyNodeDuplicate={(featureId) => {
+                          duplicateSelectedMapItems([featureId]);
+                        }}
+                        onTopologyNodeDelete={(featureId) => {
+                          removeTopologyCanvasItems([featureId]);
+                        }}
+                        onTopologyInvalidRouteSelect={
+                          selectTopologyInvalidRoute
+                        }
+                        onTopologyError={setError}
                         onBatchMove={moveSelectableMapItems}
                       />
                     </div>
@@ -3978,6 +6296,22 @@ export default function MapEditor({
                     className="block w-full text-xs text-[var(--ink-muted)]"
                   />
                   {doc?.map.canvas.backgroundImage && (
+                    <label className="mt-2 flex items-center gap-2 text-xs text-[var(--ink-muted)]">
+                      <input
+                        type="checkbox"
+                        checked={
+                          doc.map.canvas.backgroundImageVisible !== false
+                        }
+                        onChange={(event) =>
+                          updateCanvas({
+                            backgroundImageVisible: event.target.checked,
+                          })
+                        }
+                      />
+                      显示底图参考层
+                    </label>
+                  )}
+                  {doc?.map.canvas.backgroundImage && (
                     <button
                       type="button"
                       onClick={() =>
@@ -4018,6 +6352,55 @@ export default function MapEditor({
                       className="w-full"
                     />
                   </label>
+                )}
+                {doc?.map.canvas.backgroundImage && backgroundPlacement && (
+                  <div className="rounded-md border border-[var(--line-subtle)] bg-[var(--paper-elevated)] p-2">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-[var(--ink-muted)]">底图变换</span>
+                      <span className="text-xs text-[var(--ink-subtle)]">
+                        世界坐标
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(
+                        [
+                          ["x", "横坐标"],
+                          ["y", "纵坐标"],
+                          ["width", "宽度"],
+                          ["height", "高度"],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <label key={key} className="block">
+                          <span className="mb-1 block text-xs text-[var(--ink-subtle)]">
+                            {label}
+                          </span>
+                          <input
+                            type="number"
+                            step={key === "width" || key === "height" ? 1 : 0.5}
+                            min={
+                              key === "width" || key === "height"
+                                ? 1
+                                : undefined
+                            }
+                            value={
+                              Math.round(backgroundPlacement[key] * 10) / 10
+                            }
+                            onChange={(event) => {
+                              const parsed = Number(event.target.value);
+                              if (!Number.isFinite(parsed)) return;
+                              const value =
+                                key === "width" || key === "height"
+                                  ? Math.max(1, parsed)
+                                  : parsed;
+                              updateBackgroundPlacement({ [key]: value });
+                            }}
+                            aria-label={`底图${label}`}
+                            className="w-full rounded border border-[var(--line)] bg-[var(--paper)] px-2 py-1 text-xs"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </div>
                 )}
                 {rendererKind === "geographic" && terrainStyle && (
                   <div className="-mx-4 border-t border-[var(--line-subtle)] px-4 pt-3">
@@ -4270,6 +6653,25 @@ export default function MapEditor({
                 </div>
                 <label className="block">
                   <span className="mb-1 block text-[var(--ink-muted)]">
+                    轮廓触点
+                  </span>
+                  <CustomSelect
+                    value={selectedSceneRegion.curve ?? "arc"}
+                    options={[
+                      { value: "line", label: "直线触点" },
+                      { value: "arc", label: "弧线触点" },
+                    ]}
+                    onChange={(value) =>
+                      updateSceneRegion(selectedSceneRegion.id, {
+                        curve: value as MapSceneRegion["curve"],
+                      })
+                    }
+                    ariaLabel="地形区域轮廓触点"
+                    size="sm"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[var(--ink-muted)]">
                     纹理
                   </span>
                   <CustomSelect
@@ -4277,6 +6679,9 @@ export default function MapEditor({
                     options={[
                       { value: "paper-land", label: "陆地纸张肌理" },
                       { value: "water-ripple", label: "水面波纹" },
+                      { value: "territory-hatch", label: "疆域斜线纹理" },
+                      { value: "administrative-grid", label: "行政区网格" },
+                      { value: "stellar-domain", label: "星际疆域星点" },
                     ]}
                     onChange={(value) =>
                       updateSceneRegion(selectedSceneRegion.id, {
@@ -4284,6 +6689,32 @@ export default function MapEditor({
                       })
                     }
                     ariaLabel="地形区域纹理"
+                    size="sm"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[var(--ink-muted)]">
+                    附加材质
+                  </span>
+                  <CustomSelect
+                    value={selectedSceneRegion.terrainMaterial ?? ""}
+                    options={[
+                      { value: "", label: "无附加材质" },
+                      ...MAP_TERRAIN_MATERIAL_PRESETS.filter(
+                        (preset) => preset.surface === selectedSceneRegion.kind,
+                      ).map((preset) => ({
+                        value: preset.id,
+                        label: preset.name,
+                      })),
+                    ]}
+                    onChange={(value) =>
+                      updateSceneRegion(selectedSceneRegion.id, {
+                        terrainMaterial: value
+                          ? (value as MapTerrainMaterial)
+                          : null,
+                      })
+                    }
+                    ariaLabel="地形区域附加材质"
                     size="sm"
                   />
                 </label>
@@ -4379,6 +6810,25 @@ export default function MapEditor({
                     </span>
                   </label>
                 </div>
+                <label className="block">
+                  <span className="mb-1 block text-[var(--ink-muted)]">
+                    中心线
+                  </span>
+                  <CustomSelect
+                    value={selectedSceneStroke.curve ?? "line"}
+                    options={[
+                      { value: "line", label: "直线触点" },
+                      { value: "arc", label: "弧线触点" },
+                    ]}
+                    onChange={(value) =>
+                      updateSceneStroke(selectedSceneStroke.id, {
+                        curve: value as NonNullable<MapSceneStroke["curve"]>,
+                      })
+                    }
+                    ariaLabel="笔触中心线"
+                    size="sm"
+                  />
+                </label>
                 {(selectedSceneStrokeIsTerrainShape ||
                   selectedSceneStrokeMaterial) && (
                   <label className="block">
@@ -4389,7 +6839,7 @@ export default function MapEditor({
                       value={selectedSceneStroke.shape}
                       options={[
                         { value: "round", label: "圆形笔锋" },
-                        { value: "organic", label: "有机海岸" },
+                        { value: "organic", label: "有机笔锋" },
                       ]}
                       onChange={(value) =>
                         updateSceneStroke(selectedSceneStroke.id, {
@@ -4707,47 +7157,568 @@ export default function MapEditor({
                     className="w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 py-1.5 outline-none focus:border-[var(--accent-warm)]"
                   />
                 </label>
-                {(!selectedRouteStyle || selectedRouteStyle.id === "plain") && (
-                  <div className="grid grid-cols-2 gap-2">
+                {selectedTopologyNode && (
+                  <section className="space-y-3 border-y border-[var(--line-subtle)] py-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-[var(--ink)]">
+                        世界节点
+                      </span>
+                      <span
+                        className="text-[var(--ink-subtle)]"
+                        title={`入 ${selectedTopologyNode.incomingCount} / 出 ${selectedTopologyNode.outgoingCount}`}
+                      >
+                        {selectedTopologyNode.connectionCount} 条通道
+                      </span>
+                    </div>
+                    <div className="text-xs text-[var(--ink-subtle)]">
+                      入 {selectedTopologyNode.incomingCount} · 出{" "}
+                      {selectedTopologyNode.outgoingCount} · 父{" "}
+                      {selectedTopologyNode.parentCount} · 子{" "}
+                      {selectedTopologyNode.childCount}
+                    </div>
+                    {selectedTopologyNode.ancestorPath && (
+                      <div
+                        className="truncate rounded bg-[var(--paper-inset)] px-2 py-1 text-xs text-[var(--ink-subtle)]"
+                        title={`层级路径：${selectedTopologyNode.ancestorPath}`}
+                      >
+                        层级路径：{selectedTopologyNode.ancestorPath}
+                      </div>
+                    )}
                     <label className="block">
                       <span className="mb-1 block text-[var(--ink-muted)]">
-                        {selectedRiverStyle ? "水色" : "线条颜色"}
+                        节点说明
                       </span>
+                      <textarea
+                        value={selectedFeature.description}
+                        onChange={(event) =>
+                          updateFeature(selectedFeature.id, {
+                            description: event.target.value,
+                          })
+                        }
+                        rows={3}
+                        placeholder="记录节点在世界架构中的作用、边界或叙事备注"
+                        aria-label="拓扑节点说明"
+                        className="w-full resize-y rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 py-1.5 outline-none focus:border-[var(--accent-warm)]"
+                      />
+                    </label>
+                    <label className="flex items-center gap-2 text-[var(--ink-muted)]">
                       <input
-                        type="color"
-                        value={selectedFeature.props.color ?? "#b26d45"}
+                        type="checkbox"
+                        checked={selectedTopologyNode.showLabel}
                         onChange={(event) =>
                           updateFeature(selectedFeature.id, {
                             props: {
                               ...selectedFeature.props,
-                              color: event.target.value,
+                              showLabel: String(event.target.checked),
                             },
                           })
                         }
-                        className="h-8 w-full rounded border border-[var(--line)] bg-[var(--paper-elevated)]"
+                        aria-label="显示拓扑节点标签"
                       />
+                      显示节点标签
                     </label>
-                    {selectedRiverStyle ? (
+                    {selectedTopologyNodeRoutes.length > 0 && (
+                      <div className="space-y-1">
+                        <span className="block text-[var(--ink-muted)]">
+                          关联通道
+                        </span>
+                        <div className="max-h-32 space-y-1 overflow-y-auto">
+                          {selectedTopologyNodeRoutes.map(
+                            ({ route, sourceName, targetName, direction }) => (
+                              <button
+                                key={route.id}
+                                type="button"
+                                onClick={() => {
+                                  setActiveLayerId(route.layerId);
+                                  updateMapSelection([route.id], route.id);
+                                  chooseTool("select");
+                                }}
+                                className="flex w-full items-center gap-1.5 rounded border border-[var(--line-subtle)] px-2 py-1.5 text-left text-[var(--ink-muted)] hover:border-[var(--accent-warm)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                                aria-label={`打开拓扑通道：${route.name}`}
+                              >
+                                <span className="min-w-0 flex-1 truncate">
+                                  {direction === "outgoing"
+                                    ? "出 · "
+                                    : direction === "incoming"
+                                      ? "入 · "
+                                      : "双向 · "}
+                                  {sourceName} → {targetName}
+                                </span>
+                                <span className="shrink-0 text-[var(--ink-subtle)]">
+                                  {getTopologyRouteRelationLabel(
+                                    getTopologyRouteRelation(route),
+                                  )}
+                                </span>
+                              </button>
+                            ),
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    <div className="grid grid-cols-2 gap-2">
                       <label className="block">
                         <span className="mb-1 block text-[var(--ink-muted)]">
-                          岸线色
+                          X 坐标
+                        </span>
+                        <input
+                          type="number"
+                          step={1}
+                          value={Math.round(selectedFeature.points[0]?.x ?? 0)}
+                          onChange={(event) => {
+                            const point = selectedFeature.points[0] ?? {
+                              x: 0,
+                              y: 0,
+                            };
+                            updateTopologyNodePositions([
+                              {
+                                id: selectedFeature.id,
+                                point: {
+                                  x: Number(event.target.value) || 0,
+                                  y: point.y,
+                                },
+                              },
+                            ]);
+                          }}
+                          aria-label="拓扑节点 X 坐标"
+                          className="w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 py-1.5 outline-none focus:border-[var(--accent-warm)]"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[var(--ink-muted)]">
+                          Y 坐标
+                        </span>
+                        <input
+                          type="number"
+                          step={1}
+                          value={Math.round(selectedFeature.points[0]?.y ?? 0)}
+                          onChange={(event) => {
+                            const point = selectedFeature.points[0] ?? {
+                              x: 0,
+                              y: 0,
+                            };
+                            updateTopologyNodePositions([
+                              {
+                                id: selectedFeature.id,
+                                point: {
+                                  x: point.x,
+                                  y: Number(event.target.value) || 0,
+                                },
+                              },
+                            ]);
+                          }}
+                          aria-label="拓扑节点 Y 坐标"
+                          className="w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 py-1.5 outline-none focus:border-[var(--accent-warm)]"
+                        />
+                      </label>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[var(--ink-muted)]">
+                          节点类型
+                        </span>
+                        <CustomSelect
+                          value={selectedTopologyNode.kind}
+                          options={TOPOLOGY_NODE_KIND_OPTIONS.map((option) => ({
+                            value: option.value,
+                            label: option.label,
+                          }))}
+                          onChange={(kind) =>
+                            updateFeature(selectedFeature.id, {
+                              props: updateTopologyNodeProps(
+                                selectedFeature.props,
+                                { kind: kind as TopologyNodeKind },
+                              ),
+                            })
+                          }
+                          ariaLabel="拓扑节点类型"
+                          size="sm"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[var(--ink-muted)]">
+                          节点颜色
                         </span>
                         <input
                           type="color"
-                          value={selectedRiverStyle.bankColor}
+                          value={selectedFeature.props.color ?? "#507b88"}
                           onChange={(event) =>
                             updateFeature(selectedFeature.id, {
                               props: {
                                 ...selectedFeature.props,
-                                bankColor: event.target.value,
+                                color: event.target.value,
                               },
                             })
                           }
-                          aria-label="河流岸线颜色"
+                          aria-label="拓扑节点颜色"
                           className="h-8 w-full rounded border border-[var(--line)] bg-[var(--paper-elevated)]"
                         />
                       </label>
-                    ) : (
+                    </div>
+                    <label className="block">
+                      <span className="mb-1 block text-[var(--ink-muted)]">
+                        节点状态
+                      </span>
+                      <CustomSelect
+                        value={selectedTopologyNode.status}
+                        options={TOPOLOGY_NODE_STATUS_OPTIONS.map((option) => ({
+                          value: option.value,
+                          label: option.label,
+                        }))}
+                        onChange={(status) =>
+                          updateFeature(selectedFeature.id, {
+                            props: updateTopologyNodeProps(
+                              selectedFeature.props,
+                              { status: status as TopologyNodeStatus },
+                            ),
+                          })
+                        }
+                        ariaLabel="拓扑节点状态"
+                        size="sm"
+                      />
+                    </label>
+                    <label className="flex items-center gap-2 text-[var(--ink-muted)]">
+                      <input
+                        type="checkbox"
+                        checked={selectedTopologyNode.locked}
+                        onChange={(event) =>
+                          toggleTopologyNodeLock(
+                            selectedFeature.id,
+                            event.target.checked,
+                          )
+                        }
+                        aria-label="锁定拓扑节点"
+                      />
+                      锁定节点位置和连线
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-[var(--ink-muted)]">
+                        关联地图
+                      </span>
+                      <CustomSelect
+                        value={selectedTopologyNode.linkedMapId ?? ""}
+                        options={[
+                          { value: "", label: "（未关联地图）" },
+                          ...(selectedTopologyNode.linkedMapId &&
+                          !selectedTopologyLinkedMap
+                            ? [
+                                {
+                                  value: selectedTopologyNode.linkedMapId,
+                                  label: `（失效关联：${selectedTopologyNode.linkedMapId}）`,
+                                },
+                              ]
+                            : []),
+                          ...maps
+                            .filter((map) => map.id !== doc?.map.id)
+                            .map((map) => ({
+                              value: map.id,
+                              label: `${map.name}（${MAP_PROJECTION_LABELS[map.projectionType]}）`,
+                            })),
+                        ]}
+                        onChange={(linkedMapId) =>
+                          updateFeature(selectedFeature.id, {
+                            props: updateTopologyNodeProps(
+                              selectedFeature.props,
+                              { linkedMapId: linkedMapId || null },
+                            ),
+                          })
+                        }
+                        ariaLabel="关联地图"
+                        size="sm"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-[var(--ink-muted)]">
+                        关联设定或实体
+                      </span>
+                      <CustomSelect
+                        value={
+                          selectedTopologyNode.entityRef
+                            ? `${selectedTopologyNode.entityRef.kind}:${selectedTopologyNode.entityRef.id}`
+                            : ""
+                        }
+                        options={[
+                          { value: "", label: "（未关联设定或实体）" },
+                          ...(selectedTopologyNode.entityRef &&
+                          !selectedTopologyEntity &&
+                          !selectedTopologySetting
+                            ? [
+                                {
+                                  value: `${selectedTopologyNode.entityRef.kind}:${selectedTopologyNode.entityRef.id}`,
+                                  label: `（失效关联：${selectedTopologyNode.entityRef.id}）`,
+                                },
+                              ]
+                            : []),
+                          ...topologySettingSelectOptions,
+                          ...topologyEntitySelectOptions,
+                        ]}
+                        onChange={(value) => {
+                          const separator = value.indexOf(":");
+                          if (separator <= 0) {
+                            updateFeature(selectedFeature.id, {
+                              entityRef: null,
+                            });
+                            return;
+                          }
+                          const kind = value.slice(0, separator);
+                          const id = value.slice(separator + 1);
+                          if (
+                            kind !== "setting" &&
+                            !entityOptions.some(
+                              (entity) =>
+                                entity.kind === kind && entity.id === id,
+                            )
+                          ) {
+                            return;
+                          }
+                          updateFeature(selectedFeature.id, {
+                            entityRef: {
+                              kind: kind as MapEntityKind,
+                              id,
+                            },
+                          });
+                        }}
+                        ariaLabel="拓扑节点关联设定或实体"
+                        size="sm"
+                      />
+                      {selectedTopologyNode.settingRef &&
+                        topologySettingById.get(
+                          selectedTopologyNode.settingRef.id,
+                        ) && (
+                          <p className="mt-1 text-xs text-[var(--ink-subtle)]">
+                            架构路径：
+                            {
+                              topologySettingById.get(
+                                selectedTopologyNode.settingRef.id,
+                              )!.label
+                            }
+                          </p>
+                        )}
+                      {selectedTopologyNode.entityRef?.kind !== "setting" &&
+                        selectedTopologyEntity && (
+                          <p className="mt-1 text-xs text-[var(--ink-subtle)]">
+                            {
+                              DOMAIN_ENTITY_KIND_LABELS[
+                                selectedTopologyEntity.kind
+                              ]
+                            }
+                            ：{selectedTopologyEntity.name}
+                          </p>
+                        )}
+                    </label>
+                    {!selectedTopologyNode.linkedMapId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          beginTopologyNodeMapCreation(selectedFeature.id);
+                        }}
+                        title="按当前节点类型新建子地图，并自动关联回这个节点"
+                        className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                      >
+                        <Plus className="h-3.5 w-3.5" /> 新建关联地图
+                      </button>
+                    )}
+                    {selectedTopologyNode.linkedMapId && (
+                      <button
+                        type="button"
+                        disabled={
+                          !maps.some(
+                            (map) =>
+                              map.id === selectedTopologyNode.linkedMapId,
+                          )
+                        }
+                        onClick={() =>
+                          void openMap(selectedTopologyNode.linkedMapId!)
+                        }
+                        className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        <Globe2 className="h-3.5 w-3.5" />
+                        打开关联地图
+                      </button>
+                    )}
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          createConnectedTopologyNodeFromSelection("incoming")
+                        }
+                        title="使用顶部的新节点与新通道设置，在当前节点左侧创建前置节点"
+                        className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-[var(--line)] px-2 text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                      >
+                        <Plus className="h-3.5 w-3.5" /> 前置节点
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          createConnectedTopologyNodeFromSelection("outgoing")
+                        }
+                        title="使用顶部的新节点与新通道设置，在当前节点右侧创建后继节点"
+                        className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-[var(--line)] px-2 text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                      >
+                        <Plus className="h-3.5 w-3.5" /> 后继节点
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          createHierarchyTopologyNodeFromCanvas(
+                            selectedFeature.id,
+                            "incoming",
+                          )
+                        }
+                        title="创建一个以当前节点为子节点的父级分支"
+                        className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-[var(--line)] px-2 text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                      >
+                        <GitBranch className="h-3.5 w-3.5 rotate-180" /> 父节点
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          createHierarchyTopologyNodeFromCanvas(
+                            selectedFeature.id,
+                            "outgoing",
+                          )
+                        }
+                        title="创建当前节点的子级分支"
+                        className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-[var(--line)] px-2 text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                      >
+                        <GitBranch className="h-3.5 w-3.5" /> 子节点
+                      </button>
+                    </div>
+                  </section>
+                )}
+                {selectedTopologyRoute && (
+                  <section className="space-y-3 border-y border-[var(--line-subtle)] py-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-[var(--ink)]">
+                        {getTopologyRouteRelationLabel(
+                          selectedTopologyRoute.relation,
+                        )}
+                      </span>
+                      <span className="text-[var(--ink-subtle)]">
+                        端点决定线路位置
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[var(--ink-muted)]">
+                          来源节点
+                        </span>
+                        <CustomSelect
+                          value={selectedTopologyRoute.sourceNodeId}
+                          options={topologyNodeOptions}
+                          onChange={(sourceNodeId) =>
+                            reconnectTopologyRoute(
+                              selectedFeature.id,
+                              sourceNodeId,
+                              selectedTopologyRoute.targetNodeId,
+                            )
+                          }
+                          ariaLabel="拓扑来源节点"
+                          size="sm"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[var(--ink-muted)]">
+                          目标节点
+                        </span>
+                        <CustomSelect
+                          value={selectedTopologyRoute.targetNodeId}
+                          options={topologyNodeOptions}
+                          onChange={(targetNodeId) =>
+                            reconnectTopologyRoute(
+                              selectedFeature.id,
+                              selectedTopologyRoute.sourceNodeId,
+                              targetNodeId,
+                            )
+                          }
+                          ariaLabel="拓扑目标节点"
+                          size="sm"
+                        />
+                      </label>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[var(--ink-muted)]">
+                          通道关系
+                        </span>
+                        <CustomSelect
+                          value={selectedTopologyRoute.relation}
+                          options={TOPOLOGY_ROUTE_RELATION_OPTIONS.map(
+                            (option) => ({
+                              value: option.value,
+                              label: option.label,
+                            }),
+                          )}
+                          onChange={(relation) => {
+                            updateTopologyRouteFromInspector(
+                              selectedFeature.id,
+                              { relation: relation as TopologyRouteRelation },
+                            );
+                          }}
+                          ariaLabel="拓扑通道关系"
+                          size="sm"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[var(--ink-muted)]">
+                          行进方向
+                        </span>
+                        <CustomSelect
+                          value={selectedTopologyRoute.direction}
+                          options={[
+                            { value: "two-way", label: "双向" },
+                            { value: "one-way", label: "单向" },
+                          ]}
+                          onChange={(direction) =>
+                            updateTopologyRouteFromInspector(
+                              selectedFeature.id,
+                              {
+                                direction: direction as TopologyRouteDirection,
+                              },
+                            )
+                          }
+                          ariaLabel="拓扑行进方向"
+                          size="sm"
+                        />
+                      </label>
+                    </div>
+                    <label className="flex items-center gap-2 text-[var(--ink-muted)]">
+                      <input
+                        type="checkbox"
+                        checked={selectedTopologyRoute.showLabel}
+                        onChange={(event) =>
+                          updateFeature(selectedFeature.id, {
+                            props: {
+                              ...selectedFeature.props,
+                              showLabel: String(event.target.checked),
+                            },
+                          })
+                        }
+                        aria-label="显示拓扑通道标签"
+                      />
+                      显示通道标签
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[var(--ink-muted)]">
+                          通道颜色
+                        </span>
+                        <input
+                          type="color"
+                          value={selectedFeature.props.color ?? "#8e6044"}
+                          onChange={(event) =>
+                            updateFeature(selectedFeature.id, {
+                              props: {
+                                ...selectedFeature.props,
+                                color: event.target.value,
+                              },
+                            })
+                          }
+                          aria-label="拓扑通道颜色"
+                          className="h-8 w-full rounded border border-[var(--line)] bg-[var(--paper-elevated)]"
+                        />
+                      </label>
                       <label className="block">
                         <span className="mb-1 block text-[var(--ink-muted)]">
                           线宽
@@ -4755,7 +7726,8 @@ export default function MapEditor({
                         <input
                           type="number"
                           min={1}
-                          max={12}
+                          max={24}
+                          step={1}
                           value={selectedFeature.props.lineWidth ?? "2"}
                           onChange={(event) =>
                             updateFeature(selectedFeature.id, {
@@ -4765,7 +7737,7 @@ export default function MapEditor({
                                   Math.max(
                                     1,
                                     Math.min(
-                                      12,
+                                      24,
                                       Number(event.target.value) || 2,
                                     ),
                                   ),
@@ -4773,12 +7745,260 @@ export default function MapEditor({
                               },
                             })
                           }
+                          aria-label="拓扑通道线宽"
                           className="w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 py-1.5 outline-none"
                         />
                       </label>
-                    )}
-                  </div>
+                    </div>
+                    <label className="flex items-center gap-2 text-[var(--ink-muted)]">
+                      <input
+                        type="checkbox"
+                        checked={selectedFeature.props.animated === "true"}
+                        onChange={(event) =>
+                          updateFeature(selectedFeature.id, {
+                            props: {
+                              ...selectedFeature.props,
+                              animated: String(event.target.checked),
+                            },
+                          })
+                        }
+                      />
+                      动态通道
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={reverseSelectedTopologyRoute}
+                        title="交换通道的来源节点和目标节点"
+                        className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-[var(--line)] px-2 text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                      >
+                        <GitCompareArrows className="h-3.5 w-3.5" /> 反转方向
+                      </button>
+                      <button
+                        type="button"
+                        onClick={insertTopologyNodeFromSelection}
+                        title="在当前通道中点插入一个新节点，并将通道拆成两段"
+                        className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-[var(--line)] px-2 text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                      >
+                        <Plus className="h-3.5 w-3.5" /> 插入节点
+                      </button>
+                    </div>
+                  </section>
                 )}
+                {selectedFeature.kind !== "node" &&
+                  !selectedTopologyRoute &&
+                  (!selectedRouteStyle ||
+                    selectedRouteStyle.id === "plain") && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[var(--ink-muted)]">
+                          {selectedRiverStyle ? "水色" : "线条颜色"}
+                        </span>
+                        <input
+                          type="color"
+                          value={selectedFeature.props.color ?? "#b26d45"}
+                          onChange={(event) =>
+                            updateFeature(selectedFeature.id, {
+                              props: {
+                                ...selectedFeature.props,
+                                color: event.target.value,
+                              },
+                            })
+                          }
+                          className="h-8 w-full rounded border border-[var(--line)] bg-[var(--paper-elevated)]"
+                        />
+                      </label>
+                      {selectedRiverStyle ? (
+                        <label className="block">
+                          <span className="mb-1 block text-[var(--ink-muted)]">
+                            岸线色
+                          </span>
+                          <input
+                            type="color"
+                            value={selectedRiverStyle.bankColor}
+                            onChange={(event) =>
+                              updateFeature(selectedFeature.id, {
+                                props: {
+                                  ...selectedFeature.props,
+                                  bankColor: event.target.value,
+                                },
+                              })
+                            }
+                            aria-label="河流岸线颜色"
+                            className="h-8 w-full rounded border border-[var(--line)] bg-[var(--paper-elevated)]"
+                          />
+                        </label>
+                      ) : (
+                        <label className="block">
+                          <span className="mb-1 block text-[var(--ink-muted)]">
+                            线宽
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={12}
+                            value={selectedFeature.props.lineWidth ?? "2"}
+                            onChange={(event) =>
+                              updateFeature(selectedFeature.id, {
+                                props: {
+                                  ...selectedFeature.props,
+                                  lineWidth: String(
+                                    Math.max(
+                                      1,
+                                      Math.min(
+                                        12,
+                                        Number(event.target.value) || 2,
+                                      ),
+                                    ),
+                                  ),
+                                },
+                              })
+                            }
+                            className="w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 py-1.5 outline-none"
+                          />
+                        </label>
+                      )}
+                    </div>
+                  )}
+                {(selectedFeature.kind === "area" ||
+                  selectedFeature.kind === "route") && (
+                  <label className="block">
+                    <span className="mb-1 block text-[var(--ink-muted)]">
+                      中心线
+                    </span>
+                    <CustomSelect
+                      value={
+                        selectedFeature.props.curve === "arc" ? "arc" : "line"
+                      }
+                      options={[
+                        { value: "line", label: "直线触点" },
+                        { value: "arc", label: "弧线触点" },
+                      ]}
+                      onChange={(value) =>
+                        updateFeature(selectedFeature.id, {
+                          props: {
+                            ...selectedFeature.props,
+                            curve: value,
+                          },
+                        })
+                      }
+                      ariaLabel="要素中心线"
+                      size="sm"
+                    />
+                  </label>
+                )}
+                {selectedAreaStyle && (
+                  <section className="space-y-2 border-y border-[var(--line-subtle)] py-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-[var(--ink)]">
+                        画笔填充
+                      </span>
+                      <span className="text-[var(--ink-subtle)]">
+                        {Math.round(selectedAreaStyle.opacity * 100)}%
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[var(--ink-muted)]">
+                          填充颜色
+                        </span>
+                        <input
+                          type="color"
+                          value={selectedAreaStyle.fill}
+                          onChange={(event) =>
+                            updateFeature(selectedFeature.id, {
+                              props: {
+                                ...selectedFeature.props,
+                                fill: event.target.value,
+                              },
+                            })
+                          }
+                          aria-label="画笔填充颜色"
+                          className="h-8 w-full rounded border border-[var(--line)] bg-[var(--paper-elevated)]"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[var(--ink-muted)]">
+                          填充透明度
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={
+                            Math.round(selectedAreaStyle.opacity * 20) / 20
+                          }
+                          onChange={(event) =>
+                            updateFeature(selectedFeature.id, {
+                              props: {
+                                ...selectedFeature.props,
+                                fillOpacity: event.target.value,
+                              },
+                            })
+                          }
+                          aria-label="画笔填充透明度"
+                          className="mt-2 w-full accent-[var(--accent-warm)]"
+                        />
+                      </label>
+                    </div>
+                  </section>
+                )}
+                {selectedAreaStyle &&
+                  isMapFeatureFreeformArea(selectedFeature.kind) &&
+                  selectedFreehandAreaClosed && (
+                    <section className="space-y-2 border-b border-[var(--line-subtle)] pb-3">
+                      <div>
+                        <span className="font-medium text-[var(--ink)]">
+                          画笔结果处理
+                        </span>
+                        <span className="mt-1 block text-[var(--ink-subtle)]">
+                          将闭合画笔转为可合成的陆地、水域或带材质区域。
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            promoteFreeformArea(selectedFeature.id, "land")
+                          }
+                          className="flex h-8 items-center justify-center gap-1 rounded-md border border-[var(--line)] px-2 text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                        >
+                          <LandPlot className="h-3.5 w-3.5" /> 设为陆地
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            promoteFreeformArea(selectedFeature.id, "water")
+                          }
+                          className="flex h-8 items-center justify-center gap-1 rounded-md border border-[var(--line)] px-2 text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                        >
+                          <Waves className="h-3.5 w-3.5" /> 设为水域
+                        </button>
+                      </div>
+                      <CustomSelect
+                        value=""
+                        options={[
+                          { value: "", label: "附加材质并转为区域" },
+                          ...MAP_TERRAIN_MATERIAL_PRESETS.map((preset) => ({
+                            value: preset.id,
+                            label: `${preset.name} · ${preset.surface === "land" ? "陆地" : "水域"}`,
+                          })),
+                        ]}
+                        onChange={(value) => {
+                          if (!value) return;
+                          const material = value as MapTerrainMaterial;
+                          promoteFreeformArea(
+                            selectedFeature.id,
+                            getMapTerrainMaterialPreset(material).surface,
+                            material,
+                          );
+                        }}
+                        ariaLabel="画笔区域附加材质"
+                        size="sm"
+                      />
+                    </section>
+                  )}
                 {selectedRiverStyle && (
                   <div className="space-y-2 border-y border-[var(--line-subtle)] py-3">
                     <div className="grid grid-cols-2 gap-2">
@@ -5431,7 +8651,10 @@ export default function MapEditor({
           className="fixed inset-0 z-[300] flex items-center justify-center bg-black/30 px-4"
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setNewMapOpen(false);
+            if (event.target === event.currentTarget) {
+              setNewMapOpen(false);
+              setNewMapLinkNodeId(null);
+            }
           }}
         >
           <form
@@ -5471,7 +8694,10 @@ export default function MapEditor({
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setNewMapOpen(false)}
+                onClick={() => {
+                  setNewMapOpen(false);
+                  setNewMapLinkNodeId(null);
+                }}
                 className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
               >
                 取消

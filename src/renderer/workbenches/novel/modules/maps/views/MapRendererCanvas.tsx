@@ -4,6 +4,7 @@ import type {
   MapDocument,
   MapFeature,
   MapSceneRegion,
+  MapBrushPointCurve,
   MapSceneLayerKind,
   MapTerrainMaterial,
 } from "../entities/mapSchema";
@@ -15,6 +16,12 @@ import OpenLayersMapCanvas from "./OpenLayersMapCanvas";
 import XYFlowTopologyCanvas from "./XYFlowTopologyCanvas";
 import type { MapComponentPlacementGesture } from "../business/mapComponents";
 import type { MapArtworkStampPlacementGesture } from "../business/mapArtworkTransform";
+import type {
+  TopologyNodeKind,
+  TopologyNodeStatus,
+  TopologyRouteDirection,
+  TopologyRouteRelation,
+} from "../business/topologyMap";
 
 interface MapRendererCanvasProps {
   readonly document: MapDocument;
@@ -35,11 +42,20 @@ interface MapRendererCanvasProps {
     featureIds: readonly string[],
     primaryFeatureId: string | null,
   ) => void;
+  readonly onCreateGroup?: (itemIds: readonly string[]) => void;
+  readonly onUngroup?: (groupId: string) => void;
   readonly onCreate: (feature: MapFeature) => void;
+  readonly onTopologyNodePlaced?: () => void;
   readonly onComponentDrop: (
     componentId: string,
     point: { readonly x: number; readonly y: number },
     gesture?: MapComponentPlacementGesture,
+  ) => void;
+  readonly onComponentSurface: (
+    componentId: string,
+    points: readonly { readonly x: number; readonly y: number }[],
+    closed: boolean,
+    curve: MapBrushPointCurve,
   ) => void;
   readonly artworkBrushAssetId?: string | null;
   readonly artworkBrushColor?: string | null;
@@ -48,6 +64,21 @@ interface MapRendererCanvasProps {
   readonly activePrefabComponentId?: string | null;
   readonly activeTerrainMaterial?: MapTerrainMaterial | null;
   readonly projectArtworkSources?: ReadonlyMap<string, string>;
+  readonly topologyLinkedMapNames?: ReadonlyMap<string, string>;
+  readonly topologyEntityNames?: ReadonlyMap<string, string>;
+  readonly topologyQuery?: string;
+  readonly topologyNodeTemplate?: {
+    readonly kind: TopologyNodeKind;
+    readonly status: TopologyNodeStatus;
+    readonly name: string;
+    readonly color: string;
+    readonly linkedMapId: string | null;
+    readonly entityRef: MapFeature["entityRef"];
+  };
+  readonly topologyRouteTemplate?: {
+    readonly relation: TopologyRouteRelation;
+    readonly direction: TopologyRouteDirection;
+  };
   readonly onSceneStroke: (
     assetId: string,
     points: readonly { readonly x: number; readonly y: number }[],
@@ -63,6 +94,7 @@ interface MapRendererCanvasProps {
     material: MapTerrainMaterial,
     points: readonly { readonly x: number; readonly y: number }[],
   ) => void;
+  readonly onTerrainMaterialRejected?: () => void;
   readonly onSceneStrokeMove: (
     strokeId: string,
     points: readonly { readonly x: number; readonly y: number }[],
@@ -70,6 +102,7 @@ interface MapRendererCanvasProps {
   readonly onSceneRegionCreate: (
     kind: MapSceneRegion["kind"],
     points: readonly { readonly x: number; readonly y: number }[],
+    curve?: MapBrushPointCurve,
   ) => void;
   readonly onSceneRegionMove: (
     regionId: string,
@@ -93,10 +126,37 @@ interface MapRendererCanvasProps {
     points: MapFeature["points"],
     props?: MapFeature["props"],
   ) => void;
-  readonly onTopologyNodeMove: (
-    featureId: string,
-    point: { readonly x: number; readonly y: number },
+  readonly onTopologyNodesMove: (
+    moves: readonly {
+      readonly id: string;
+      readonly point: { readonly x: number; readonly y: number };
+    }[],
   ) => void;
+  readonly onTopologyEdgeReconnect?: (
+    featureId: string,
+    sourceNodeId: string,
+    targetNodeId: string,
+  ) => void;
+  readonly onTopologyNodeAdjacent?: (
+    featureId: string,
+    direction: "incoming" | "outgoing",
+  ) => void;
+  readonly onTopologyNodeHierarchyAdjacent?: (
+    featureId: string,
+    direction: "incoming" | "outgoing",
+  ) => void;
+  readonly onTopologyNodeLockToggle?: (
+    featureId: string,
+    locked: boolean,
+  ) => void;
+  readonly onTopologyDelete?: (featureIds: readonly string[]) => void;
+  readonly onTopologyNodeOpen?: (featureId: string) => void;
+  readonly onTopologyNodeCreateMap?: (featureId: string) => void;
+  readonly onTopologyNodeImportSettingSubtree?: (featureId: string) => void;
+  readonly onTopologyNodeDuplicate?: (featureId: string) => void;
+  readonly onTopologyNodeDelete?: (featureId: string) => void;
+  readonly onTopologyInvalidRouteSelect?: (featureId: string) => void;
+  readonly onTopologyError?: (message: string) => void;
   readonly onBatchMove?: (
     featureIds: readonly string[],
     delta: { readonly x: number; readonly y: number },
@@ -118,8 +178,11 @@ export default function MapRendererCanvas(props: MapRendererCanvasProps) {
       timelineCursor={props.timelineCursor}
       onSelect={props.onSelect}
       onSelectionChange={props.onSelectionChange}
+      onCreateGroup={props.onCreateGroup}
+      onUngroup={props.onUngroup}
       onCreate={props.onCreate}
       onComponentDrop={props.onComponentDrop}
+      onComponentSurface={props.onComponentSurface}
       artworkBrushAssetId={props.artworkBrushAssetId}
       artworkBrushColor={props.artworkBrushColor}
       artworkBrushLayerKind={props.artworkBrushLayerKind}
@@ -131,6 +194,7 @@ export default function MapRendererCanvas(props: MapRendererCanvasProps) {
       onSceneErase={props.onSceneErase}
       onTerrainStroke={props.onTerrainStroke}
       onTerrainMaterialStroke={props.onTerrainMaterialStroke}
+      onTerrainMaterialRejected={props.onTerrainMaterialRejected}
       onSceneStrokeMove={props.onSceneStrokeMove}
       onSceneRegionCreate={props.onSceneRegionCreate}
       onSceneRegionMove={props.onSceneRegionMove}

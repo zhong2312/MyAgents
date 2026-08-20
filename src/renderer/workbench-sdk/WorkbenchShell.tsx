@@ -72,6 +72,7 @@ interface WorkbenchShellProps {
     workspacePath: string,
     request: WorkbenchAiRunRequest,
   ) => Promise<WorkbenchAiRunResult>;
+  readonly onCancelAiRun?: (runId: string) => Promise<void>;
   readonly onSubscribeAiRunProgress?: (
     runId: string,
     listener: (progress: WorkbenchAiRunProgress) => void,
@@ -230,6 +231,7 @@ export default function WorkbenchShell({
   onNavigate,
   onOpenAgentSession,
   onRunAi,
+  onCancelAiRun,
   onSubscribeAiRunProgress,
   onProvideSearch,
   onProvideProjection,
@@ -268,7 +270,7 @@ export default function WorkbenchShell({
   const navigationChildren = useMemo(() => {
     const children = new globalThis.Map<string, typeof navigation>();
     for (const item of navigation) {
-      if (!item.parentId) continue;
+      if (!item.parentId || item.hidden) continue;
       const current = children.get(item.parentId) ?? [];
       current.push(item);
       children.set(item.parentId, current);
@@ -276,9 +278,23 @@ export default function WorkbenchShell({
     return children;
   }, [navigation]);
   const topLevelNavigation = useMemo(
-    () => navigation.filter((item) => !item.parentId),
+    () => navigation.filter((item) => !item.parentId && !item.hidden),
     [navigation],
   );
+  const navigationById = useMemo(
+    () => new globalThis.Map(navigation.map((item) => [item.id, item])),
+    [navigation],
+  );
+  const activeNavigationIds = useMemo(() => {
+    const activeIds = new Set<string>();
+    let currentId: string | undefined = route || undefined;
+    while (currentId) {
+      if (activeIds.has(currentId)) break;
+      activeIds.add(currentId);
+      currentId = navigationById.get(currentId)?.parentId;
+    }
+    return activeIds;
+  }, [navigationById, route]);
   const [expandedNavigationParents, setExpandedNavigationParents] = useState<
     ReadonlySet<string>
   >(() => new Set());
@@ -351,6 +367,14 @@ export default function WorkbenchShell({
     (runId: string, listener: (progress: WorkbenchAiRunProgress) => void) =>
       onSubscribeAiRunProgress?.(runId, listener) ?? (() => undefined),
     [onSubscribeAiRunProgress],
+  );
+  const cancelAiRun = useCallback(
+    async (runId: string) => {
+      if (!onCancelAiRun)
+        throw new Error("MyAgents AI run cancellation host is unavailable");
+      await onCancelAiRun(runId);
+    },
+    [onCancelAiRun],
   );
   const openProjectAssistant = useCallback(async () => {
     if (isOpeningProjectAssistant || !onOpenAgentSession) return;
@@ -433,6 +457,7 @@ export default function WorkbenchShell({
     aiRuns: Object.freeze({
       isAvailable: Boolean(onRunAi),
       run: runAi,
+      cancel: cancelAiRun,
       subscribeProgress: subscribeAiRunProgress,
     }),
     search: createSearchCapability(onProvideSearch, workspacePath),
@@ -481,19 +506,20 @@ export default function WorkbenchShell({
                 <PanelLeftClose className="h-4 w-4" />
               )}
             </button>
-            {isNavigationCollapsed &&
-              routeIds.has("manuscript") &&
-              route !== "manuscript" && (
-                <button
-                  type="button"
-                  aria-label="返回正文"
-                  title="返回正文"
-                  onClick={() => navigate("manuscript")}
-                  className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                >
-                  <FileText className="h-4 w-4" />
-                </button>
-              )}
+            {routeIds.has("manuscript") && route !== "manuscript" && (
+              <button
+                type="button"
+                aria-label="返回正文"
+                title="返回正文"
+                onClick={() => navigate("manuscript")}
+                className={`flex h-8 flex-shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] ${
+                  isNavigationCollapsed ? "w-8" : "gap-1.5 px-2 text-xs"
+                }`}
+              >
+                <FileText className="h-4 w-4" />
+                {!isNavigationCollapsed && <span>回到正文</span>}
+              </button>
+            )}
             {!isNavigationCollapsed && (
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold text-[var(--ink)]">
@@ -544,8 +570,10 @@ export default function WorkbenchShell({
               NAV_ICONS[item.icon as keyof typeof NAV_ICONS] ?? Boxes;
             const children = navigationChildren.get(item.id) ?? [];
             const hasChildren = children.length > 0;
-            const hasActiveChild = children.some((child) => child.id === route);
-            const active = item.id === route || hasActiveChild;
+            const hasActiveChild = children.some((child) =>
+              activeNavigationIds.has(child.id),
+            );
+            const active = activeNavigationIds.has(item.id);
             const isExpanded =
               hasActiveChild || expandedNavigationParents.has(item.id);
             return (

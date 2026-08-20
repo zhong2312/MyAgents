@@ -1,6 +1,5 @@
 import {
   addWorldTicks,
-  chooseAdaptiveStep,
   createWorldInstant,
   durationToDays,
   parseWorldTick,
@@ -11,11 +10,20 @@ import { resolveWorldSimulationRegionScope } from "./worldSimulationScope";
 import {
   WORLD_SIMULATION_SCHEMA_VERSION,
   type CharacterProjection,
+  type CharacterMemoryState,
+  type CharacterRelationRuntimeState,
+  type CharacterRuntimeState,
+  type KnowledgeProjection,
   type CouncilOption,
   type CouncilSession,
   type CouncilStance,
+  type EpochRuntimeState,
+  type EpochStage,
+  type EmergentWorldEntityRuntimeState,
   type FactionProjection,
+  type FactionRelationRuntimeState,
   type ObservationPoint,
+  type RegionProjection,
   type SimulationBranch,
   type SimulationCheckpoint,
   type SimulationEvent,
@@ -26,12 +34,164 @@ import {
   type SimulationReportSection,
   type SpatialConnection,
   type TimeScale,
+  type TimelineEventProjection,
+  type NarrativeOutcomeProjection,
   type WorldDomainCommand,
   type WorldRuntimeState,
   type WorldSimulationBaseline,
   type WorldSimulationRun,
   type WorldSimulationScenario,
 } from "./worldSimulationV2Schema";
+
+const MAX_DOMAIN_DELTA = 100;
+/** 记忆衰减的固定半衰期（十年），使用整数比例以保证跨平台重放一致。 */
+const MEMORY_HALF_LIFE_DAYS = 3_650n;
+
+function decayMemoryStrength(strength: number, elapsedDays: bigint): number {
+  if (strength <= 0 || elapsedDays <= 0n) return clamp(Math.round(strength));
+  // 逐个半衰期处理，剩余天数按线性比例插值；全程 BigInt，避免超长纪元转 Number 溢出。
+  const periods = elapsedDays / MEMORY_HALF_LIFE_DAYS;
+  const remainder = elapsedDays % MEMORY_HALF_LIFE_DAYS;
+  let result = BigInt(clamp(Math.round(strength)));
+  if (periods >= 7n) return 0;
+  for (let index = 0n; index < periods; index += 1n) {
+    result = result / 2n;
+    if (result === 0n) return 0;
+  }
+  if (remainder > 0n && result > 0n) {
+    const numerator = result * (MEMORY_HALF_LIFE_DAYS - remainder);
+    result = (numerator + MEMORY_HALF_LIFE_DAYS / 2n) / MEMORY_HALF_LIFE_DAYS;
+  }
+  return Number(result);
+}
+
+function decayCharacterMemory(
+  runtime: CharacterRuntimeState,
+  elapsedDays: bigint,
+): CharacterRuntimeState {
+  if (!runtime.memory || runtime.memory.length === 0 || elapsedDays <= 0n)
+    return runtime;
+  return {
+    ...runtime,
+    memory: runtime.memory.map((entry) => ({
+      ...entry,
+      strength: decayMemoryStrength(entry.strength, elapsedDays),
+    })),
+  };
+}
+
+function averageIndex(values: readonly number[], fallback = 50): number {
+  if (values.length === 0) return fallback;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function initialEpochRuntimeState(
+  regions: readonly { readonly population: number }[],
+  factions: readonly {
+    readonly governance: number;
+    readonly military: number;
+    readonly economy: number;
+    readonly publicSupport: number;
+    readonly territorialIntegrity: number;
+  }[],
+): EpochRuntimeState {
+  return {
+    stage: "regional",
+    cycle: "0",
+    populationIndex: clamp(
+      averageIndex(regions.map((region) => region.population)),
+    ),
+    civilizationIndex: clamp(
+      averageIndex(
+        factions.map((faction) =>
+          averageIndex([
+            faction.governance,
+            faction.military,
+            faction.economy,
+            faction.publicSupport,
+            faction.territorialIntegrity,
+          ]),
+        ),
+      ),
+    ),
+    lawStability: 100,
+    lastScale: "day",
+  };
+}
+
+function epochStageForScale(scale: TimeScale, current: EpochStage): EpochStage {
+  if (scale === "trillion-years") return "terminal";
+  if (scale === "hundred-billion-years") return "cosmic";
+  if (scale === "ten-thousand-years") return "world-law";
+  if (scale === "millennium" || scale === "century") {
+    return current === "regional" ? "civilizational" : current;
+  }
+  return current;
+}
+
+function advanceEpochRuntimeState(
+  epoch: EpochRuntimeState,
+  stepDays: bigint,
+  scale: TimeScale,
+  calendar: WorldSimulationScenario["calendar"],
+  runtimeRegions: readonly { readonly population: number }[],
+  runtimeFactions: readonly {
+    readonly governance: number;
+    readonly military: number;
+    readonly economy: number;
+    readonly publicSupport: number;
+    readonly territorialIntegrity: number;
+  }[],
+  entropy: number,
+): EpochRuntimeState {
+  const boundary = scaleToDays(scale, calendar);
+  const cycles = stepDays / boundary;
+  const cycleIncrement = cycles > 0n ? cycles : 1n;
+  const targetPopulation = averageIndex(
+    runtimeRegions.map((region) => region.population),
+  );
+  const targetCivilization = averageIndex(
+    runtimeFactions.map((faction) =>
+      averageIndex([
+        faction.governance,
+        faction.military,
+        faction.economy,
+        faction.publicSupport,
+        faction.territorialIntegrity,
+      ]),
+    ),
+  );
+  const scaleRate =
+    scale === "trillion-years"
+      ? 0.4
+      : scale === "hundred-billion-years"
+        ? 0.3
+        : scale === "ten-thousand-years"
+          ? 0.2
+          : 0.1;
+  const lawDrift =
+    scale === "trillion-years"
+      ? -8
+      : scale === "hundred-billion-years"
+        ? -4
+        : scale === "ten-thousand-years"
+          ? -1
+          : 0;
+  return {
+    stage: epochStageForScale(scale, epoch.stage),
+    cycle: (parseWorldTick(epoch.cycle) + cycleIncrement).toString(),
+    populationIndex: clamp(
+      epoch.populationIndex +
+        (targetPopulation - epoch.populationIndex) * scaleRate,
+    ),
+    civilizationIndex: clamp(
+      epoch.civilizationIndex +
+        (targetCivilization - epoch.civilizationIndex) * scaleRate,
+    ),
+    lawStability: clamp(epoch.lawStability + lawDrift - entropy / 100),
+    lastScale: scale,
+  };
+}
 
 export interface ModelDecisionCandidate {
   readonly title: string;
@@ -43,6 +203,28 @@ export interface ModelDecisionCandidate {
   readonly itemIds: readonly string[];
   readonly commands: readonly WorldDomainCommand[];
   readonly confidence: number;
+  /** 候选主体认为本次行动要达成的目标。缺失时回退为方案总目标。 */
+  readonly objective?: string;
+  /** 候选实际依据的已知事实或知识 id，供事件账本审计。 */
+  readonly perceivedFacts?: readonly string[];
+  /** 候选中尚未被内核验证的前提。 */
+  readonly assumptions?: readonly string[];
+  /** 候选对收益的主观估计，限制为 0 到 100。 */
+  readonly expectedUtility?: number;
+  /** 候选显式识别的风险。 */
+  readonly risks?: readonly string[];
+}
+
+export interface SimulationDecisionSubject {
+  readonly type: "character" | "faction";
+  readonly id: string;
+}
+
+export interface ModelDecisionSubmission {
+  readonly subject: SimulationDecisionSubject | null;
+  readonly candidate: ModelDecisionCandidate;
+  /** Host 返回的原始文本，仅保留在已接受模型事件中用于审计。 */
+  readonly rawModelOutput?: string;
 }
 
 export interface CouncilModelCandidate {
@@ -56,8 +238,51 @@ export interface SimulationReportCandidate {
   readonly sections: readonly Omit<SimulationReportSection, "id">[];
 }
 
+export interface EpochNarrationCandidate {
+  readonly title: string;
+  readonly summary: string;
+  readonly findings: readonly string[];
+  readonly eventIds: readonly string[];
+}
+
 const clamp = (value: number, min = 0, max = 100) =>
   Math.max(min, Math.min(max, value));
+const clampSigned = (value: number) => clamp(value, -100, 100);
+
+function relationToneValue(tone: "positive" | "negative" | "neutral"): number {
+  return tone === "positive" ? 50 : tone === "negative" ? -50 : 0;
+}
+
+function initialCharacterRelations(
+  character: CharacterProjection,
+): readonly CharacterRelationRuntimeState[] {
+  return character.relations.map((relation) => ({
+    targetCharacterId: relation.targetId,
+    affinity: relationToneValue(relation.tone),
+    trust: relationToneValue(relation.tone),
+    status: "active",
+  }));
+}
+
+function initialFactionRelations(
+  faction: FactionProjection,
+): readonly FactionRelationRuntimeState[] {
+  return faction.relations.map((relation) => ({
+    targetFactionId: relation.targetFactionId,
+    sentiment:
+      relation.kind === "hostile" || relation.kind === "competitive"
+        ? -50
+        : relation.kind === "alliance" || relation.kind === "subordinate"
+          ? 50
+          : 0,
+    status:
+      relation.status === "ended"
+        ? "ended"
+        : relation.status === "suspended"
+          ? "suspended"
+          : "active",
+  }));
+}
 
 function stableHash(value: string): number {
   let hash = 0x811c9dc5;
@@ -68,19 +293,66 @@ function stableHash(value: string): number {
   return hash >>> 0;
 }
 
-function randomUnit(seed: string, label: string): number {
-  return stableHash(`${seed}:${label}`) / 0xffffffff;
+interface PropagationKnowledgeSelection {
+  readonly knowledgeIds: readonly string[];
+  readonly distortedCount: number;
+  readonly capacityDroppedCount: number;
 }
 
-function pick<T>(
-  values: readonly T[],
-  seed: string,
-  label: string,
-): T | undefined {
-  if (values.length === 0) return undefined;
-  return values[
-    Math.floor(randomUnit(seed, label) * values.length) % values.length
-  ];
+/**
+ * 传播载荷必须在每一条空间连接上重新裁定：容量限制载荷规模，
+ * 谣言则按连接衰减和跳数用稳定哈希决定是否失真，保证重放不依赖随机源。
+ */
+function selectPropagationKnowledge(
+  run: WorldSimulationRun,
+  knowledgeIds: readonly string[],
+  connection: SpatialConnection,
+  hop: number,
+  salt: string,
+): PropagationKnowledgeSelection {
+  const capacity = Math.max(
+    0,
+    Math.min(
+      100,
+      Number.isFinite(connection.capacity) ? connection.capacity : 0,
+    ),
+  );
+  const uniqueIds = [...new Set(knowledgeIds)].sort();
+  const capacityLimit = Math.max(1, Math.floor(capacity / 10));
+  const candidates = uniqueIds.slice(0, capacityLimit);
+  const capacityDroppedCount = Math.max(
+    0,
+    uniqueIds.length - candidates.length,
+  );
+  const retained: string[] = [];
+  let distortedCount = 0;
+  const knowledgeById = new Map(
+    run.baseline.characters.flatMap((character) =>
+      character.knowledge.map(
+        (knowledge) => [knowledge.id, knowledge] as const,
+      ),
+    ),
+  );
+  candidates.forEach((knowledgeId) => {
+    const knowledge = knowledgeById.get(knowledgeId);
+    if (!knowledge) return;
+    if (knowledge.authority === "rumor") {
+      const retention = Math.max(
+        0,
+        Math.min(1, 1 - connection.attenuation - Math.max(0, hop - 1) * 0.15),
+      );
+      const roll =
+        stableHash(
+          `${run.scenario.seed}:rumor:${salt}:${connection.id}:${hop}:${knowledgeId}`,
+        ) % 100;
+      if (roll >= Math.round(retention * 100)) {
+        distortedCount += 1;
+        return;
+      }
+    }
+    retained.push(knowledgeId);
+  });
+  return { knowledgeIds: retained, distortedCount, capacityDroppedCount };
 }
 
 function signalMetric(...values: readonly string[]): number {
@@ -92,11 +364,314 @@ function signalMetric(...values: readonly string[]): number {
   return clamp(score);
 }
 
+function activeChapterFacts(
+  baseline: WorldSimulationBaseline,
+  scenario: WorldSimulationScenario,
+) {
+  const selectedChapterId = scenario.chapterContext.chapterId;
+  if (scenario.chapterContext.mode === "none" || !selectedChapterId) return [];
+  const selectedChapter = baseline.chapters.find(
+    (chapter) => chapter.id === selectedChapterId,
+  );
+  if (!selectedChapter) return [];
+  const selectedOrder = baseline.chapters.findIndex(
+    (chapter) => chapter.id === selectedChapter.id,
+  );
+  if (selectedOrder < 0) return [];
+  return (baseline.chapterFacts ?? []).filter((fact) =>
+    scenario.chapterContext.mode === "after"
+      ? fact.chapterOrder <= selectedOrder
+      : fact.chapterOrder < selectedOrder,
+  );
+}
+
+function observedChapterFacts(
+  baseline: WorldSimulationBaseline,
+  scenario: WorldSimulationScenario,
+) {
+  if (
+    (scenario.chapterContext.mode !== "before" &&
+      scenario.chapterContext.mode !== "branch") ||
+    !scenario.chapterContext.chapterId
+  )
+    return [];
+  return (baseline.chapterFacts ?? []).filter(
+    (fact) => fact.chapterId === scenario.chapterContext.chapterId,
+  );
+}
+
+function baselineFacts(
+  baseline: WorldSimulationBaseline,
+  scenario: WorldSimulationScenario,
+): readonly TimelineEventProjection[] {
+  const formalTimelineIds = new Set(
+    baseline.timelineFacts.map((fact) => fact.id),
+  );
+  return [
+    ...baseline.timelineFacts,
+    ...activeChapterFacts(baseline, scenario).filter(
+      (fact) => !formalTimelineIds.has(fact.timelineEventId),
+    ),
+  ];
+}
+
+function applyBaselineFacts(
+  state: WorldRuntimeState,
+  baseline: WorldSimulationBaseline,
+  scenario: WorldSimulationScenario,
+): WorldRuntimeState {
+  const anchor = parseWorldTick(baseline.anchor.sortKey);
+  const facts = baselineFacts(baseline, scenario)
+    .filter(
+      (fact) =>
+        fact.authority === "actual" &&
+        parseWorldTick(fact.time.sortKey) <= anchor,
+    )
+    .slice()
+    .sort((left, right) => {
+      const time =
+        parseWorldTick(left.time.sortKey) - parseWorldTick(right.time.sortKey);
+      return time === 0n ? left.id.localeCompare(right.id) : time < 0n ? -1 : 1;
+    });
+  return facts.reduce((current, fact) => {
+    const namedStatus = `${fact.title} ${fact.summary}`.trim();
+    const dead = /死亡|陨落|离世|灭亡|消亡/u.test(namedStatus);
+    const alive = /复活|归来|存活|在世/u.test(namedStatus);
+    const locationId = fact.locationIds[0] ?? null;
+    let next = current;
+    if (fact.characterIds.length > 0) {
+      next = {
+        ...next,
+        characters: next.characters.map((character) => {
+          if (!fact.characterIds.includes(character.id)) return character;
+          const change = fact.stateChanges.find(
+            (item) =>
+              item.entityType === "character" && item.entityId === character.id,
+          );
+          const changeText = change ? `${change.before} ${change.after}` : "";
+          return {
+            ...character,
+            ...(locationId ? { locationId } : {}),
+            ...(dead || /死亡|陨落|离世/u.test(changeText)
+              ? { alive: false, status: change?.after || "已离世", intent: "" }
+              : alive || /存活|在世/u.test(changeText)
+                ? { alive: true, status: change?.after || character.status }
+                : {}),
+          };
+        }),
+      };
+    }
+    if (fact.factionIds.length > 0) {
+      next = {
+        ...next,
+        factions: next.factions.map((faction) => {
+          if (!fact.factionIds.includes(faction.id)) return faction;
+          const change = fact.stateChanges.find(
+            (item) =>
+              item.entityType === "faction" && item.entityId === faction.id,
+          );
+          const text = `${namedStatus} ${change?.after ?? ""}`;
+          return {
+            ...faction,
+            lifecycle: /灭亡|解散|消亡/u.test(text)
+              ? "dissolved"
+              : /衰弱|衰退/u.test(text)
+                ? "declining"
+                : faction.lifecycle,
+          };
+        }),
+      };
+    }
+    if (fact.itemIds.length > 0) {
+      next = {
+        ...next,
+        items: next.items.map((item) => {
+          if (!fact.itemIds.includes(item.id)) return item;
+          const change = fact.stateChanges.find(
+            (candidate) =>
+              candidate.entityType === "item" && candidate.entityId === item.id,
+          );
+          const text = `${change?.before ?? ""} ${change?.after ?? ""}`;
+          const ownerCharacter = baseline.characters.find((candidate) =>
+            text.includes(candidate.id),
+          );
+          const ownerFaction = baseline.factions.find((candidate) =>
+            text.includes(candidate.id),
+          );
+          const ownerCleared = /无主|失去所有权/u.test(text);
+          return {
+            ...item,
+            ...(locationId ? { locationId } : {}),
+            ...(ownerCleared
+              ? { ownerType: null, ownerId: null }
+              : ownerCharacter
+                ? {
+                    ownerType: "character" as const,
+                    ownerId: ownerCharacter.id,
+                  }
+                : ownerFaction
+                  ? { ownerType: "faction" as const, ownerId: ownerFaction.id }
+                  : {}),
+            ...(dead ? { status: "已损毁" } : {}),
+          };
+        }),
+      };
+    }
+    return next;
+  }, state);
+}
+
+function initialCharacterMemory(
+  character: CharacterProjection,
+  anchorSortKey: string,
+): readonly CharacterMemoryState[] {
+  return character.knowledge.map((knowledge) => ({
+    knowledgeId: knowledge.id,
+    strength: clamp(Math.round(Math.max(0.01, knowledge.confidence) * 100)),
+    firstKnownSortKey: anchorSortKey,
+    lastRecalledSortKey: anchorSortKey,
+  }));
+}
+
+/**
+ * 兼容旧运行：memory 缺失时从已有 knowledgeIds 构造临时索引；
+ * 新运行则以 memory 为准，并保留尚未写入记忆索引的旧知识 ID。
+ */
+function memoryEntriesForRuntime(
+  runtime: Pick<CharacterRuntimeState, "knowledgeIds" | "memory">,
+  currentSortKey: string,
+): readonly CharacterMemoryState[] {
+  const entries = new Map(
+    (runtime.memory ?? []).map((entry) => [entry.knowledgeId, entry]),
+  );
+  runtime.knowledgeIds.forEach((knowledgeId) => {
+    if (entries.has(knowledgeId)) return;
+    entries.set(knowledgeId, {
+      knowledgeId,
+      strength: 100,
+      firstKnownSortKey: currentSortKey,
+      lastRecalledSortKey: currentSortKey,
+    });
+  });
+  return [...entries.values()].sort(
+    (left, right) =>
+      right.strength - left.strength ||
+      left.knowledgeId.localeCompare(right.knowledgeId),
+  );
+}
+
+function rememberedKnowledgeIds(
+  runtime: Pick<CharacterRuntimeState, "knowledgeIds" | "memory"> | undefined,
+  currentSortKey: string,
+): ReadonlySet<string> {
+  if (!runtime) return new Set();
+  return new Set(
+    memoryEntriesForRuntime(runtime, currentSortKey)
+      .filter((entry) => entry.strength > 0)
+      .map((entry) => entry.knowledgeId),
+  );
+}
+
+function visibleKnowledgeForCharacter(
+  run: WorldSimulationRun,
+  branch: SimulationBranch,
+  characterId: string,
+): readonly KnowledgeProjection[] {
+  const character = run.baseline.characters.find(
+    (candidate) => candidate.id === characterId,
+  );
+  const runtime = branch.state.characters.find(
+    (candidate) => candidate.id === characterId,
+  );
+  if (!character || !runtime) return [];
+  const knownIds = rememberedKnowledgeIds(
+    runtime,
+    branch.state.currentTime.sortKey,
+  );
+  return character.knowledge.filter((knowledge) => knownIds.has(knowledge.id));
+}
+
+function rememberKnowledge(
+  runtime: CharacterRuntimeState,
+  knowledgeId: string,
+  sortKey: string,
+): Pick<CharacterRuntimeState, "knowledgeIds" | "memory"> {
+  const entries = memoryEntriesForRuntime(runtime, sortKey);
+  const remembered = entries.some((entry) => entry.knowledgeId === knowledgeId)
+    ? entries.map((entry) =>
+        entry.knowledgeId === knowledgeId
+          ? {
+              ...entry,
+              strength: clamp(entry.strength + 10),
+              lastRecalledSortKey: sortKey,
+            }
+          : entry,
+      )
+    : [
+        ...entries,
+        {
+          knowledgeId,
+          strength: 100,
+          firstKnownSortKey: sortKey,
+          lastRecalledSortKey: sortKey,
+        },
+      ];
+  return {
+    knowledgeIds: [...new Set([...runtime.knowledgeIds, knowledgeId])],
+    memory: remembered,
+  };
+}
+
+function upsertCharacterRelation(
+  relations: readonly CharacterRelationRuntimeState[],
+  targetCharacterId: string,
+  affinityDelta: number,
+  trustDelta: number,
+  status: CharacterRelationRuntimeState["status"] | undefined,
+): readonly CharacterRelationRuntimeState[] {
+  const existing = relations.find(
+    (relation) => relation.targetCharacterId === targetCharacterId,
+  );
+  const next = {
+    targetCharacterId,
+    affinity: clampSigned((existing?.affinity ?? 0) + affinityDelta),
+    trust: clampSigned((existing?.trust ?? 0) + trustDelta),
+    status: status ?? existing?.status ?? "active",
+  } satisfies CharacterRelationRuntimeState;
+  return existing
+    ? relations.map((relation) =>
+        relation.targetCharacterId === targetCharacterId ? next : relation,
+      )
+    : [...relations, next];
+}
+
+function upsertFactionRelation(
+  relations: readonly FactionRelationRuntimeState[],
+  targetFactionId: string,
+  sentimentDelta: number,
+  status: FactionRelationRuntimeState["status"] | undefined,
+): readonly FactionRelationRuntimeState[] {
+  const existing = relations.find(
+    (relation) => relation.targetFactionId === targetFactionId,
+  );
+  const next = {
+    targetFactionId,
+    sentiment: clampSigned((existing?.sentiment ?? 0) + sentimentDelta),
+    status: status ?? existing?.status ?? "active",
+  } satisfies FactionRelationRuntimeState;
+  return existing
+    ? relations.map((relation) =>
+        relation.targetFactionId === targetFactionId ? next : relation,
+      )
+    : [...relations, next];
+}
+
 function initialRuntimeState(
   baseline: WorldSimulationBaseline,
+  scenario: WorldSimulationScenario,
 ): WorldRuntimeState {
   const yearDays = scaleToDays("year", baseline.calendar);
-  return {
+  const initial: WorldRuntimeState = {
     currentTime: baseline.anchor,
     characters: baseline.characters.map((character) => ({
       id: character.id,
@@ -112,7 +687,10 @@ function initialRuntimeState(
             ).toString(),
       cultivationProgress: 0,
       levelId: character.cultivation.levelId,
+      resourceBalances: { ...character.cultivation.resourceBalances },
       knowledgeIds: character.knowledge.map((knowledge) => knowledge.id),
+      relations: initialCharacterRelations(character),
+      memory: initialCharacterMemory(character, baseline.anchor.sortKey),
       travel: null,
     })),
     factions: baseline.factions.map((faction) => ({
@@ -131,6 +709,7 @@ function initialRuntimeState(
       territorialIntegrity: signalMetric(
         faction.stateText.territorialIntegrity,
       ),
+      relations: initialFactionRelations(faction),
     })),
     regions: baseline.regions.map((region) => ({
       id: region.id,
@@ -155,8 +734,25 @@ function initialRuntimeState(
       locationId: item.locationId,
     })),
     scheduledEffects: [],
+    emergentEntities: [],
     entropy: 0,
+    epoch: {
+      stage: "regional",
+      cycle: "0",
+      populationIndex: 50,
+      civilizationIndex: 50,
+      lawStability: 100,
+      lastScale: "day",
+    },
   };
+  return applyBaselineFacts(
+    {
+      ...initial,
+      epoch: initialEpochRuntimeState(initial.regions, initial.factions),
+    },
+    baseline,
+    scenario,
+  );
 }
 
 export function getActiveSimulationBranch(
@@ -192,7 +788,7 @@ export function createWorldSimulationRun(
         .join("、")}`,
     );
   }
-  const state = initialRuntimeState(baseline);
+  const state = initialRuntimeState(baseline, scenario);
   const idSuffix = `${Date.now().toString(36)}-${stableHash(`${baseline.sourceRevision}:${scenario.seed}`).toString(36)}`;
   const runId = `run-${idSuffix}`;
   const branch: SimulationBranch = {
@@ -201,6 +797,8 @@ export function createWorldSimulationRun(
     parentBranchId: null,
     forkEventId: null,
     narrativePolicy: "configured",
+    guardrails: [],
+    authorLeads: [],
     seed: scenario.seed,
     status: "ready",
     state,
@@ -251,11 +849,215 @@ function updateById<T extends { readonly id: string }>(
   return result;
 }
 
+function assertFiniteDelta(value: number, label: string): void {
+  if (!Number.isFinite(value) || Math.abs(value) > MAX_DOMAIN_DELTA)
+    throw new Error(`${label}必须是有限且范围合理的数值`);
+}
+
+function validateRuntimeCommand(
+  state: WorldRuntimeState,
+  command: WorldDomainCommand,
+): void {
+  const character =
+    "characterId" in command
+      ? state.characters.find((item) => item.id === command.characterId)
+      : undefined;
+  const faction =
+    "factionId" in command
+      ? state.factions.find((item) => item.id === command.factionId)
+      : undefined;
+  const region =
+    "regionId" in command
+      ? state.regions.find((item) => item.id === command.regionId)
+      : undefined;
+  if ("characterId" in command && !character)
+    throw new Error(`人物不存在：${command.characterId}`);
+  if ("factionId" in command && !faction)
+    throw new Error(`势力不存在：${command.factionId}`);
+  if ("regionId" in command && !region)
+    throw new Error(`地域不存在：${command.regionId}`);
+  switch (command.type) {
+    case "character.intent":
+      if (!character!.alive) throw new Error("已离世人物不能继续行动");
+      if (!command.intent.trim() || !command.status.trim())
+        throw new Error("人物意图和状态不能为空");
+      return;
+    case "character.move":
+      if (!character!.alive) throw new Error("已离世人物不能移动");
+      if (character!.travel)
+        throw new Error(
+          `人物正在前往${character!.travel.toRegionId}，不能重复出发`,
+        );
+      if (character!.locationId !== command.fromRegionId)
+        throw new Error("人物出发地与当前地点不一致");
+      if (!state.regions.some((item) => item.id === command.toRegionId))
+        throw new Error(`目标地域不存在：${command.toRegionId}`);
+      if (
+        parseWorldTick(command.arrivalSortKey) <=
+        parseWorldTick(state.currentTime.sortKey)
+      )
+        throw new Error("人物到达时间必须晚于当前世界时间");
+      return;
+    case "character.arrive":
+      if (
+        !character!.travel ||
+        character!.travel.toRegionId !== command.toRegionId
+      )
+        throw new Error("人物当前旅行目标与抵达命令不一致");
+      if (
+        parseWorldTick(character!.travel.arrivalSortKey) >
+        parseWorldTick(state.currentTime.sortKey)
+      )
+        throw new Error("人物尚未到达预定时间");
+      return;
+    case "character.cultivate": {
+      if (!character!.alive) throw new Error("已离世人物不能修炼");
+      assertFiniteDelta(command.progressDelta, "修炼进度变化");
+      const next = character!.cultivationProgress + command.progressDelta;
+      if (next < 0 || next > 100)
+        throw new Error("修炼进度必须保持在 0 到 100 之间");
+      for (const [resourceId, cost] of Object.entries(
+        command.resourceCosts ?? {},
+      )) {
+        assertFiniteDelta(cost, "修炼资源消耗");
+        if (cost < 0 || (character!.resourceBalances?.[resourceId] ?? 0) < cost)
+          throw new Error(`修炼资源不足：${resourceId}`);
+      }
+      return;
+    }
+    case "character.resource": {
+      if (!character!.alive) throw new Error("已离世人物不能变更资源");
+      if (!command.resourceId.trim()) throw new Error("资源引用不能为空");
+      assertFiniteDelta(command.delta, "人物资源变化");
+      const nextBalance =
+        (character!.resourceBalances?.[command.resourceId] ?? 0) +
+        command.delta;
+      if (nextBalance < 0)
+        throw new Error(`人物资源不足：${command.resourceId}`);
+      return;
+    }
+    case "character.relation": {
+      if (!character!.alive) throw new Error("已离世人物不能改变关系");
+      if (command.characterId === command.targetCharacterId)
+        throw new Error("人物关系不能指向自身");
+      const target = state.characters.find(
+        (item) => item.id === command.targetCharacterId,
+      );
+      if (!target)
+        throw new Error(`关系目标人物不存在：${command.targetCharacterId}`);
+      assertFiniteDelta(command.affinityDelta, "人物好感变化");
+      assertFiniteDelta(command.trustDelta, "人物信任变化");
+      const existing = character!.relations?.find(
+        (relation) => relation.targetCharacterId === command.targetCharacterId,
+      );
+      if (
+        Math.abs((existing?.affinity ?? 0) + command.affinityDelta) > 100 ||
+        Math.abs((existing?.trust ?? 0) + command.trustDelta) > 100
+      )
+        throw new Error("人物关系数值必须保持在 -100 到 100 之间");
+      return;
+    }
+    case "character.life":
+      if (!command.status.trim()) throw new Error("生命状态不能为空");
+      return;
+    case "character.knowledge":
+      if (!character!.alive) throw new Error("已离世人物不能获得知识");
+      if (!command.knowledgeId.trim()) throw new Error("知识引用不能为空");
+      return;
+    case "faction.strategy":
+      if (faction!.lifecycle === "dissolved")
+        throw new Error("已解散势力不能采取策略");
+      if (!command.strategy.trim()) throw new Error("势力策略不能为空");
+      return;
+    case "faction.metric":
+      assertFiniteDelta(command.delta, "势力指标变化");
+      return;
+    case "faction.relation": {
+      if (faction!.lifecycle === "dissolved")
+        throw new Error("已解散势力不能改变外交关系");
+      if (command.factionId === command.targetFactionId)
+        throw new Error("势力关系不能指向自身");
+      if (!state.factions.some((item) => item.id === command.targetFactionId))
+        throw new Error(`关系目标势力不存在：${command.targetFactionId}`);
+      assertFiniteDelta(command.sentimentDelta, "势力关系变化");
+      const existing = faction!.relations?.find(
+        (relation) => relation.targetFactionId === command.targetFactionId,
+      );
+      if (Math.abs((existing?.sentiment ?? 0) + command.sentimentDelta) > 100)
+        throw new Error("势力关系数值必须保持在 -100 到 100 之间");
+      return;
+    }
+    case "region.metric":
+      assertFiniteDelta(command.delta, "地域指标变化");
+      return;
+    case "region.control":
+      if (
+        command.factionIds.some(
+          (id) => !state.factions.some((item) => item.id === id),
+        )
+      )
+        throw new Error("地域控制引用了不存在的势力");
+      return;
+    case "item.transfer":
+      if (!state.items.some((item) => item.id === command.itemId))
+        throw new Error(`物品不存在：${command.itemId}`);
+      if (
+        command.ownerType === "character" &&
+        (!command.ownerId ||
+          !state.characters.some((item) => item.id === command.ownerId))
+      )
+        throw new Error("物品归属人物不存在");
+      if (
+        command.ownerType === "faction" &&
+        (!command.ownerId ||
+          !state.factions.some((item) => item.id === command.ownerId))
+      )
+        throw new Error("物品归属势力不存在");
+      if (command.ownerType === null && command.ownerId !== null)
+        throw new Error("无主物品不得指定归属主体");
+      if (
+        command.locationId !== null &&
+        !state.regions.some((item) => item.id === command.locationId)
+      )
+        throw new Error("物品地点不存在");
+      return;
+    case "world.emergent":
+      if (!/^[a-z0-9][a-z0-9-]*$/u.test(command.entity.id))
+        throw new Error("新生世界主体 id 格式无效");
+      if (!command.entity.name.trim() || !command.entity.origin.trim())
+        throw new Error("新生世界主体必须说明名称与来源");
+      if (
+        command.entity.regionId !== null &&
+        !state.regions.some((item) => item.id === command.entity.regionId)
+      )
+        throw new Error("新生世界主体引用了不存在的地域");
+      if (
+        (state.emergentEntities ?? []).some(
+          (item) => item.id === command.entity.id,
+        )
+      )
+        throw new Error(`新生世界主体重复：${command.entity.id}`);
+      return;
+    case "effect.schedule":
+      if (
+        parseWorldTick(command.effect.dueSortKey) <=
+        parseWorldTick(state.currentTime.sortKey)
+      )
+        throw new Error("空间影响到达时间必须晚于当前世界时间");
+      return;
+    case "effect.consume":
+      return;
+    default:
+      throw new Error("领域命令类型无效");
+  }
+}
+
 export function applyWorldDomainCommands(
   state: WorldRuntimeState,
   commands: readonly WorldDomainCommand[],
 ): WorldRuntimeState {
   return commands.reduce<WorldRuntimeState>((current, command) => {
+    validateRuntimeCommand(current, command);
     switch (command.type) {
       case "character.intent":
         return {
@@ -281,7 +1083,9 @@ export function applyWorldDomainCommands(
             command.characterId,
             (character) => {
               if (character.travel)
-                throw new Error(`人物正在前往${character.travel.toRegionId}，不能重复出发`);
+                throw new Error(
+                  `人物正在前往${character.travel.toRegionId}，不能重复出发`,
+                );
               if (character.locationId !== command.fromRegionId)
                 throw new Error("人物出发地与当前地点不一致");
               if (
@@ -314,7 +1118,7 @@ export function applyWorldDomainCommands(
               if (character.travel.toRegionId !== command.toRegionId)
                 throw new Error("人物抵达目标与旅行目标不一致");
               if (
-                parseWorldTick(character.travel.arrivalSortKey) !==
+                parseWorldTick(character.travel.arrivalSortKey) >
                 parseWorldTick(current.currentTime.sortKey)
               )
                 throw new Error("人物尚未到达预定时间");
@@ -340,6 +1144,51 @@ export function applyWorldDomainCommands(
                 character.cultivationProgress + command.progressDelta,
               ),
               levelId: command.nextLevelId ?? character.levelId,
+              resourceBalances: Object.fromEntries(
+                Object.entries(character.resourceBalances ?? {}).map(
+                  ([id, balance]) => [
+                    id,
+                    balance - (command.resourceCosts?.[id] ?? 0),
+                  ],
+                ),
+              ),
+            }),
+            "人物",
+          ),
+        };
+      case "character.resource":
+        return {
+          ...current,
+          characters: updateById(
+            current.characters,
+            command.characterId,
+            (character) => ({
+              ...character,
+              resourceBalances: {
+                ...(character.resourceBalances ?? {}),
+                [command.resourceId]:
+                  (character.resourceBalances?.[command.resourceId] ?? 0) +
+                  command.delta,
+              },
+            }),
+            "人物",
+          ),
+        };
+      case "character.relation":
+        return {
+          ...current,
+          characters: updateById(
+            current.characters,
+            command.characterId,
+            (character) => ({
+              ...character,
+              relations: upsertCharacterRelation(
+                character.relations ?? [],
+                command.targetCharacterId,
+                command.affinityDelta,
+                command.trustDelta,
+                command.status,
+              ),
             }),
             "人物",
           ),
@@ -367,9 +1216,11 @@ export function applyWorldDomainCommands(
             command.characterId,
             (character) => ({
               ...character,
-              knowledgeIds: character.knowledgeIds.includes(command.knowledgeId)
-                ? character.knowledgeIds
-                : [...character.knowledgeIds, command.knowledgeId],
+              ...rememberKnowledge(
+                character,
+                command.knowledgeId,
+                current.currentTime.sortKey,
+              ),
             }),
             "人物",
           ),
@@ -397,6 +1248,24 @@ export function applyWorldDomainCommands(
             (faction) => ({
               ...faction,
               [command.metric]: clamp(faction[command.metric] + command.delta),
+            }),
+            "势力",
+          ),
+        };
+      case "faction.relation":
+        return {
+          ...current,
+          factions: updateById(
+            current.factions,
+            command.factionId,
+            (faction) => ({
+              ...faction,
+              relations: upsertFactionRelation(
+                faction.relations ?? [],
+                command.targetFactionId,
+                command.sentimentDelta,
+                command.status,
+              ),
             }),
             "势力",
           ),
@@ -447,6 +1316,14 @@ export function applyWorldDomainCommands(
             "物品",
           ),
         };
+      case "world.emergent":
+        return {
+          ...current,
+          emergentEntities: [
+            ...(current.emergentEntities ?? []),
+            command.entity,
+          ],
+        };
       case "effect.schedule":
         if (
           parseWorldTick(command.effect.dueSortKey) <=
@@ -454,11 +1331,19 @@ export function applyWorldDomainCommands(
         )
           throw new Error("空间影响到达时间必须晚于当前世界时间");
         if (
-          !current.regions.some((region) => region.id === command.effect.originRegionId) ||
-          !current.regions.some((region) => region.id === command.effect.targetRegionId)
+          !current.regions.some(
+            (region) => region.id === command.effect.originRegionId,
+          ) ||
+          !current.regions.some(
+            (region) => region.id === command.effect.targetRegionId,
+          )
         )
           throw new Error("空间影响引用了不存在的地域");
-        if (current.scheduledEffects.some((effect) => effect.id === command.effect.id))
+        if (
+          current.scheduledEffects.some(
+            (effect) => effect.id === command.effect.id,
+          )
+        )
           throw new Error(`空间影响重复排程：${command.effect.id}`);
         return {
           ...current,
@@ -468,8 +1353,12 @@ export function applyWorldDomainCommands(
         const effect = current.scheduledEffects.find(
           (item) => item.id === command.effectId,
         );
-        if (!effect) throw new Error(`待抵达的空间影响不存在：${command.effectId}`);
-        if (parseWorldTick(effect.dueSortKey) !== parseWorldTick(current.currentTime.sortKey))
+        if (!effect)
+          throw new Error(`待抵达的空间影响不存在：${command.effectId}`);
+        if (
+          parseWorldTick(effect.dueSortKey) >
+          parseWorldTick(current.currentTime.sortKey)
+        )
           throw new Error("空间影响尚未到达预定时间");
         return {
           ...current,
@@ -487,38 +1376,65 @@ export function applyWorldDomainCommands(
 function advanceRuntimeClock(
   state: WorldRuntimeState,
   time: WorldRuntimeState["currentTime"],
+  calendar: WorldSimulationScenario["calendar"],
+  scale?: TimeScale,
 ): WorldRuntimeState {
   const elapsedDays =
     parseWorldTick(time.sortKey) - parseWorldTick(state.currentTime.sortKey);
   if (elapsedDays < 0n) throw new Error("推演事件时间不得倒退");
   if (elapsedDays === 0n) return { ...state, currentTime: time };
+  const effectiveScale = scale ?? resolveEventScale(elapsedDays, calendar);
+  const entropy = clamp(
+    state.entropy +
+      Math.log10(
+        Number(elapsedDays > 10_000_000n ? 10_000_000n : elapsedDays) + 1,
+      ) /
+        20,
+    0,
+    100,
+  );
   return {
     ...state,
     currentTime: time,
-    characters: state.characters.map((character) => ({
-      ...character,
-      ageDays: addWorldTicks(character.ageDays, elapsedDays),
-    })),
-    entropy: clamp(
-      state.entropy +
-        Math.log10(
-          Number(elapsedDays > 10_000_000n ? 10_000_000n : elapsedDays) + 1,
-        ) /
-          20,
-      0,
-      100,
+    characters: state.characters.map((character) =>
+      decayCharacterMemory(
+        {
+          ...character,
+          ageDays: addWorldTicks(character.ageDays, elapsedDays),
+        },
+        elapsedDays,
+      ),
+    ),
+    entropy,
+    epoch: advanceEpochRuntimeState(
+      state.epoch,
+      elapsedDays,
+      effectiveScale,
+      calendar,
+      state.regions,
+      state.factions,
+      entropy,
     ),
   };
 }
 
 function replaySimulationLedger(
   baseline: WorldSimulationBaseline,
+  scenario: WorldSimulationScenario,
   ledger: readonly SimulationEvent[],
 ): WorldRuntimeState {
-  return ledger.reduce((state, entry) => {
-    const timedState = advanceRuntimeClock(state, entry.time);
-    return applyWorldDomainCommands(timedState, entry.commands);
-  }, initialRuntimeState(baseline));
+  return ledger.reduce(
+    (state, entry) => {
+      const timedState = advanceRuntimeClock(
+        state,
+        entry.time,
+        baseline.calendar,
+        entry.scale,
+      );
+      return applyWorldDomainCommands(timedState, entry.commands);
+    },
+    initialRuntimeState(baseline, scenario),
+  );
 }
 
 function selectedRegionIds(
@@ -539,12 +1455,11 @@ function activeCharacters(
     const runtime = branch.state.characters.find(
       (item) => item.id === character.id,
     );
-    // 草稿、归档和没有空间坐标的人物不是可执行主体。即使作者显式勾选，
-    // 也必须先在人物库补齐其初始状态，避免内核替作者猜测人物在哪里。
+    // 草稿和归档人物不能参与推演。未定位人物仍需参与生命周期、关系和
+    // 非空间行动；只有移动等空间命令需要真实可达路径。
     if (
       !runtime?.alive ||
       runtime.travel ||
-      !runtime.locationId ||
       /draft|archived|草稿|归档/iu.test(character.status)
     )
       return false;
@@ -553,17 +1468,24 @@ function activeCharacters(
       return character.factionIds.some((id) => selectedFactionIds.has(id));
     return (
       selectedIds.size === 0 &&
-      (!runtime.locationId || regionIds.has(runtime.locationId))
+      (runtime.locationId === null || regionIds.has(runtime.locationId))
     );
   });
 }
 
-function activeFactions(run: WorldSimulationRun): readonly FactionProjection[] {
+function activeFactions(
+  run: WorldSimulationRun,
+  branch: SimulationBranch,
+): readonly FactionProjection[] {
   const regionIds = selectedRegionIds(run.baseline, run.scenario);
   const selectedIds = new Set(run.scenario.scope.factionIds);
   const direct = run.baseline.factions.filter((faction) => {
+    const runtime = branch.state.factions.find(
+      (item) => item.id === faction.id,
+    );
     if (/draft|archived|草稿|归档|dissolved|解散|灭亡/iu.test(faction.status))
       return false;
+    if (runtime?.lifecycle === "dissolved") return false;
     return selectedIds.size > 0
       ? selectedIds.has(faction.id)
       : faction.territoryIds.some((id) => regionIds.has(id));
@@ -582,63 +1504,178 @@ function activeFactions(run: WorldSimulationRun): readonly FactionProjection[] {
   return run.baseline.factions.filter(
     (faction) =>
       allIds.has(faction.id) &&
-      !/draft|archived|草稿|归档|dissolved|解散|灭亡/iu.test(faction.status),
+      !/draft|archived|草稿|归档|dissolved|解散|灭亡/iu.test(faction.status) &&
+      branch.state.factions.find((item) => item.id === faction.id)
+        ?.lifecycle !== "dissolved",
   );
 }
 
 function activeNarrativeConstraints(
   run: WorldSimulationRun,
   branch: SimulationBranch,
+  timeSortKey = branch.state.currentTime.sortKey,
 ): readonly WorldSimulationBaseline["narrativeConstraints"][number][] {
-  return branch.narrativePolicy === "disabled"
-    ? []
-    : run.baseline.narrativeConstraints;
+  if (branch.narrativePolicy === "disabled") return [];
+  const time = parseWorldTick(timeSortKey);
+  return run.baseline.narrativeConstraints.filter((constraint) => {
+    const start = constraint.timeWindow?.startSortKey;
+    const end = constraint.timeWindow?.endSortKey;
+    if (start && time < parseWorldTick(start)) return false;
+    if (end && time > parseWorldTick(end)) return false;
+    return true;
+  });
 }
 
-function guidedCharacter(
+function activeAuthorConstraints(
   run: WorldSimulationRun,
   branch: SimulationBranch,
-  characters: readonly CharacterProjection[],
-  nextSortKey: string,
-): CharacterProjection | undefined {
-  const constrainedIds = new Set(
-    activeNarrativeConstraints(run, branch)
-      .filter(
-        (constraint) =>
-          constraint.mode === "guide" || constraint.mode === "strict",
-      )
-      .flatMap((constraint) => constraint.entityIds),
-  );
-  const guided = characters.filter((character) =>
-    constrainedIds.has(character.id),
-  );
-  return pick(
-    guided.length ? guided : characters,
-    branch.seed,
-    `character:${nextSortKey}`,
-  );
+): readonly string[] {
+  return [...run.scenario.authorConstraints, ...(branch.guardrails ?? [])];
 }
 
-function guidedFaction(
+function activeAuthorLeads(branch: SimulationBranch): readonly string[] {
+  return branch.authorLeads ?? [];
+}
+
+function commandEntity(command: WorldDomainCommand): {
+  readonly type: "character" | "faction" | "region" | "item";
+  readonly id: string;
+} | null {
+  switch (command.type) {
+    case "character.intent":
+    case "character.move":
+    case "character.arrive":
+    case "character.cultivate":
+    case "character.resource":
+    case "character.relation":
+    case "character.life":
+    case "character.knowledge":
+      return { type: "character", id: command.characterId };
+    case "faction.strategy":
+    case "faction.metric":
+    case "faction.relation":
+      return { type: "faction", id: command.factionId };
+    case "region.metric":
+    case "region.control":
+      return { type: "region", id: command.regionId };
+    case "item.transfer":
+      return { type: "item", id: command.itemId };
+    case "world.emergent":
+    case "effect.schedule":
+    case "effect.consume":
+      return null;
+  }
+}
+
+function valueMatches(
+  actual: unknown,
+  operator: "exists" | "equals" | "contains",
+  expected: string | number | boolean | null,
+): boolean {
+  if (operator === "exists") return actual !== undefined;
+  if (expected === null || actual === undefined) return false;
+  if (operator === "equals") return Object.is(actual, expected);
+  if (Array.isArray(actual))
+    return actual.some((item) => Object.is(item, expected));
+  return typeof actual === "string" && actual.includes(String(expected));
+}
+
+function outcomeMatchesEvent(
+  outcome: NarrativeOutcomeProjection,
+  event: SimulationEvent,
+): boolean {
+  if (outcome.kind === "event") {
+    return (
+      outcome.eventKind === event.kind &&
+      outcome.entityIds.every((id) =>
+        [...event.characterIds, ...event.factionIds, ...event.itemIds].includes(
+          id,
+        ),
+      ) &&
+      outcome.regionIds.every((id) => event.regionIds.includes(id))
+    );
+  }
+  if (outcome.commandType === undefined) return false;
+  return event.commands.some((command) => {
+    if (command.type !== outcome.commandType) return false;
+    const target = commandEntity(command);
+    if (
+      outcome.entityId &&
+      (!target ||
+        target.id !== outcome.entityId ||
+        target.type !== outcome.entityType)
+    )
+      return false;
+    const actual = outcome.field
+      ? (command as unknown as Record<string, unknown>)[outcome.field]
+      : command;
+    return valueMatches(actual, outcome.operator, outcome.value);
+  });
+}
+
+interface NarrativeConstraintEvaluation {
+  readonly constraint: WorldSimulationBaseline["narrativeConstraints"][number];
+  readonly requiredCount: number;
+  readonly requiredSatisfied: number;
+  readonly forbiddenCount: number;
+  readonly forbiddenMatched: number;
+  readonly score: number;
+  readonly complete: boolean;
+}
+
+function evaluateNarrativeConstraints(
   run: WorldSimulationRun,
   branch: SimulationBranch,
-  factions: readonly FactionProjection[],
-  nextSortKey: string,
-): FactionProjection | undefined {
-  const constrainedIds = new Set(
-    activeNarrativeConstraints(run, branch)
-      .filter(
-        (constraint) =>
-          constraint.mode === "guide" || constraint.mode === "strict",
-      )
-      .flatMap((constraint) => constraint.entityIds),
-  );
-  const guided = factions.filter((faction) => constrainedIds.has(faction.id));
-  return pick(
-    guided.length ? guided : factions,
-    branch.seed,
-    `faction:${nextSortKey}`,
-  );
+  ledger: readonly SimulationEvent[] = branch.ledger,
+): readonly NarrativeConstraintEvaluation[] {
+  const constraints =
+    branch.narrativePolicy === "disabled"
+      ? []
+      : run.baseline.narrativeConstraints;
+  return constraints.map((constraint) => {
+    const inWindow = ledger.filter((entry) => {
+      const sortKey = parseWorldTick(entry.time.sortKey);
+      const start = constraint.timeWindow?.startSortKey;
+      const end = constraint.timeWindow?.endSortKey;
+      return (
+        (!start || sortKey >= parseWorldTick(start)) &&
+        (!end || sortKey <= parseWorldTick(end))
+      );
+    });
+    const required = constraint.requiredOutcomes ?? [];
+    const forbidden = constraint.forbiddenOutcomes ?? [];
+    const requiredSatisfied = required.filter((outcome) =>
+      inWindow.some((entry) => outcomeMatchesEvent(outcome, entry)),
+    ).length;
+    const forbiddenMatched = forbidden.filter((outcome) =>
+      inWindow.some((entry) => outcomeMatchesEvent(outcome, entry)),
+    ).length;
+    const flexibility = Math.max(
+      0,
+      Math.min(100, constraint.flexibility ?? 50),
+    );
+    const requiredThreshold = Math.ceil(
+      (required.length * (100 - flexibility)) / 100,
+    );
+    const requiredScore =
+      required.length === 0 ? 100 : (requiredSatisfied / required.length) * 100;
+    const forbiddenPenalty = forbidden.length
+      ? (forbiddenMatched / forbidden.length) * (100 - flexibility)
+      : 0;
+    return {
+      constraint,
+      requiredCount: required.length,
+      requiredSatisfied,
+      forbiddenCount: forbidden.length,
+      forbiddenMatched,
+      score: Math.max(
+        0,
+        Math.min(100, Math.round(requiredScore - forbiddenPenalty)),
+      ),
+      complete:
+        requiredSatisfied >= requiredThreshold && forbiddenMatched === 0,
+    };
+  });
 }
 
 function evidenceFor(
@@ -832,7 +1869,8 @@ function findSpatialRoute(
           previous &&
           (previous.travelDays < next.travelDays ||
             (previous.travelDays === next.travelDays &&
-              routeSignature(previous).localeCompare(routeSignature(next)) <= 0))
+              routeSignature(previous).localeCompare(routeSignature(next)) <=
+                0))
         )
           return;
         best.set(nextRegionId, next);
@@ -876,10 +1914,15 @@ function assertCharacterMoveHasSpatialPath(
     runtime.locationId,
     command.toRegionId,
   );
-  if (!route || route.regionIds.some((regionId) => !visibleRegionIds.has(regionId)))
+  if (
+    !route ||
+    route.regionIds.some((regionId) => !visibleRegionIds.has(regionId))
+  )
     throw new Error(`${source}的移动缺少可达空间路径`);
   const earliestArrival = addWorldTicks(departureSortKey, route.travelDays);
-  if (parseWorldTick(command.arrivalSortKey) < parseWorldTick(earliestArrival)) {
+  if (
+    parseWorldTick(command.arrivalSortKey) < parseWorldTick(earliestArrival)
+  ) {
     throw new Error(
       `${source}的移动行程至少需要 ${route.travelDays.toString()} 日，不能提前抵达。`,
     );
@@ -911,10 +1954,57 @@ function characterEvent(
         ) * yearDays;
   if (lifespanDays !== null && ageAtBoundary >= lifespanDays) {
     const regionId = runtime.locationId;
+    const regionState = regionId
+      ? branch.state.regions.find((item) => item.id === regionId)
+      : undefined;
+    const hasCloseTie = character.relations.some(
+      (relation) => relation.tone === "positive",
+    );
+    const hasIllnessRisk = [
+      ...character.weaknesses,
+      ...character.fears,
+      character.status,
+    ].some((value) => /伤|病|疾|衰|残/u.test(value));
+    const calamityThreshold =
+      stableHash(
+        `${branch.seed}:life-calamity:${character.id}:${nextSortKey}`,
+      ) % 100;
+    const cause =
+      regionState && regionState.pressure >= 70
+        ? {
+            title: `${character.name}死于地域劫难`,
+            summary: `${character.name}所在的${run.baseline.regions.find((item) => item.id === regionId)?.name ?? "地域"}长期承受高压，秩序崩解最终越过其寿命边界。他未能等到安稳晚年，遗物与记忆将由地方继续承接。`,
+            status: "死于劫难",
+          }
+        : regionState && regionState.stability <= 30
+          ? {
+              title: `${character.name}在颠沛中走完一生`,
+              summary: `${character.name}在${run.baseline.regions.find((item) => item.id === regionId)?.name ?? "动荡之地"}的低稳定度中辗转求生，最终未能留下稳定居所。其遗物、熟人记忆与未竟意图会成为后续世界过程的一部分。`,
+              status: "颠沛病逝",
+            }
+          : hasIllnessRisk
+            ? {
+                title: `${character.name}病衰离世`,
+                summary: `${character.name}带着既有的伤病与衰老走到生命尽头。世界不会把寿命结算简化成数字清零；其关系、遗物与在地影响仍留在后续因果中。`,
+                status: "病衰离世",
+              }
+            : calamityThreshold < (regionState?.pressure ?? 0) / 2
+              ? {
+                  title: `${character.name}未能避开乱世余波`,
+                  summary: `${character.name}在生命末段遭遇持续动荡的余波，未能平静终老。该结局由地域压力、世界时间与运行种子共同裁定，后续镜头会转向其遗物或地方记忆。`,
+                  status: "乱世离世",
+                }
+              : {
+                  title: `${character.name}安稳终老`,
+                  summary: hasCloseTie
+                    ? `${character.name}在既有关系与地域秩序中度过余生，最终安稳离世。其亲友、遗物和曾经参与的地方生活将继续留在世界的后续变化里。`
+                    : `${character.name}在既有地域度过余生，最终自然终老。其遗物与地方记忆会作为后续世界影响继续保留。`,
+                  status: "安稳终老",
+                };
     return event(run, branch, nextSortKey, scale, {
       kind: "lifecycle",
-      title: `${character.name}走到寿命尽头`,
-      summary: `${character.name}的个人行动停止，其关系、传承与遗物开始转化为后续世界影响。`,
+      title: `${cause.title}（寿命尽头）`,
+      summary: cause.summary,
       characterIds: [character.id],
       factionIds: [...character.factionIds],
       regionIds: regionId ? [regionId] : [],
@@ -931,7 +2021,7 @@ function characterEvent(
           type: "character.life",
           characterId: character.id,
           alive: false,
-          status: "已离世",
+          status: cause.status,
         },
         ...character.inventoryItemIds.map((itemId) => ({
           type: "item.transfer" as const,
@@ -995,8 +2085,16 @@ function characterEvent(
       )
       .sort((left, right) => left.order - right.order)
       .find((level) => !currentLevel || level.order > currentLevel.order);
+    const hasBreakthroughResources = Boolean(
+      nextLevel &&
+        nextLevel.resourceIds.every(
+          (resourceId) => (runtime.resourceBalances?.[resourceId] ?? 0) >= 1,
+        ),
+    );
     const breakthrough =
-      runtime.cultivationProgress + progressDelta >= 100 && Boolean(nextLevel);
+      runtime.cultivationProgress + progressDelta >= 100 &&
+      Boolean(nextLevel) &&
+      hasBreakthroughResources;
     return event(run, branch, nextSortKey, scale, {
       kind: "cultivation",
       title: breakthrough
@@ -1032,6 +2130,13 @@ function characterEvent(
             ? -runtime.cultivationProgress
             : progressDelta,
           nextLevelId: breakthrough ? (nextLevel?.id ?? null) : null,
+          ...(breakthrough && nextLevel && nextLevel.resourceIds.length > 0
+            ? {
+                resourceCosts: Object.fromEntries(
+                  nextLevel.resourceIds.map((resourceId) => [resourceId, 1]),
+                ),
+              }
+            : {}),
         },
         ...(runtime.locationId
           ? [
@@ -1049,6 +2154,9 @@ function characterEvent(
         .map((constraint) => constraint.id),
       generatedBy: "fallback",
       confidence: 0.78,
+      ...(run.scenario.intelligence.mode === "assisted"
+        ? { degradedReason: "未提供模型候选，使用确定性修炼策略" }
+        : {}),
     });
   }
 
@@ -1123,6 +2231,17 @@ function factionEvent(
       : "faction-strategy";
   const commands: WorldDomainCommand[] = [
     { type: "faction.strategy", factionId: faction.id, strategy, lifecycle },
+    ...(hostile
+      ? [
+          {
+            type: "faction.relation" as const,
+            factionId: faction.id,
+            targetFactionId: hostile.targetFactionId,
+            sentimentDelta: aggressive ? -8 : 3,
+            status: "active" as const,
+          },
+        ]
+      : []),
     {
       type: "faction.metric",
       factionId: faction.id,
@@ -1179,24 +2298,452 @@ function factionEvent(
       .map((constraint) => constraint.id),
     generatedBy: "fallback",
     confidence: 0.8,
+    ...(run.scenario.intelligence.mode === "assisted"
+      ? { degradedReason: "未提供模型候选，使用确定性势力策略" }
+      : {}),
   });
 }
 
-function worldProcessEvent(
+function periodicRuleHitCount(
+  startSortKey: string,
+  endSortKey: string,
+  intervalDays: string,
+): bigint {
+  const interval = parseWorldTick(intervalDays);
+  if (interval <= 0n) return 0n;
+  const start = parseWorldTick(startSortKey);
+  const end = parseWorldTick(endSortKey);
+  if (end <= start) return 0n;
+  return end / interval - start / interval;
+}
+
+function periodicRuleEvents(
+  run: WorldSimulationRun,
+  branch: SimulationBranch,
+  nextSortKey: string,
+  scale: TimeScale,
+): readonly SimulationEvent[] {
+  const visibleRegions = selectedRegionIds(run.baseline, run.scenario);
+  const startSortKey = branch.state.currentTime.sortKey;
+  let eventBranch = branch;
+  const events: SimulationEvent[] = [];
+  run.baseline.rules
+    .filter(
+      (rule) =>
+        rule.kind === "periodic" &&
+        Boolean(rule.intervalDays) &&
+        (rule.regionId === null || visibleRegions.has(rule.regionId)),
+    )
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .forEach((rule) => {
+      const hitCount = periodicRuleHitCount(
+        startSortKey,
+        nextSortKey,
+        rule.intervalDays!,
+      );
+      if (hitCount <= 0n) return;
+      const region = rule.regionId
+        ? run.baseline.regions.find((item) => item.id === rule.regionId)
+        : null;
+      const text = `${rule.title}\n${rule.description}`;
+      const isFestival = /节|庆典|祭祀|集会|风俗/u.test(text);
+      const isOpening = /秘境|遗迹|洞天|宝库|开启|降临|现世/u.test(text);
+      const isConflict = /战争|战事|争夺|冲突/u.test(text);
+      const impact = Number(hitCount > 8n ? 8n : hitCount);
+      const commands: WorldDomainCommand[] = region
+        ? isFestival
+          ? [
+              {
+                type: "region.metric",
+                regionId: region.id,
+                metric: "stability",
+                delta: Math.min(6, Math.max(1, impact)),
+              },
+              {
+                type: "region.metric",
+                regionId: region.id,
+                metric: "economy",
+                delta: Math.min(4, Math.max(1, impact / 2)),
+              },
+            ]
+          : isOpening
+            ? [
+                {
+                  type: "region.metric",
+                  regionId: region.id,
+                  metric: "cultivation",
+                  delta: Math.min(8, Math.max(1, impact)),
+                },
+                {
+                  type: "region.metric",
+                  regionId: region.id,
+                  metric: "pressure",
+                  delta: Math.min(5, Math.max(1, impact)),
+                },
+              ]
+            : isConflict
+              ? [
+                  {
+                    type: "region.metric",
+                    regionId: region.id,
+                    metric: "pressure",
+                    delta: Math.min(12, Math.max(2, impact * 2)),
+                  },
+                  {
+                    type: "region.metric",
+                    regionId: region.id,
+                    metric: "stability",
+                    delta: -Math.min(8, Math.max(1, impact)),
+                  },
+                ]
+              : [
+                  {
+                    type: "region.metric",
+                    regionId: region.id,
+                    metric: "stability",
+                    delta: Math.min(3, Math.max(1, impact)),
+                  },
+                ]
+        : [];
+      const countText = hitCount.toString();
+      const subject = isFestival
+        ? "节庆与民间秩序"
+        : isOpening
+          ? "开启、传承与资源流向"
+          : isConflict
+            ? "周期性冲突"
+            : "世界过程";
+      const periodicEvent = event(run, eventBranch, nextSortKey, scale, {
+        kind: isConflict ? "conflict" : "world-process",
+        title: `${rule.title}在本轮命中 ${countText} 次`,
+        summary: `${region?.name ?? "世界范围"}在本轮时间窗口内按“${rule.title}”发生 ${countText} 次。内核以一次聚合裁定呈现${subject}，不会把每一次重复过程展开为独立事件。${rule.aggregationLabel ? ` ${rule.aggregationLabel}。` : ""}`,
+        characterIds: [],
+        factionIds: region
+          ? [
+              ...new Set([
+                ...region.activeFactionIds,
+                ...region.rulerFactionIds,
+              ]),
+            ]
+          : [],
+        regionIds: region ? [region.id] : [],
+        itemIds: [],
+        evidence: [
+          {
+            type: "world-rule",
+            label: rule.title,
+            detail: `规则间隔 ${rule.intervalDays} 世界日；窗口 ${startSortKey} 至 ${nextSortKey}，命中 ${countText} 次。${rule.description}`,
+            authority: "canon",
+            sourceRefs: rule.sourceRefs,
+          },
+        ],
+        commands,
+        narrativeConstraintIds: [],
+        generatedBy: "kernel",
+        confidence: 0.94,
+      });
+      events.push(periodicEvent);
+      eventBranch = {
+        ...eventBranch,
+        ledger: [...eventBranch.ledger, periodicEvent],
+      };
+    });
+  return events;
+}
+
+function worldProcessEventForRegion(
   run: WorldSimulationRun,
   branch: SimulationBranch,
   nextSortKey: string,
   stepDays: bigint,
   scale: TimeScale,
+  region: RegionProjection,
 ): SimulationEvent | null {
-  // 没有被结构化规则、已排程影响或事实事件触发的“自然演化”，不能用
-  // 伪随机数修改人口、经济、灵气等状态。时间仍会推进，空白就是资料不足。
-  void run;
-  void branch;
-  void nextSortKey;
-  void stepDays;
-  void scale;
-  return null;
+  const baselineFactionIds = new Set(
+    run.baseline.factions.map((faction) => faction.id),
+  );
+  const runtime = branch.state.regions.find((item) => item.id === region.id);
+  if (!runtime) return null;
+  const years = stepDays / scaleToDays("year", run.scenario.calendar);
+  const coarseYears = years > 0n ? Number(years > 1000n ? 1000n : years) : 0;
+  const pressureDirection =
+    runtime.pressure >= 60 ? 1 : runtime.pressure <= 25 ? -1 : 0;
+  const stabilityDelta =
+    pressureDirection > 0
+      ? -Math.max(1, Math.min(8, coarseYears + 1))
+      : pressureDirection < 0
+        ? Math.max(1, Math.min(5, coarseYears + 1))
+        : 0;
+  const populationDelta =
+    stabilityDelta < 0
+      ? -Math.max(1, Math.min(6, Math.abs(stabilityDelta)))
+      : stabilityDelta > 0
+        ? Math.max(1, Math.min(4, stabilityDelta))
+        : 0;
+  const economyDelta =
+    runtime.controllingFactionIds.length > 0
+      ? stabilityDelta < 0
+        ? -2
+        : 1
+      : -1;
+  const cultivationDelta = region.rules.some((rule) =>
+    /灵气|修炼|灵脉|法则/u.test(rule),
+  )
+    ? stabilityDelta < 0
+      ? -1
+      : 2
+    : 0;
+  const ecologyDelta = stabilityDelta < 0 ? -2 : stabilityDelta > 0 ? 1 : 0;
+  const commands: WorldDomainCommand[] = [
+    ...(stabilityDelta
+      ? [
+          {
+            type: "region.metric" as const,
+            regionId: region.id,
+            metric: "stability" as const,
+            delta: stabilityDelta,
+          },
+        ]
+      : []),
+    ...(populationDelta
+      ? [
+          {
+            type: "region.metric" as const,
+            regionId: region.id,
+            metric: "population" as const,
+            delta: populationDelta,
+          },
+        ]
+      : []),
+    ...(economyDelta
+      ? [
+          {
+            type: "region.metric" as const,
+            regionId: region.id,
+            metric: "economy" as const,
+            delta: economyDelta,
+          },
+        ]
+      : []),
+    ...(cultivationDelta
+      ? [
+          {
+            type: "region.metric" as const,
+            regionId: region.id,
+            metric: "cultivation" as const,
+            delta: cultivationDelta,
+          },
+        ]
+      : []),
+    ...(ecologyDelta
+      ? [
+          {
+            type: "region.metric" as const,
+            regionId: region.id,
+            metric: "ecology" as const,
+            delta: ecologyDelta,
+          },
+        ]
+      : []),
+  ];
+  if (commands.length === 0) return null;
+  const latestCause = branch.ledger
+    .slice()
+    .reverse()
+    .find((entry) => entry.regionIds.includes(region.id));
+  return event(run, branch, nextSortKey, scale, {
+    kind: "world-process",
+    title: `${region.name}的世界过程发生变化`,
+    summary: `${region.name}依据已编译的地域规则、控制关系和当前稳定度，人口、经济、生态及修炼环境出现可追溯变化。`,
+    characterIds: [],
+    factionIds: [
+      ...new Set(
+        [...region.activeFactionIds, ...region.rulerFactionIds].filter((id) =>
+          baselineFactionIds.has(id),
+        ),
+      ),
+    ],
+    regionIds: [region.id],
+    itemIds: [],
+    causeEventIds: latestCause ? [latestCause.id] : [],
+    evidence: [
+      {
+        type: "fact",
+        label: "地域过程依据",
+        detail:
+          [region.summary, ...region.rules].filter(Boolean).join("；") ||
+          "已登记的地域控制关系",
+        authority: "canon",
+        sourceRefs: region.sourceRefs,
+      },
+    ],
+    commands,
+    narrativeConstraintIds: [],
+    generatedBy: "kernel",
+    confidence: 0.72,
+  });
+}
+
+function worldProcessEvents(
+  run: WorldSimulationRun,
+  branch: SimulationBranch,
+  nextSortKey: string,
+  stepDays: bigint,
+  scale: TimeScale,
+): readonly SimulationEvent[] {
+  const baselineFactionIds = new Set(
+    run.baseline.factions.map((faction) => faction.id),
+  );
+  const regions = run.baseline.regions
+    .filter((region) =>
+      selectedRegionIds(run.baseline, run.scenario).has(region.id),
+    )
+    .filter(
+      (region) =>
+        region.rules.length > 0 ||
+        region.rulerFactionIds.some((id) => baselineFactionIds.has(id)) ||
+        region.activeFactionIds.some((id) => baselineFactionIds.has(id)),
+    )
+    .sort((left, right) => left.id.localeCompare(right.id));
+  let eventBranch = branch;
+  const events: SimulationEvent[] = [];
+  for (const region of regions) {
+    const event = worldProcessEventForRegion(
+      run,
+      eventBranch,
+      nextSortKey,
+      stepDays,
+      scale,
+      region,
+    );
+    if (!event) continue;
+    events.push(event);
+    eventBranch = { ...eventBranch, ledger: [...eventBranch.ledger, event] };
+  }
+  const yearDays = scaleToDays("year", run.scenario.calendar);
+  const elapsedYears = stepDays / yearDays;
+  if (elapsedYears >= 80n && regions.length > 0) {
+    const birthRegion = regions.slice().sort((left, right) => {
+      const leftPopulation =
+        branch.state.regions.find((item) => item.id === left.id)?.population ??
+        0;
+      const rightPopulation =
+        branch.state.regions.find((item) => item.id === right.id)?.population ??
+        0;
+      return (
+        rightPopulation - leftPopulation || left.id.localeCompare(right.id)
+      );
+    })[0]!;
+    const idSuffix = `${branch.id}-${nextSortKey.replace(/-/gu, "m")}`;
+    const entities: EmergentWorldEntityRuntimeState[] = [
+      {
+        id: `emergent-character-${idSuffix}`,
+        kind: "character",
+        name: `${birthRegion.name}新生一代`,
+        regionId: birthRegion.id,
+        origin: `本轮跨越 ${elapsedYears.toString()} 年，由人口、稳定度与地方秩序的聚合结果生成。`,
+        createdAtSortKey: nextSortKey,
+        status: "成长中",
+      },
+      ...(elapsedYears >= 500n
+        ? [
+            {
+              id: `emergent-faction-${idSuffix}`,
+              kind: "faction" as const,
+              name: `${birthRegion.name}新兴组织`,
+              regionId: birthRegion.id,
+              origin: "长尺度的人口、资源与地方秩序变化促成新的组织力量。",
+              createdAtSortKey: nextSortKey,
+              status: "形成中",
+            },
+          ]
+        : []),
+    ];
+    const emergence = event(run, eventBranch, nextSortKey, scale, {
+      kind: "world-process",
+      title: `${birthRegion.name}出现代际承接`,
+      summary: `本轮跨越 ${elapsedYears.toString()} 年，${birthRegion.name}出现新生一代${entities.length > 1 ? "与新的组织力量" : ""}。它们只属于当前推演分支，用于承接死亡人物、地方记忆与资源秩序的后续因果，不会自动写入正式人物或势力资料。`,
+      characterIds: [],
+      factionIds: [],
+      regionIds: [birthRegion.id],
+      itemIds: [],
+      evidence: [
+        {
+          type: "world-rule",
+          label: "长尺度代际聚合",
+          detail: `跨度 ${elapsedYears.toString()} 年；人口与地域秩序只按尺度级结论处理，不逐年虚构人物行动。`,
+          authority: "simulated",
+          sourceRefs: birthRegion.sourceRefs,
+        },
+      ],
+      commands: entities.map((entity) => ({
+        type: "world.emergent" as const,
+        entity,
+      })),
+      narrativeConstraintIds: [],
+      generatedBy: "kernel",
+      confidence: 0.82,
+    });
+    events.push(emergence);
+    eventBranch = {
+      ...eventBranch,
+      ledger: [...eventBranch.ledger, emergence],
+    };
+  }
+  const epochStage = epochStageForScale(scale, branch.state.epoch.stage);
+  if (
+    [
+      "millennium",
+      "ten-thousand-years",
+      "hundred-billion-years",
+      "trillion-years",
+    ].includes(scale)
+  ) {
+    const scaleBoundary = scaleToDays(scale, run.scenario.calendar);
+    const cycleIncrement =
+      stepDays / scaleBoundary > 0n ? stepDays / scaleBoundary : 1n;
+    const nextCycle = (
+      parseWorldTick(branch.state.epoch.cycle) + cycleIncrement
+    ).toString();
+    const sourceRefs = [
+      ...run.baseline.regions
+        .filter((region) =>
+          selectedRegionIds(run.baseline, run.scenario).has(region.id),
+        )
+        .flatMap((region) => region.sourceRefs),
+      ...run.baseline.rules.flatMap((rule) => rule.sourceRefs),
+    ].slice(0, 12);
+    events.push(
+      event(run, eventBranch, nextSortKey, scale, {
+        kind: "epoch",
+        title: `世界进入${epochStage}纪元阶段`,
+        summary: `长尺度推进完成第 ${nextCycle} 个聚合周期；人口指数、文明指数和法则稳定度已由确定性内核更新。该里程碑不代表精确人口或逐日事件。`,
+        characterIds: [],
+        factionIds: [],
+        regionIds: regions.map((region) => region.id).slice(0, 8),
+        itemIds: [],
+        causeEventIds: events.length > 0 ? [events.at(-1)!.id] : [],
+        evidence: [
+          {
+            type: "world-rule",
+            label: "纪元聚合规则",
+            detail: `尺度=${scale}；阶段=${epochStage}；周期=${nextCycle}`,
+            authority: "simulated",
+            sourceRefs,
+          },
+        ],
+        commands: [],
+        narrativeConstraintIds: [],
+        generatedBy: "kernel",
+        confidence: 0.7,
+      }),
+    );
+    eventBranch = {
+      ...eventBranch,
+      ledger: [...eventBranch.ledger, events.at(-1)!],
+    };
+  }
+  return events;
 }
 
 function propagationEvents(
@@ -1207,22 +2754,55 @@ function propagationEvents(
   scale: TimeScale,
 ): readonly SimulationEvent[] {
   if (!source) return [];
-  const originId = source.regionIds[0];
-  if (
-    !originId ||
-    !source.commands.some(
-      (command) =>
-        command.type === "region.metric" &&
-        command.metric === "pressure" &&
-        command.delta >= 5,
-    )
-  )
-    return [];
+  const isInitialPressure = source.commands.some(
+    (command) =>
+      command.type === "region.metric" &&
+      command.metric === "pressure" &&
+      command.delta >= 5,
+  );
+  const isArrivedPropagation =
+    source.kind === "propagation" &&
+    source.propagationContext !== undefined &&
+    source.commands.some((command) => command.type === "effect.consume");
+  if (!isInitialPressure && !isArrivedPropagation) return [];
+  const sourceHop = source.propagationContext?.hop ?? 0;
+  const maxPropagationHops = run.scenario.maxPropagationHops ?? 3;
+  if (sourceHop >= maxPropagationHops) return [];
+  const originId = source.regionIds.at(-1);
+  if (!originId) return [];
   const origin = run.baseline.regions.find((region) => region.id === originId);
   if (!origin) return [];
   const scopedRegionIds = selectedRegionIds(run.baseline, run.scenario);
   const result: SimulationEvent[] = [];
   let eventBranch = branch;
+  const propagatedKnowledgeIds = new Set(
+    source.propagationContext?.knowledgeIds ?? [],
+  );
+  if (!source.propagationContext) {
+    const sourceCharacterIds = new Set(
+      source.characterIds.length > 0
+        ? source.characterIds
+        : branch.state.characters
+            .filter(
+              (character) =>
+                character.alive && character.locationId === originId,
+            )
+            .map((character) => character.id),
+    );
+    sourceCharacterIds.forEach((characterId) => {
+      const runtime = branch.state.characters.find(
+        (character) => character.id === characterId,
+      );
+      rememberedKnowledgeIds(runtime, branch.state.currentTime.sortKey).forEach(
+        (knowledgeId) => propagatedKnowledgeIds.add(knowledgeId),
+      );
+    });
+    source.commands.forEach((command) => {
+      if (command.type === "character.knowledge")
+        propagatedKnowledgeIds.add(command.knowledgeId);
+    });
+  }
+  const nextHop = sourceHop + 1;
   const emittedConnectionIds = new Set<string>();
   [...origin.connections]
     .filter(isPropagationConnection)
@@ -1235,22 +2815,43 @@ function propagationEvents(
       const targetIsInScope = scopedRegionIds.has(targetId);
       if (!targetIsInScope && run.scenario.scope.outsidePolicy === "ignore")
         return;
+      const connectionCapacity = Math.max(
+        0,
+        Math.min(
+          100,
+          Number.isFinite(connection.capacity) ? connection.capacity : 0,
+        ),
+      );
+      if (connectionCapacity <= 0) return;
       const boundaryFactor =
         !targetIsInScope && run.scenario.scope.outsidePolicy === "approximate"
           ? 0.45
           : 1;
+      const capacityFactor = connectionCapacity / 100;
       const delta = Math.max(
         1,
-        Math.round(5 * (1 - connection.attenuation) * boundaryFactor),
+        Math.round(
+          5 * (1 - connection.attenuation) * boundaryFactor * capacityFactor,
+        ),
       );
-      const dueSortKey = travelArrivalSortKey(nextSortKey, connection.travelDays);
-      const targetName = run.baseline.regions.find(
-        (region) => region.id === targetId,
-      )?.name ?? "相邻地域";
+      const selection = selectPropagationKnowledge(
+        run,
+        [...propagatedKnowledgeIds],
+        connection,
+        nextHop,
+        source.id,
+      );
+      const dueSortKey = travelArrivalSortKey(
+        nextSortKey,
+        connection.travelDays,
+      );
+      const targetName =
+        run.baseline.regions.find((region) => region.id === targetId)?.name ??
+        "相邻地域";
       const propagation = event(run, eventBranch, nextSortKey, scale, {
         kind: "propagation",
         title: `${source.title}的影响开始向${targetName}传播`,
-        summary: `事件沿${connection.kind}通道前往${targetName}，预计${createWorldInstant(dueSortKey, run.scenario.calendar).displayText}抵达，强度会在传播中衰减${!targetIsInScope && run.scenario.scope.outsidePolicy === "approximate" ? "，范围外地域按统计近似处理" : ""}。`,
+        summary: `事件沿${connection.kind}通道前往${targetName}，预计${createWorldInstant(dueSortKey, run.scenario.calendar).displayText}抵达，这是第 ${nextHop} 跳；通道容量 ${Math.round(connectionCapacity)}%，载荷${selection.capacityDroppedCount > 0 ? `因容量舍弃 ${selection.capacityDroppedCount} 条知识` : "未超限"}${selection.distortedCount > 0 ? `，其中 ${selection.distortedCount} 条谣言发生失真` : ""}。${!targetIsInScope && run.scenario.scope.outsidePolicy === "approximate" ? "范围外地域按统计近似处理。" : ""}`,
         characterIds: source.characterIds,
         factionIds: source.factionIds,
         regionIds: [originId, targetId],
@@ -1278,12 +2879,23 @@ function propagationEvents(
               targetRegionId: targetId,
               pressureDelta: delta,
               stabilityDelta: -Math.max(1, Math.round(delta / 2)),
+              hop: nextHop,
+              ...(selection.knowledgeIds.length > 0
+                ? { knowledgeIds: selection.knowledgeIds }
+                : {}),
             },
           },
         ],
         narrativeConstraintIds: source.narrativeConstraintIds,
         generatedBy: "kernel",
         confidence: 0.9,
+        propagationContext: {
+          hop: nextHop,
+          knowledgeIds: selection.knowledgeIds,
+          ...(selection.distortedCount > 0
+            ? { distortedKnowledgeCount: selection.distortedCount }
+            : {}),
+        },
       });
       result.push(propagation);
       eventBranch = {
@@ -1303,7 +2915,12 @@ function scheduledArrivalEvents(
   let eventBranch = branch;
   const result: SimulationEvent[] = [];
   branch.state.characters
-    .filter((character) => character.travel?.arrivalSortKey === nextSortKey)
+    .filter(
+      (character) =>
+        character.travel !== null &&
+        parseWorldTick(character.travel.arrivalSortKey) <=
+          parseWorldTick(nextSortKey),
+    )
     .forEach((runtime) => {
       if (!runtime.travel) return;
       const character = run.baseline.characters.find(
@@ -1318,7 +2935,7 @@ function scheduledArrivalEvents(
             (command) =>
               command.type === "character.move" &&
               command.characterId === character.id &&
-              command.arrivalSortKey === nextSortKey,
+              command.arrivalSortKey === runtime.travel?.arrivalSortKey,
           ),
         );
       const route = runtime.travel.fromRegionId
@@ -1337,9 +2954,10 @@ function scheduledArrivalEvents(
         summary: `${character.name}完成跨地域行动，旅行期间未参与其它主体决策。`,
         characterIds: [character.id],
         factionIds: [...character.factionIds],
-        regionIds: [runtime.travel.fromRegionId, runtime.travel.toRegionId].filter(
-          (value): value is string => Boolean(value),
-        ),
+        regionIds: [
+          runtime.travel.fromRegionId,
+          runtime.travel.toRegionId,
+        ].filter((value): value is string => Boolean(value)),
         itemIds: [...character.inventoryItemIds],
         causeEventIds: departure ? [departure.id] : [],
         evidence: [
@@ -1367,7 +2985,10 @@ function scheduledArrivalEvents(
         confidence: 1,
       });
       result.push(arrival);
-      eventBranch = { ...eventBranch, ledger: [...eventBranch.ledger, arrival] };
+      eventBranch = {
+        ...eventBranch,
+        ledger: [...eventBranch.ledger, arrival],
+      };
     });
   return result;
 }
@@ -1380,17 +3001,56 @@ function scheduledEffectArrivalEvents(
 ): readonly SimulationEvent[] {
   let eventBranch = branch;
   const result: SimulationEvent[] = [];
+  // 固定轮跨度下，已在本轮窗口内到期的影响统一在轮次终点结算。
+  // 这不会提前生效，也不会因为终点没有恰好落在传播日而永久滞留。
   branch.state.scheduledEffects
-    .filter((effect) => effect.dueSortKey === nextSortKey)
+    .filter(
+      (effect) =>
+        parseWorldTick(effect.dueSortKey) <= parseWorldTick(nextSortKey),
+    )
     .forEach((effect) => {
       const target = run.baseline.regions.find(
         (region) => region.id === effect.targetRegionId,
       );
+      const propagationHop = effect.hop ?? 1;
+      const rememberedKnowledgeIdsAtTarget = new Set(effect.knowledgeIds ?? []);
+      const recipients = run.baseline.characters.filter((character) => {
+        const runtime = branch.state.characters.find(
+          (candidate) => candidate.id === character.id,
+        );
+        if (!runtime?.alive) return false;
+        const isAtTarget =
+          runtime.locationId === effect.targetRegionId ||
+          (runtime.travel !== null &&
+            parseWorldTick(runtime.travel.arrivalSortKey) <=
+              parseWorldTick(nextSortKey) &&
+            runtime.travel.toRegionId === effect.targetRegionId);
+        return (
+          isAtTarget &&
+          character.knowledge.some((knowledge) =>
+            rememberedKnowledgeIdsAtTarget.has(knowledge.id),
+          )
+        );
+      });
+      const knowledgeCommands = recipients.flatMap((character) =>
+        character.knowledge
+          .filter((knowledge) =>
+            rememberedKnowledgeIdsAtTarget.has(knowledge.id),
+          )
+          .map(
+            (knowledge) =>
+              ({
+                type: "character.knowledge",
+                characterId: character.id,
+                knowledgeId: knowledge.id,
+              }) as const,
+          ),
+      );
       const arrival = event(run, eventBranch, nextSortKey, scale, {
         kind: "propagation",
         title: `影响抵达${target?.name ?? "目标地域"}`,
-        summary: `来自${effect.originRegionId}的影响沿${effect.connectionId}抵达，压力与稳定度变化现在才生效。`,
-        characterIds: [],
+        summary: `来自${effect.originRegionId}的影响沿${effect.connectionId}抵达（第 ${propagationHop} 跳），压力与稳定度变化现在才生效${knowledgeCommands.length > 0 ? `；${recipients.length} 名目标地域人物已更新可回忆知识` : ""}。`,
+        characterIds: recipients.map((character) => character.id),
         factionIds: [],
         regionIds: [effect.originRegionId, effect.targetRegionId],
         itemIds: [],
@@ -1417,35 +3077,24 @@ function scheduledEffectArrivalEvents(
             metric: "stability",
             delta: effect.stabilityDelta,
           },
+          ...knowledgeCommands,
           { type: "effect.consume", effectId: effect.id },
         ],
         narrativeConstraintIds: [],
         generatedBy: "kernel",
         confidence: 1,
+        propagationContext: {
+          hop: propagationHop,
+          knowledgeIds: [...rememberedKnowledgeIdsAtTarget].sort(),
+        },
       });
       result.push(arrival);
-      eventBranch = { ...eventBranch, ledger: [...eventBranch.ledger, arrival] };
+      eventBranch = {
+        ...eventBranch,
+        ledger: [...eventBranch.ledger, arrival],
+      };
     });
   return result;
-}
-
-function nextScheduledBoundary(
-  branch: SimulationBranch,
-  currentSortKey: string,
-  endSortKey: string,
-): string | null {
-  const current = parseWorldTick(currentSortKey);
-  const end = parseWorldTick(endSortKey);
-  const candidates = [
-    ...branch.state.characters.flatMap((character) =>
-      character.travel ? [character.travel.arrivalSortKey] : [],
-    ),
-    ...branch.state.scheduledEffects.map((effect) => effect.dueSortKey),
-  ]
-    .map(parseWorldTick)
-    .filter((value) => value > current && value <= end)
-    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
-  return candidates[0]?.toString() ?? null;
 }
 
 function visibleItemIds(
@@ -1500,14 +3149,115 @@ function validateItemTransferCommand(
   }
 }
 
+function validateCommandsAgainstWorld(
+  run: WorldSimulationRun,
+  branch: SimulationBranch,
+  commands: readonly WorldDomainCommand[],
+  eventTimeSortKey: string,
+  source: string,
+): void {
+  const visibleRegions = selectedRegionIds(run.baseline, run.scenario);
+  const timedState = advanceRuntimeClock(
+    branch.state,
+    createWorldInstant(eventTimeSortKey, run.scenario.calendar),
+    run.scenario.calendar,
+  );
+  let state = timedState;
+  for (const command of commands) {
+    if (command.type === "region.metric" || command.type === "region.control") {
+      if (source !== "内核事件" && !visibleRegions.has(command.regionId))
+        throw new Error(`${source}操作了范围外地域`);
+    }
+    if (command.type === "character.move") {
+      assertCharacterMoveHasSpatialPath(
+        run,
+        { ...branch, state },
+        command,
+        visibleRegions,
+        eventTimeSortKey,
+        source,
+      );
+      const targetRules = run.baseline.rules.filter(
+        (rule) =>
+          rule.severity === "hard" &&
+          rule.regionId === command.toRegionId &&
+          /禁止|不可|不能|封闭|无法.{0,4}(进入|跨越|移动)/u.test(
+            rule.description,
+          ),
+      );
+      if (targetRules.length > 0)
+        throw new Error(
+          `${source}违反地域硬规则：${targetRules.map((rule) => rule.title).join("、")}`,
+        );
+    }
+    if (command.type === "character.cultivate" && command.nextLevelId) {
+      const character = run.baseline.characters.find(
+        (item) => item.id === command.characterId,
+      );
+      const runtime = state.characters.find(
+        (item) => item.id === command.characterId,
+      );
+      const system = character?.cultivation.systemId
+        ? run.baseline.cultivationSystems.find(
+            (item) => item.id === character.cultivation.systemId,
+          )
+        : undefined;
+      const currentLevel = system?.levels.find(
+        (level) =>
+          level.id === (runtime?.levelId ?? character?.cultivation.levelId),
+      );
+      const nextLevel = system?.levels.find(
+        (level) => level.id === command.nextLevelId,
+      );
+      if (!nextLevel || (currentLevel && nextLevel.order <= currentLevel.order))
+        throw new Error(`${source}的修炼境界跃迁顺序无效`);
+      for (const resourceId of nextLevel.resourceIds) {
+        if ((runtime?.resourceBalances?.[resourceId] ?? 0) < 1)
+          throw new Error(`${source}突破资源不足：${resourceId}`);
+        if ((command.resourceCosts?.[resourceId] ?? 0) < 1)
+          throw new Error(`${source}的突破没有提交资源消耗：${resourceId}`);
+      }
+      const hardConstraints = [
+        ...(system?.hardConstraints ?? []),
+        ...nextLevel.breakthroughConditions,
+      ];
+      if (
+        hardConstraints.some(
+          (condition) =>
+            /禁止|不得|不能/u.test(condition) &&
+            /突破|修炼|跃迁/u.test(condition),
+        )
+      ) {
+        throw new Error(`${source}违反修炼硬规则`);
+      }
+    }
+    validateRuntimeCommand(state, command);
+    state = applyWorldDomainCommands(state, [command]);
+  }
+}
+
 function validateModelCandidate(
   run: WorldSimulationRun,
   branch: SimulationBranch,
   candidate: ModelDecisionCandidate,
   eventTimeSortKey = branch.state.currentTime.sortKey,
+  subject: SimulationDecisionSubject | null = null,
 ): void {
   if (!candidate.title.trim() || !candidate.summary.trim())
     throw new Error("模型候选缺少标题或摘要");
+  if (
+    !Number.isFinite(candidate.confidence) ||
+    candidate.confidence < 0 ||
+    candidate.confidence > 1
+  )
+    throw new Error("模型候选置信度必须在 0 到 1 之间");
+  if (
+    candidate.expectedUtility !== undefined &&
+    (!Number.isFinite(candidate.expectedUtility) ||
+      candidate.expectedUtility < 0 ||
+      candidate.expectedUtility > 100)
+  )
+    throw new Error("模型候选预期效用必须在 0 到 100 之间");
   if (candidate.commands.length === 0)
     throw new Error("模型候选没有可验证的状态提交");
   if (candidate.characterIds.length + candidate.factionIds.length === 0)
@@ -1524,8 +3274,8 @@ function validateModelCandidate(
   ) {
     throw new Error("模型候选引用了基线中不存在的实体");
   }
-  const visibleCharacters = activeCharacters(run, branch).slice(0, 1);
-  const visibleFactions = activeFactions(run).slice(0, 1);
+  const visibleCharacters = activeCharacters(run, branch);
+  const visibleFactions = activeFactions(run, branch);
   const visibleCharacterIds = new Set(
     visibleCharacters.map((character) => character.id),
   );
@@ -1544,22 +3294,35 @@ function validateModelCandidate(
   ) {
     throw new Error("模型候选超出了当前主体的知识与行动边界");
   }
+  if (
+    subject &&
+    (subject.type === "character"
+      ? !candidate.characterIds.includes(subject.id)
+      : !candidate.factionIds.includes(subject.id))
+  ) {
+    throw new Error("模型候选没有关联其受限决策主体");
+  }
   if (candidate.itemIds.some((id) => !visibleItems.has(id))) {
     throw new Error("模型候选试图操作不可见物品");
   }
   const visibleKnowledge = new Map(
     visibleCharacters.map((character) => [
       character.id,
-      new Set(character.knowledge.map((knowledge) => knowledge.id)),
+      new Set(
+        visibleKnowledgeForCharacter(run, branch, character.id).map(
+          (knowledge) => knowledge.id,
+        ),
+      ),
     ]),
   );
   candidate.commands.forEach((command) => {
     if (
       command.type === "character.arrive" ||
       command.type === "effect.schedule" ||
-      command.type === "effect.consume"
+      command.type === "effect.consume" ||
+      command.type === "world.emergent"
     ) {
-      throw new Error("模型候选不得直接提交旅行抵达或空间传播内部命令");
+      throw new Error("模型候选不得直接提交旅行、空间传播或新生主体内部命令");
     }
     if (
       command.type === "character.knowledge" &&
@@ -1568,20 +3331,77 @@ function validateModelCandidate(
       throw new Error("模型候选试图让人物获得其尚未掌握的知识");
     }
     if (
+      command.type === "character.relation" &&
+      !visibleCharacterIds.has(command.targetCharacterId)
+    ) {
+      throw new Error("模型候选操作了不可见的人物关系目标");
+    }
+    if (
       (command.type === "character.intent" ||
         command.type === "character.move" ||
         command.type === "character.cultivate" ||
+        command.type === "character.resource" ||
+        command.type === "character.relation" ||
         command.type === "character.life" ||
         command.type === "character.knowledge") &&
       !visibleCharacterIds.has(command.characterId)
     )
       throw new Error("模型候选操作了不可见人物");
     if (
+      subject?.type === "character" &&
+      (command.type === "character.intent" ||
+        command.type === "character.move" ||
+        command.type === "character.cultivate" ||
+        command.type === "character.resource" ||
+        command.type === "character.relation" ||
+        command.type === "character.life" ||
+        command.type === "character.knowledge") &&
+      command.characterId !== subject.id
+    ) {
+      throw new Error("人物模型候选不能替其它人物提交命令");
+    }
+    if (
+      command.type === "faction.relation" &&
+      !visibleFactionIds.has(command.targetFactionId)
+    ) {
+      throw new Error("模型候选操作了不可见的势力关系目标");
+    }
+    if (
       (command.type === "faction.strategy" ||
-        command.type === "faction.metric") &&
+        command.type === "faction.metric" ||
+        command.type === "faction.relation") &&
       !visibleFactionIds.has(command.factionId)
     )
       throw new Error("模型候选操作了不可见势力");
+    if (
+      subject?.type === "faction" &&
+      (command.type === "faction.strategy" ||
+        command.type === "faction.metric" ||
+        command.type === "faction.relation") &&
+      command.factionId !== subject.id
+    ) {
+      throw new Error("势力模型候选不能替其它势力提交命令");
+    }
+    if (
+      subject?.type === "character" &&
+      (command.type === "faction.strategy" ||
+        command.type === "faction.metric" ||
+        command.type === "faction.relation")
+    ) {
+      throw new Error("人物模型候选不能直接提交势力命令");
+    }
+    if (
+      subject?.type === "faction" &&
+      (command.type === "character.intent" ||
+        command.type === "character.move" ||
+        command.type === "character.cultivate" ||
+        command.type === "character.resource" ||
+        command.type === "character.relation" ||
+        command.type === "character.life" ||
+        command.type === "character.knowledge")
+    ) {
+      throw new Error("势力模型候选不能直接提交人物命令");
+    }
     if (
       (command.type === "region.metric" || command.type === "region.control") &&
       !visibleRegions.has(command.regionId)
@@ -1614,12 +3434,16 @@ function validateModelCandidate(
   applyWorldDomainCommands(
     {
       ...branch.state,
-      currentTime: createWorldInstant(
-        eventTimeSortKey,
-        run.scenario.calendar,
-      ),
+      currentTime: createWorldInstant(eventTimeSortKey, run.scenario.calendar),
     },
     candidate.commands,
+  );
+  validateCommandsAgainstWorld(
+    run,
+    branch,
+    candidate.commands,
+    eventTimeSortKey,
+    "模型候选",
   );
 }
 
@@ -1629,10 +3453,20 @@ function modelEvent(
   nextSortKey: string,
   scale: TimeScale,
   candidate: ModelDecisionCandidate,
+  subject: SimulationDecisionSubject | null,
+  rawModelOutput?: string,
 ): SimulationEvent {
-  validateModelCandidate(run, branch, candidate, nextSortKey);
+  validateModelCandidate(run, branch, candidate, nextSortKey, subject);
+  const {
+    objective,
+    perceivedFacts,
+    assumptions,
+    expectedUtility,
+    risks,
+    ...eventCandidate
+  } = candidate;
   return event(run, branch, nextSortKey, scale, {
-    ...candidate,
+    ...eventCandidate,
     evidence: [
       {
         type: "knowledge",
@@ -1641,6 +3475,17 @@ function modelEvent(
         authority: "simulated",
         sourceRefs: [],
       },
+      ...(activeAuthorConstraints(run, branch).length > 0
+        ? [
+            {
+              type: "narrative-constraint" as const,
+              label: "作者约束",
+              detail: activeAuthorConstraints(run, branch).join("；"),
+              authority: "constraint" as const,
+              sourceRefs: [],
+            },
+          ]
+        : []),
     ],
     narrativeConstraintIds: activeNarrativeConstraints(run, branch)
       .filter((constraint) =>
@@ -1651,7 +3496,84 @@ function modelEvent(
       .map((constraint) => constraint.id),
     generatedBy: "model",
     confidence: clamp(candidate.confidence, 0, 1),
+    decisionAudit: {
+      subject,
+      objective: objective?.trim() || run.scenario.objective,
+      perceivedFacts: [...(perceivedFacts ?? [])],
+      assumptions: [...(assumptions ?? [])],
+      expectedUtility: clamp(expectedUtility ?? candidate.confidence * 100),
+      risks: [...(risks ?? [])],
+    },
+    ...(rawModelOutput ? { rawModelOutput } : {}),
   });
+}
+
+function commandWriteKeys(command: WorldDomainCommand): readonly string[] {
+  switch (command.type) {
+    case "character.intent":
+      return [`character:${command.characterId}:intent`];
+    case "character.move":
+      return [`character:${command.characterId}:location`];
+    case "character.arrive":
+      return [`character:${command.characterId}:location`];
+    case "character.cultivate":
+      return [
+        `character:${command.characterId}:cultivation`,
+        ...Object.keys(command.resourceCosts ?? {}).map(
+          (resourceId) =>
+            `character:${command.characterId}:resource:${resourceId}`,
+        ),
+      ];
+    case "character.resource":
+      return [
+        `character:${command.characterId}:resource:${command.resourceId}`,
+      ];
+    case "character.relation":
+      return [
+        `character:${command.characterId}:relation:${command.targetCharacterId}`,
+      ];
+    case "character.life":
+      return [`character:${command.characterId}:life`];
+    case "character.knowledge":
+      return [
+        `character:${command.characterId}:knowledge:${command.knowledgeId}`,
+      ];
+    case "faction.strategy":
+      return [`faction:${command.factionId}:strategy`];
+    case "faction.metric":
+      return [`faction:${command.factionId}:metric:${command.metric}`];
+    case "faction.relation":
+      return [
+        `faction:${command.factionId}:relation:${command.targetFactionId}`,
+      ];
+    case "region.metric":
+      return [`region:${command.regionId}:metric:${command.metric}`];
+    case "region.control":
+      return [`region:${command.regionId}:control`];
+    case "item.transfer":
+      return [`item:${command.itemId}:ownership`];
+    case "world.emergent":
+      return [`world:emergent:${command.entity.id}`];
+    case "effect.schedule":
+      return [`effect:${command.effect.id}`];
+    case "effect.consume":
+      return [`effect:${command.effectId}`];
+    default:
+      return [];
+  }
+}
+
+function candidateWriteKeys(
+  candidate: ModelDecisionCandidate,
+): readonly string[] {
+  return candidate.commands.flatMap(commandWriteKeys);
+}
+
+function candidateSortKey(submission: ModelDecisionSubmission): string {
+  const subject = submission.subject
+    ? `${submission.subject.type}:${submission.subject.id}`
+    : "unknown:";
+  return `${subject}:${submission.candidate.title}`;
 }
 
 function aggregateObservations(
@@ -1737,18 +3659,44 @@ function strictNarrativeViolation(
   run: WorldSimulationRun,
   branch: SimulationBranch,
   events: readonly SimulationEvent[],
+  currentTimeSortKey?: string,
 ): string | null {
-  const strictConstraints = activeNarrativeConstraints(run, branch).filter(
-    (constraint) => constraint.mode === "strict",
-  );
+  const strictConstraints = (
+    branch.narrativePolicy === "disabled"
+      ? []
+      : run.baseline.narrativeConstraints
+  ).filter((constraint) => constraint.mode === "strict");
   if (strictConstraints.length === 0) return null;
   for (const event of events) {
+    const activeAtEvent = strictConstraints.filter((constraint) => {
+      const sortKey = parseWorldTick(event.time.sortKey);
+      const start = constraint.timeWindow?.startSortKey;
+      const end = constraint.timeWindow?.endSortKey;
+      return (
+        (!start || sortKey >= parseWorldTick(start)) &&
+        (!end || sortKey <= parseWorldTick(end))
+      );
+    });
+    for (const constraint of activeAtEvent) {
+      const forbidden = constraint.forbiddenOutcomes ?? [];
+      const forbiddenOutcome = forbidden.find((outcome) =>
+        outcomeMatchesEvent(outcome, event),
+      );
+      if (forbiddenOutcome) {
+        return `剧情不可实现：强约束“${constraint.title}”禁止结果“${forbiddenOutcome.id}”在${event.time.displayText}发生。`;
+      }
+    }
     for (const command of event.commands) {
       if (command.type !== "character.life" || command.alive) continue;
       const character = run.baseline.characters.find(
         (item) => item.id === command.characterId,
       );
       const constraint = strictConstraints.find((item) => {
+        const eventTime = parseWorldTick(event.time.sortKey);
+        const start = item.timeWindow?.startSortKey;
+        const end = item.timeWindow?.endSortKey;
+        if (start && eventTime < parseWorldTick(start)) return false;
+        if (end && eventTime > parseWorldTick(end)) return false;
         const mentionsCharacter =
           item.entityIds.includes(command.characterId) ||
           Boolean(character && item.content.includes(character.name));
@@ -1761,6 +3709,28 @@ function strictNarrativeViolation(
       });
       if (constraint)
         return `剧情不可实现：强约束“${constraint.title}”要求${character?.name ?? command.characterId}存活，但寿命或规则裁定要求其离世。`;
+    }
+  }
+  const ledger = [...branch.ledger, ...events];
+  const cursor =
+    currentTimeSortKey ??
+    events.at(-1)?.time.sortKey ??
+    branch.state.currentTime.sortKey;
+  const endSortKey = getSimulationEndSortKey(run);
+  for (const evaluation of evaluateNarrativeConstraints(run, branch, ledger)) {
+    const end = evaluation.constraint.timeWindow?.endSortKey ?? endSortKey;
+    if (parseWorldTick(cursor) < parseWorldTick(end)) continue;
+    const threshold = Math.ceil(
+      (evaluation.requiredCount *
+        (100 -
+          Math.max(
+            0,
+            Math.min(100, evaluation.constraint.flexibility ?? 50),
+          ))) /
+        100,
+    );
+    if (evaluation.requiredSatisfied < threshold) {
+      return `剧情不可实现：强约束“${evaluation.constraint.title}”在时间窗结束时仅达成 ${evaluation.requiredSatisfied}/${evaluation.requiredCount} 项必需结果。`;
     }
   }
   return null;
@@ -1819,100 +3789,284 @@ function pauseForStrictNarrativeViolation(
 function advanceSingleStep(
   run: WorldSimulationRun,
   branch: SimulationBranch,
-  externalCandidate?: ModelDecisionCandidate,
+  externalCandidates: readonly ModelDecisionSubmission[] = [],
+  modelCallsUsed = 0,
 ): SimulationBranch {
+  if (!Number.isInteger(modelCallsUsed) || modelCallsUsed < 0) {
+    throw new Error("本步模型调用计数必须是非负整数");
+  }
   if (branch.warnings.some((warning) => warning.startsWith("剧情不可实现：")))
     return { ...branch, status: "paused" };
+  const configuredMaxEvents =
+    run.scenario.maxEvents ?? Number.POSITIVE_INFINITY;
+  const configuredMaxDecisions =
+    run.scenario.maxDecisions ?? Number.POSITIVE_INFINITY;
+  const modelCallLimit = run.scenario.maxModelCalls ?? Number.POSITIVE_INFINITY;
+  if ((branch.modelCallCount ?? 0) + modelCallsUsed > modelCallLimit) {
+    throw new Error(
+      `本步模型调用会超过预算（${modelCallLimit}），请在请求模型前停止推演`,
+    );
+  }
+  if (branch.ledger.length >= configuredMaxEvents) {
+    const warning = `已达到事件预算（${configuredMaxEvents}），推演已暂停并保存检查点。`;
+    return {
+      ...branch,
+      status: "paused",
+      warnings: branch.warnings.includes(warning)
+        ? branch.warnings
+        : [...branch.warnings, warning],
+    };
+  }
+  if ((branch.decisionCount ?? 0) >= configuredMaxDecisions) {
+    const warning = `已达到主体决策预算（${configuredMaxDecisions}），推演已暂停并保存检查点。`;
+    return {
+      ...branch,
+      status: "paused",
+      warnings: branch.warnings.includes(warning)
+        ? branch.warnings
+        : [...branch.warnings, warning],
+    };
+  }
+  if (
+    run.scenario.intelligence.mode === "assisted" &&
+    (branch.modelCallCount ?? 0) >= modelCallLimit
+  ) {
+    const warning = `已达到模型调用预算（${modelCallLimit}），推演已暂停并保存检查点。`;
+    return {
+      ...branch,
+      status: "paused",
+      warnings: branch.warnings.includes(warning)
+        ? branch.warnings
+        : [...branch.warnings, warning],
+    };
+  }
   const endSortKey = getSimulationEndSortKey(run);
   const current = parseWorldTick(branch.state.currentTime.sortKey);
   const end = parseWorldTick(endSortKey);
   if (current >= end) return { ...branch, status: "completed" };
-  const usedSteps = Math.max(0, branch.checkpoints.length - 1);
-  const stepDays = chooseAdaptiveStep(
-    branch.state.currentTime.sortKey,
-    endSortKey,
-    Math.max(1, run.scenario.maxSteps - usedSteps),
+  // V4 的一轮是用户设置的固定时间跨度。内部不再按 maxSteps 自适应切片，
+  // 这样单轮、连续运行、时间线和重放使用同一个时间契约。
+  const roundSpanDays = durationToDays(
+    run.scenario.roundSpan,
     run.scenario.calendar,
   );
-  const adaptiveNextSortKey = (
-    current + stepDays > end ? end : current + stepDays
+  const nextSortKey = (
+    current + roundSpanDays > end ? end : current + roundSpanDays
   ).toString();
-  const scheduledSortKey = nextScheduledBoundary(
-    branch,
-    branch.state.currentTime.sortKey,
-    endSortKey,
-  );
-  const nextSortKey = scheduledSortKey &&
-    parseWorldTick(scheduledSortKey) < parseWorldTick(adaptiveNextSortKey)
-    ? scheduledSortKey
-    : adaptiveNextSortKey;
   const actualStepDays = parseWorldTick(nextSortKey) - current;
   const scale = resolveEventScale(actualStepDays, run.scenario.calendar);
   const scheduledEvents = [
     ...scheduledArrivalEvents(run, branch, nextSortKey, scale),
     ...scheduledEffectArrivalEvents(run, branch, nextSortKey, scale),
   ];
-  const characters = activeCharacters(run, branch);
-  const factions = activeFactions(run);
-  const chosenCharacter = guidedCharacter(run, branch, characters, nextSortKey);
-  const chosenFaction = guidedFaction(run, branch, factions, nextSortKey);
-  const events: SimulationEvent[] = [...scheduledEvents];
+  const periodicEvents = periodicRuleEvents(
+    run,
+    { ...branch, ledger: [...branch.ledger, ...scheduledEvents] },
+    nextSortKey,
+    scale,
+  );
+  const characters = activeCharacters(run, branch)
+    .slice()
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const factions = activeFactions(run, branch)
+    .slice()
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const maxDecisions = run.scenario.maxDecisions ?? Number.POSITIVE_INFINITY;
+  let decisionsUsed = branch.decisionCount ?? 0;
+  const constrainedIds = new Set(
+    activeNarrativeConstraints(run, branch)
+      .filter(
+        (constraint) =>
+          constraint.mode === "guide" || constraint.mode === "strict",
+      )
+      .flatMap((constraint) => constraint.entityIds),
+  );
+  const orderedCharacters = characters.slice().sort((left, right) => {
+    const leftGuided = constrainedIds.has(left.id) ? 0 : 1;
+    const rightGuided = constrainedIds.has(right.id) ? 0 : 1;
+    return leftGuided - rightGuided || left.id.localeCompare(right.id);
+  });
+  const orderedFactions = factions.slice().sort((left, right) => {
+    const leftGuided = constrainedIds.has(left.id) ? 0 : 1;
+    const rightGuided = constrainedIds.has(right.id) ? 0 : 1;
+    return leftGuided - rightGuided || left.id.localeCompare(right.id);
+  });
+  const events: SimulationEvent[] = [...scheduledEvents, ...periodicEvents];
   let workingBranch: SimulationBranch = {
     ...branch,
-    ledger: [...branch.ledger, ...scheduledEvents],
+    ledger: [...branch.ledger, ...scheduledEvents, ...periodicEvents],
   };
-  if (chosenCharacter) {
-      const characterAction = characterEvent(
-        run,
-        workingBranch,
-        chosenCharacter,
-        nextSortKey,
-        actualStepDays,
-        scale,
-      );
-      if (characterAction) {
-        events.push(characterAction);
-        workingBranch = { ...workingBranch, ledger: [...workingBranch.ledger, characterAction] };
-      }
-  }
-  if (chosenFaction) {
-    const factionAction = factionEvent(run, workingBranch, chosenFaction, nextSortKey, scale);
-    if (factionAction) {
-      events.push(factionAction);
-      workingBranch = { ...workingBranch, ledger: [...workingBranch.ledger, factionAction] };
+  for (const character of orderedCharacters) {
+    if (decisionsUsed >= maxDecisions) break;
+    decisionsUsed += 1;
+    const characterAction = characterEvent(
+      run,
+      workingBranch,
+      character,
+      nextSortKey,
+      actualStepDays,
+      scale,
+    );
+    if (characterAction) {
+      events.push(characterAction);
+      workingBranch = {
+        ...workingBranch,
+        ledger: [...workingBranch.ledger, characterAction],
+      };
     }
   }
-  const worldEvent = worldProcessEvent(
+  for (const faction of orderedFactions) {
+    if (decisionsUsed >= maxDecisions) break;
+    decisionsUsed += 1;
+    const factionAction = factionEvent(
+      run,
+      workingBranch,
+      faction,
+      nextSortKey,
+      scale,
+    );
+    if (factionAction) {
+      events.push(factionAction);
+      workingBranch = {
+        ...workingBranch,
+        ledger: [...workingBranch.ledger, factionAction],
+      };
+    }
+  }
+  const worldEvents = worldProcessEvents(
     run,
     workingBranch,
     nextSortKey,
     actualStepDays,
     scale,
   );
-  if (worldEvent) {
-    events.push(worldEvent);
-    workingBranch = { ...workingBranch, ledger: [...workingBranch.ledger, worldEvent] };
+  if (worldEvents.length > 0) {
+    events.push(...worldEvents);
+    workingBranch = {
+      ...workingBranch,
+      ledger: [...workingBranch.ledger, ...worldEvents],
+    };
   }
-  if (externalCandidate) {
-    const model = modelEvent(run, workingBranch, nextSortKey, scale, externalCandidate);
-    events.push(model);
-    workingBranch = { ...workingBranch, ledger: [...workingBranch.ledger, model] };
-  }
-  const propagations = propagationEvents(
-    run,
-    workingBranch,
-    events.find((entry) => entry.kind === "conflict"),
+  const arbitrationTime = createWorldInstant(
     nextSortKey,
+    run.scenario.calendar,
+    scale === "day"
+      ? "day"
+      : scale === "month"
+        ? "month"
+        : scale === "year"
+          ? "year"
+          : "era",
+  );
+  let arbitrationState = advanceRuntimeClock(
+    branch.state,
+    arbitrationTime,
+    run.scenario.calendar,
     scale,
   );
+  for (const entry of events) {
+    arbitrationState = applyWorldDomainCommands(
+      arbitrationState,
+      entry.commands,
+    );
+  }
+  const candidateValidationState = arbitrationState;
+  const occupiedWriteKeys = new Set(
+    events.flatMap((entry) => entry.commands.flatMap(commandWriteKeys)),
+  );
+  const arbitrationWarnings: string[] = [];
+  const orderedCandidates = externalCandidates
+    .slice()
+    .sort((left, right) =>
+      candidateSortKey(left).localeCompare(candidateSortKey(right)),
+    );
+  for (const {
+    candidate: externalCandidate,
+    subject,
+    rawModelOutput,
+  } of orderedCandidates) {
+    // 所有同一时间边界的候选先针对同一个“确定性事件后状态”校验，
+    // 再由稳定写入键裁定冲突；这样模型返回顺序不会改变世界结果。
+    const model = modelEvent(
+      run,
+      {
+        ...workingBranch,
+        // 候选之间共享同一确定性基线状态；ledger 则保留已接受候选，
+        // 让事件 ID 和因果引用仍按稳定顺序递增。
+        state: candidateValidationState,
+      },
+      nextSortKey,
+      scale,
+      externalCandidate,
+      subject,
+      rawModelOutput,
+    );
+    const writeKeys = candidateWriteKeys(externalCandidate);
+    const conflictKey = writeKeys.find((key) => occupiedWriteKeys.has(key));
+    if (conflictKey) {
+      arbitrationWarnings.push(
+        `同一时间边界的模型候选“${externalCandidate.title}”因写入键 ${conflictKey} 与稳定顺序更高的候选冲突，已拒绝该候选。`,
+      );
+      continue;
+    }
+    arbitrationState = applyWorldDomainCommands(
+      arbitrationState,
+      model.commands,
+    );
+    writeKeys.forEach((key) => occupiedWriteKeys.add(key));
+    events.push(model);
+    workingBranch = {
+      ...workingBranch,
+      ledger: [...workingBranch.ledger, model],
+    };
+  }
+  const propagationBranch: SimulationBranch = {
+    ...workingBranch,
+    // 传播必须读取本时间边界已经衰减并应用主体候选后的状态，
+    // 否则长时间跳步会把已遗忘的知识错误地传播出去。
+    state: arbitrationState,
+  };
+  const propagationSources = events.filter(
+    (entry) =>
+      entry.kind === "conflict" ||
+      (entry.kind === "propagation" &&
+        entry.propagationContext !== undefined &&
+        entry.commands.some((command) => command.type === "effect.consume")),
+  );
+  const propagations: SimulationEvent[] = [];
+  let propagationWorkingBranch = propagationBranch;
+  propagationSources.forEach((source) => {
+    const emitted = propagationEvents(
+      run,
+      propagationWorkingBranch,
+      source,
+      nextSortKey,
+      scale,
+    );
+    if (emitted.length === 0) return;
+    propagations.push(...emitted);
+    propagationWorkingBranch = {
+      ...propagationWorkingBranch,
+      ledger: [...propagationWorkingBranch.ledger, ...emitted],
+    };
+  });
   if (propagations.length > 0) {
     events.push(...propagations);
     workingBranch = {
-      ...workingBranch,
+      ...propagationWorkingBranch,
       ledger: [...workingBranch.ledger, ...propagations],
     };
   }
-  const strictViolation = strictNarrativeViolation(run, branch, events);
+  const maxEvents = run.scenario.maxEvents ?? Number.POSITIVE_INFINITY;
+  const remainingEvents = Math.max(0, maxEvents - branch.ledger.length);
+  const acceptedEvents = events.slice(0, remainingEvents);
+  const eventBudgetExceeded = acceptedEvents.length < events.length;
+  const strictViolation = strictNarrativeViolation(
+    run,
+    branch,
+    acceptedEvents,
+    nextSortKey,
+  );
   if (strictViolation)
     return pauseForStrictNarrativeViolation(run, branch, strictViolation);
 
@@ -1929,12 +4083,26 @@ function advanceSingleStep(
             ? "year"
             : "era",
     ),
+    run.scenario.calendar,
+    scale,
   );
-  const nextState = events.reduce(
-    (state, entry) => applyWorldDomainCommands(state, entry.commands),
-    agedState,
-  );
-  const ledger = [...branch.ledger, ...events].map((entry, index) => ({
+  let validatedState = agedState;
+  for (const entry of acceptedEvents) {
+    const validationState: SimulationBranch = {
+      ...branch,
+      state: validatedState,
+    };
+    validateCommandsAgainstWorld(
+      run,
+      validationState,
+      entry.commands,
+      nextSortKey,
+      "内核事件",
+    );
+    validatedState = applyWorldDomainCommands(validatedState, entry.commands);
+  }
+  const nextState = validatedState;
+  const ledger = [...branch.ledger, ...acceptedEvents].map((entry, index) => ({
     ...entry,
     sequence: index + 1,
   }));
@@ -1945,13 +4113,44 @@ function advanceSingleStep(
     createdAt: new Date().toISOString(),
     state: nextState,
   };
+  const nextModelCallCount = (branch.modelCallCount ?? 0) + modelCallsUsed;
   const nextBranch: SimulationBranch = {
     ...branch,
-    status: parseWorldTick(nextSortKey) >= end ? "completed" : "paused",
+    status:
+      eventBudgetExceeded ||
+      decisionsUsed >= maxDecisions ||
+      nextModelCallCount >= modelCallLimit
+        ? "paused"
+        : parseWorldTick(nextSortKey) >= end
+          ? "completed"
+          : "paused",
     state: nextState,
     ledger,
     checkpoints: [...branch.checkpoints, checkpoint],
     observations: [],
+    decisionCount: decisionsUsed,
+    modelCallCount: nextModelCallCount,
+    warnings: [
+      ...branch.warnings,
+      ...arbitrationWarnings,
+      ...(run.scenario.intelligence.mode === "assisted" &&
+      externalCandidates.length === 0 &&
+      !branch.warnings.includes(
+        "本步未注入模型候选，主体行动使用确定性降级策略。",
+      )
+        ? ["本步未注入模型候选，主体行动使用确定性降级策略。"]
+        : []),
+      ...(eventBudgetExceeded
+        ? [`已达到事件预算（${maxEvents}），推演已暂停并保存检查点。`]
+        : []),
+      ...(decisionsUsed >= maxDecisions
+        ? [`已达到主体决策预算（${maxDecisions}），推演已暂停并保存检查点。`]
+        : []),
+      ...(run.scenario.intelligence.mode === "assisted" &&
+      nextModelCallCount >= modelCallLimit
+        ? [`已达到模型调用预算（${modelCallLimit}），推演已暂停并保存检查点。`]
+        : []),
+    ],
   };
   return {
     ...nextBranch,
@@ -1964,12 +4163,25 @@ export function advanceWorldSimulation(
   options: {
     readonly steps?: number;
     readonly toEnd?: boolean;
+    /**
+     * 本次推进实际向模型场景发出的请求数。它独立于候选是否有效，
+     * 因此解析失败、复核失败或被内核拒绝的请求也会消耗预算。
+     */
+    readonly modelCallsUsed?: number;
+    /** @deprecated 使用 modelCandidates；保留给现有内核调用方。 */
     readonly modelCandidate?: ModelDecisionCandidate;
+    readonly modelCandidates?: readonly ModelDecisionSubmission[];
   } = {},
 ): WorldSimulationRun {
   let branch = getActiveSimulationBranch(run);
   if (branch.status === "cancelled" || branch.status === "completed")
     return run;
+  const externalCandidates =
+    options.modelCandidates ??
+    (options.modelCandidate
+      ? [{ subject: null, candidate: options.modelCandidate }]
+      : []);
+  const modelCallsUsed = options.modelCallsUsed ?? externalCandidates.length;
   const requestedSteps = options.toEnd
     ? run.scenario.maxSteps
     : Math.max(1, options.steps ?? 1);
@@ -1977,7 +4189,8 @@ export function advanceWorldSimulation(
     branch = advanceSingleStep(
       run,
       { ...branch, status: "running" },
-      index === 0 ? options.modelCandidate : undefined,
+      index === 0 ? externalCandidates : [],
+      index === 0 ? modelCallsUsed : 0,
     );
     if (branch.status === "completed") break;
   }
@@ -2007,12 +4220,15 @@ export function forkSimulationBranch(
   run: WorldSimulationRun,
   eventId: string,
   name = "假设分支",
+  guardrails: readonly string[] = [],
+  authorLeads: readonly string[] = [],
 ): WorldSimulationRun {
   const source = getActiveSimulationBranch(run);
   const eventIndex = source.ledger.findIndex((entry) => entry.id === eventId);
   if (eventIndex < 0) throw new Error("无法从不存在的事件创建分支");
+  assertBranchBudget(run);
   const ledger = source.ledger.slice(0, eventIndex + 1);
-  const state = replaySimulationLedger(run.baseline, ledger);
+  const state = replaySimulationLedger(run.baseline, run.scenario, ledger);
   const id = `branch-${Date.now().toString(36)}-${source.id.replace(/^branch-/u, "")}`;
   const branch: SimulationBranch = {
     id,
@@ -2020,6 +4236,14 @@ export function forkSimulationBranch(
     parentBranchId: source.id,
     forkEventId: eventId,
     narrativePolicy: source.narrativePolicy,
+    guardrails: [
+      ...(source.guardrails ?? []),
+      ...guardrails.map((item) => item.trim()).filter(Boolean),
+    ],
+    authorLeads: [
+      ...(source.authorLeads ?? []),
+      ...authorLeads.map((item) => item.trim()).filter(Boolean),
+    ],
     seed: `${source.seed}:${eventId}`,
     status: "paused",
     state,
@@ -2048,6 +4272,45 @@ export function forkSimulationBranch(
   };
 }
 
+/**
+ * 从当前事件建立一个带作者软护栏的候选分支。
+ * 护栏只写入新分支的运行快照，原分支和已完成轮次保持不变。
+ */
+export function forkSimulationBranchWithGuardrail(
+  run: WorldSimulationRun,
+  eventId: string,
+  guardrail: string,
+): WorldSimulationRun {
+  const value = guardrail.trim();
+  if (!value) throw new Error("护栏内容不能为空");
+  return forkSimulationBranch(
+    run,
+    eventId,
+    `护栏分支 · ${value.slice(0, 18)}`,
+    [value],
+  );
+}
+
+/**
+ * 作者线索是未来可能性，不是已发生事实。它只进入新分支的候选层输入，
+ * 不能自动写成事件、人物知识或规则命中。
+ */
+export function forkSimulationBranchWithLead(
+  run: WorldSimulationRun,
+  eventId: string,
+  lead: string,
+): WorldSimulationRun {
+  const value = lead.trim();
+  if (!value) throw new Error("线索内容不能为空");
+  return forkSimulationBranch(
+    run,
+    eventId,
+    `线索分支 · ${value.slice(0, 18)}`,
+    [],
+    [value],
+  );
+}
+
 export function switchSimulationBranch(
   run: WorldSimulationRun,
   branchId: string,
@@ -2059,6 +4322,13 @@ export function switchSimulationBranch(
     activeBranchId: branchId,
     updatedAt: new Date().toISOString(),
   };
+}
+
+function assertBranchBudget(run: WorldSimulationRun): void {
+  const maxBranches = run.scenario.maxBranches ?? 8;
+  if (run.branches.length >= maxBranches) {
+    throw new Error(`已达到分支预算（${maxBranches}），无法创建新的推演分支`);
+  }
 }
 
 export interface SimulationBranchComparison {
@@ -2174,6 +4444,7 @@ export function createNaturalEvolutionComparisonBranch(
       branch.parentBranchId === "branch-main",
   );
   if (existing) return switchSimulationBranch(run, existing.id);
+  assertBranchBudget(run);
   const source =
     run.branches.find((branch) => branch.id === "branch-main") ??
     getActiveSimulationBranch(run);
@@ -2188,6 +4459,7 @@ export function createNaturalEvolutionComparisonBranch(
     parentBranchId: source.id,
     forkEventId: null,
     narrativePolicy: "disabled",
+    guardrails: [],
     seed: source.seed,
     status: "paused",
     state: origin.state,
@@ -2249,21 +4521,28 @@ function validateCouncilOptionCommands(
       .filter((character) => characterIds.has(character.id))
       .map((character) => [
         character.id,
-        new Set(character.knowledge.map((knowledge) => knowledge.id)),
+        new Set(
+          visibleKnowledgeForCharacter(run, branch, character.id).map(
+            (knowledge) => knowledge.id,
+          ),
+        ),
       ]),
   );
   commands.forEach((command) => {
     if (
       command.type === "character.arrive" ||
       command.type === "effect.schedule" ||
-      command.type === "effect.consume"
+      command.type === "effect.consume" ||
+      command.type === "world.emergent"
     ) {
-      throw new Error("会商方案不得直接提交旅行抵达或空间传播排程命令");
+      throw new Error("会商方案不得直接提交旅行、空间传播或新生主体内部命令");
     }
     if (
       (command.type === "character.intent" ||
         command.type === "character.move" ||
         command.type === "character.cultivate" ||
+        command.type === "character.resource" ||
+        command.type === "character.relation" ||
         command.type === "character.life" ||
         command.type === "character.knowledge") &&
       !characterIds.has(command.characterId)
@@ -2277,11 +4556,24 @@ function validateCouncilOptionCommands(
       throw new Error("会商方案试图使用人物未知知识");
     }
     if (
+      command.type === "character.relation" &&
+      !characterIds.has(command.targetCharacterId)
+    ) {
+      throw new Error("会商方案试图操作非参与人物关系目标");
+    }
+    if (
       (command.type === "faction.strategy" ||
-        command.type === "faction.metric") &&
+        command.type === "faction.metric" ||
+        command.type === "faction.relation") &&
       !factionIds.has(command.factionId)
     ) {
       throw new Error("会商方案试图操作非参与势力");
+    }
+    if (
+      command.type === "faction.relation" &&
+      !factionIds.has(command.targetFactionId)
+    ) {
+      throw new Error("会商方案试图操作非参与势力关系目标");
     }
     if (
       (command.type === "region.metric" || command.type === "region.control") &&
@@ -2320,6 +4612,13 @@ function validateCouncilOptionCommands(
     }
   });
   applyWorldDomainCommands(branch.state, commands);
+  validateCommandsAgainstWorld(
+    run,
+    branch,
+    commands,
+    branch.state.currentTime.sortKey,
+    "会商方案",
+  );
 }
 
 export function createCouncilSession(
@@ -2339,7 +4638,7 @@ export function createCouncilSession(
         ? [...target.characterIds, ...target.factionIds]
         : [
             ...activeCharacters(run, branch).map((character) => character.id),
-            ...activeFactions(run).map((faction) => faction.id),
+            ...activeFactions(run, branch).map((faction) => faction.id),
           ],
     ),
   ];
@@ -2348,7 +4647,9 @@ export function createCouncilSession(
     .map((character) => ({
       participantType: "character",
       participantId: character.id,
-      knownFactIds: character.knowledge.map((knowledge) => knowledge.id),
+      knownFactIds: visibleKnowledgeForCharacter(run, branch, character.id).map(
+        (knowledge) => knowledge.id,
+      ),
       goal: character.goals[0] ?? character.motivation[0] ?? "保护自身利益",
       position: `基于${character.name}掌握的信息，优先维护“${character.goals[0] ?? "既有目标"}”。`,
       risks: [...character.fears, ...character.weaknesses].slice(0, 3),
@@ -2370,26 +4671,28 @@ export function createCouncilSession(
     }));
   // 会商锚点事件已经包含在 retainedLedger 中。只保留“下一步意图”类命令，
   // 避免重复执行原事件的数值、移动、排程和物品归属变化。
-  const actionCommandSource =
-    target?.commands.some(
-      (command) =>
-        command.type === "character.intent" || command.type === "faction.strategy",
-    )
-      ? target
-      : branch.ledger
-          .slice()
-          .reverse()
-          .find((event) =>
-            event.commands.some(
-              (command) =>
-                command.type === "character.intent" ||
-                command.type === "faction.strategy",
-            ),
-          );
+  const actionCommandSource = target?.commands.some(
+    (command) =>
+      command.type === "character.intent" ||
+      command.type === "faction.strategy",
+  )
+    ? target
+    : branch.ledger
+        .slice()
+        .reverse()
+        .find((event) =>
+          event.commands.some(
+            (command) =>
+              command.type === "character.intent" ||
+              command.type === "faction.strategy",
+          ),
+        );
   const baseCommands: readonly WorldDomainCommand[] = (
     actionCommandSource?.commands ?? []
   ).filter(
-    (command) => command.type === "character.intent" || command.type === "faction.strategy",
+    (command) =>
+      command.type === "character.intent" ||
+      command.type === "faction.strategy",
   );
   const options: CouncilOption[] = [
     {
@@ -2431,7 +4734,11 @@ export function createCouncilSession(
       .filter((character) => participantIds.includes(character.id))
       .map((character) => [
         character.id,
-        new Set(character.knowledge.map((knowledge) => knowledge.id)),
+        new Set(
+          visibleKnowledgeForCharacter(run, branch, character.id).map(
+            (knowledge) => knowledge.id,
+          ),
+        ),
       ]),
   );
   const allowedFactions = new Set(
@@ -2534,6 +4841,7 @@ export function commitCouncilOptionToBranch(
     throw new Error("会商方案没有可提交的状态变化");
   const source = run.branches.find((branch) => branch.id === session.branchId);
   if (!source) throw new Error("会商所属分支不存在");
+  assertBranchBudget(run);
   const targetEventId = session.eventId ?? source.ledger.at(-1)?.id ?? null;
   const retainedLedger = targetEventId
     ? source.ledger.slice(
@@ -2547,7 +4855,7 @@ export function commitCouncilOptionToBranch(
     ? (source.ledger.find((event) => event.id === targetEventId) ?? null)
     : null;
   const state = targetEventId
-    ? replaySimulationLedger(run.baseline, retainedLedger)
+    ? replaySimulationLedger(run.baseline, run.scenario, retainedLedger)
     : (source.checkpoints[0]?.state ?? source.state);
   const id = `branch-council-${Date.now().toString(36)}`;
   const seed = `${source.seed}:council:${session.id}:${option.id}`;
@@ -2557,6 +4865,7 @@ export function commitCouncilOptionToBranch(
     parentBranchId: source.id,
     forkEventId: targetEventId,
     narrativePolicy: source.narrativePolicy,
+    guardrails: source.guardrails ?? [],
     seed,
     status: "paused",
     state,
@@ -2648,32 +4957,146 @@ export function commitCouncilOptionToBranch(
   };
 }
 
-export function buildDecisionPrompt(run: WorldSimulationRun): string {
+export function listSimulationDecisionSubjects(
+  run: WorldSimulationRun,
+): readonly SimulationDecisionSubject[] {
   const branch = getActiveSimulationBranch(run);
-  const character = activeCharacters(run, branch)[0];
-  const faction = activeFactions(run)[0];
+  return [
+    ...activeCharacters(run, branch).map((character) => ({
+      type: "character" as const,
+      id: character.id,
+    })),
+    ...activeFactions(run, branch).map((faction) => ({
+      type: "faction" as const,
+      id: faction.id,
+    })),
+  ].sort(
+    (left, right) =>
+      left.type.localeCompare(right.type) || left.id.localeCompare(right.id),
+  );
+}
+
+function visibleTimelineFactsForSubject(
+  run: WorldSimulationRun,
+  branch: SimulationBranch,
+  subject: SimulationDecisionSubject | null,
+) {
+  if (!subject) return [];
+  const characterIds =
+    subject.type === "character"
+      ? [subject.id]
+      : (run.baseline.factions.find((faction) => faction.id === subject.id)
+          ?.memberCharacterIds ?? []);
+  const knownFactIds = new Set(
+    characterIds.flatMap((characterId) => {
+      const character = run.baseline.characters.find(
+        (candidate) => candidate.id === characterId,
+      );
+      const runtime = branch.state.characters.find(
+        (candidate) => candidate.id === characterId,
+      );
+      if (!character || !runtime) return [];
+      const activeKnowledgeIds = rememberedKnowledgeIds(
+        runtime,
+        branch.state.currentTime.sortKey,
+      );
+      return character.knowledge.flatMap((knowledge) =>
+        activeKnowledgeIds.has(knowledge.id) && knowledge.sourceEventId
+          ? [knowledge.sourceEventId]
+          : [],
+      );
+    }),
+  );
+  return baselineFacts(run.baseline, run.scenario).filter((fact) =>
+    knownFactIds.has(fact.id),
+  );
+}
+
+export function buildDecisionPrompt(
+  run: WorldSimulationRun,
+  requestedSubject?: SimulationDecisionSubject,
+): string {
+  const branch = getActiveSimulationBranch(run);
+  const subjects = listSimulationDecisionSubjects(run);
+  const subject = requestedSubject ?? subjects[0] ?? null;
+  if (
+    requestedSubject &&
+    !subjects.some(
+      (candidate) =>
+        candidate.type === requestedSubject.type &&
+        candidate.id === requestedSubject.id,
+    )
+  ) {
+    throw new Error("模型决策主体当前不可行动");
+  }
+  const character =
+    subject?.type === "character"
+      ? run.baseline.characters.find((item) => item.id === subject.id)
+      : undefined;
+  const faction =
+    subject?.type === "faction"
+      ? run.baseline.factions.find((item) => item.id === subject.id)
+      : undefined;
+  const characterRuntime = character
+    ? branch.state.characters.find((item) => item.id === character.id)
+    : undefined;
+  const factionRuntime = faction
+    ? branch.state.factions.find((item) => item.id === faction.id)
+    : undefined;
+  const visibleTimelineFacts = visibleTimelineFactsForSubject(
+    run,
+    branch,
+    subject,
+  );
+  const visibleTimelineFactIds = new Set(
+    visibleTimelineFacts.map((fact) => fact.id),
+  );
+  const activeChapterFactIds = new Set(
+    activeChapterFacts(run.baseline, run.scenario).map((fact) => fact.id),
+  );
+  const observationFactIds = observedChapterFacts(
+    run.baseline,
+    run.scenario,
+  ).map((fact) => fact.id);
   const chapter = run.scenario.chapterContext.chapterId
     ? run.baseline.chapters.find(
         (item) => item.id === run.scenario.chapterContext.chapterId,
       )
     : undefined;
-  const chapterContext = chapter && run.scenario.chapterContext.mode !== "none"
-    ? {
-        mode: run.scenario.chapterContext.mode,
-        title: chapter.title,
-        // 正文只通过已确认的时间线事件进入决策输入。整段章节文本可能
-        // 包含梦境、传闻或角色误判，不能被模型自行提升为世界事实。
-        confirmedFactIds: run.baseline.timelineFacts
-          .filter((event) => event.chapterIds.includes(chapter.id))
-          .map((event) => event.id),
-      }
-    : null;
+  const chapterContext =
+    chapter && run.scenario.chapterContext.mode !== "none"
+      ? {
+          mode: run.scenario.chapterContext.mode,
+          title: chapter.title,
+          // 正文只通过已应用且逐字证据仍有效的章节事实，或正式时间线事件
+          // 进入决策输入。整段章节文本可能包含梦境、传闻或角色误判，不能
+          // 被模型自行提升为世界事实。
+          confirmedFactIds: baselineFacts(run.baseline, run.scenario)
+            .filter(
+              (event) =>
+                (event.chapterIds.includes(chapter.id) ||
+                  activeChapterFactIds.has(event.id)) &&
+                visibleTimelineFactIds.has(event.id),
+            )
+            .map((event) => event.id),
+          observationFactIds,
+        }
+      : null;
   const usesNarrativePlans =
     run.scenario.narrativeContext.mode !== "off" &&
     (run.scenario.narrativeContext.usePlotLines ||
       run.scenario.narrativeContext.useStoryArcs ||
       run.scenario.narrativeContext.useDirectoryOutline ||
       run.scenario.narrativeContext.useChapterPlans);
+  const visibleCharacterKnowledge = character
+    ? visibleKnowledgeForCharacter(run, branch, character.id)
+    : [];
+  const visibleMemory = characterRuntime
+    ? memoryEntriesForRuntime(
+        characterRuntime,
+        branch.state.currentTime.sortKey,
+      )
+    : [];
   const perspective = character
     ? {
         type: "character",
@@ -2681,12 +5104,21 @@ export function buildDecisionPrompt(run: WorldSimulationRun): string {
         name: character.name,
         goals: character.goals,
         locationId: character.locationId,
-        knowledge: character.knowledge.map((knowledge) => ({
+        knowledge: visibleCharacterKnowledge.map((knowledge) => ({
           id: knowledge.id,
           statement: knowledge.statement,
           authority: knowledge.authority,
         })),
-        resources: character.inventoryItemIds,
+        memory: visibleMemory.map((entry) => ({
+          knowledgeId: entry.knowledgeId,
+          strength: entry.strength,
+          lastRecalledSortKey: entry.lastRecalledSortKey,
+        })),
+        relations: characterRuntime?.relations ?? [],
+        resources: {
+          items: character.inventoryItemIds,
+          balances: characterRuntime?.resourceBalances ?? {},
+        },
       }
     : faction
       ? {
@@ -2695,10 +5127,22 @@ export function buildDecisionPrompt(run: WorldSimulationRun): string {
           name: faction.name,
           goals: faction.goals,
           resources: faction.resources,
-          relations: faction.relations,
+          relations: faction.relations.map((relation) => ({
+            ...relation,
+            runtime:
+              factionRuntime?.relations?.find(
+                (candidate) =>
+                  candidate.targetFactionId === relation.targetFactionId,
+              ) ?? null,
+          })),
+          knownFacts: visibleTimelineFacts.map((fact) => ({
+            id: fact.id,
+            title: fact.title,
+            summary: fact.summary,
+          })),
         }
       : null;
-  return `你是小说世界推演的单一主体智能候选层。当前输入只包含一个主体的视角，绝不能猜测其它人物或势力的私有知识；只能提出一个候选事件，不能直接改写事实。\n\n当前时间：${branch.state.currentTime.displayText}\n作者目标：${run.scenario.objective}\n章节上下文（仅在配置启用时提供）：${JSON.stringify(chapterContext)}\n当前主体：${JSON.stringify(perspective)}\n可见地域：${JSON.stringify(
+  return `你是小说世界推演的单一主体智能候选层。当前输入只包含一个主体的视角，绝不能猜测其它人物或势力的私有知识；只能提出一个候选事件，不能直接改写事实。候选必须关联当前主体；人物只能提交自己的角色命令，势力只能提交自己的势力命令。\n\n当前时间：${branch.state.currentTime.displayText}\n作者目标：${run.scenario.objective}\n作者硬约束（必须逐条遵守，不能把未来计划当作事实）：${JSON.stringify(activeAuthorConstraints(run, branch))}\n作者投递线索（只表示希望未来可能出现的倾向，不是当前事实、人物知识或必然结果；只有满足已有事实和规则时才可采用）：${JSON.stringify(activeAuthorLeads(branch))}\n章节上下文（仅在配置启用时提供）：${JSON.stringify(chapterContext)}\n当前主体：${JSON.stringify(perspective)}\n可见地域：${JSON.stringify(
     run.baseline.regions
       .filter((region) =>
         selectedRegionIds(run.baseline, run.scenario).has(region.id),
@@ -2712,7 +5156,17 @@ export function buildDecisionPrompt(run: WorldSimulationRun): string {
           .map((connection) => nextReachableRegionId(connection, region.id))
           .filter((value): value is string => Boolean(value)),
       })),
-  )}\n已发生事实（只能把这些视为事实）：${JSON.stringify(run.baseline.timelineFacts.slice(-12).map((item) => ({ id: item.id, time: item.time.displayText, title: item.title, summary: item.summary })))}\n作者未来计划（仅在剧情工程启用时作为计划或约束；绝不能当作已发生）：${JSON.stringify(usesNarrativePlans ? run.baseline.timelinePlans.slice(0, 12).map((item) => ({ id: item.id, time: item.time.displayText, title: item.title, summary: item.summary })) : [])}\n硬规则：${JSON.stringify(run.baseline.rules.slice(0, 8).map((rule) => ({ id: rule.id, title: rule.title, description: rule.description })))}\n剧情约束：${JSON.stringify(activeNarrativeConstraints(run, branch).map((constraint) => ({ id: constraint.id, mode: constraint.mode, title: constraint.title, content: constraint.content })))}\n\n只输出 JSON：{"title":string,"summary":string,"kind":"character-action|faction-strategy|conflict|diplomacy|cultivation|lifecycle|propagation|world-process|epoch","characterIds":string[],"factionIds":string[],"regionIds":string[],"itemIds":string[],"commands":WorldDomainCommand[],"confidence":0..1}`;
+  )}\n已发生事实（仅限当前主体已知事实）：${JSON.stringify(visibleTimelineFacts.slice(-12).map((item) => ({ id: item.id, time: item.time.displayText, title: item.title, summary: item.summary })))}\n作者未来计划（仅在剧情工程启用时作为计划或约束；绝不能当作已发生）：${JSON.stringify(usesNarrativePlans ? run.baseline.timelinePlans.slice(0, 12).map((item) => ({ id: item.id, time: item.time.displayText, title: item.title, summary: item.summary })) : [])}\n硬规则：${JSON.stringify(run.baseline.rules.slice(0, 8).map((rule) => ({ id: rule.id, title: rule.title, description: rule.description })))}\n剧情约束：${JSON.stringify(activeNarrativeConstraints(run, branch).map((constraint) => ({ id: constraint.id, mode: constraint.mode, title: constraint.title, content: constraint.content, timeWindow: constraint.timeWindow ?? null, requiredOutcomes: constraint.requiredOutcomes ?? [], forbiddenOutcomes: constraint.forbiddenOutcomes ?? [], flexibility: constraint.flexibility ?? 50 })))}\n\n只输出 JSON：{"title":string,"summary":string,"kind":"character-action|faction-strategy|conflict|diplomacy|cultivation|lifecycle|propagation|world-process|epoch","characterIds":string[],"factionIds":string[],"regionIds":string[],"itemIds":string[],"commands":WorldDomainCommand[],"confidence":0..1,"objective":string,"perceivedFacts":string[],"assumptions":string[],"expectedUtility":0..100,"risks":string[]}`;
+}
+
+export function buildDecisionPrompts(run: WorldSimulationRun): readonly {
+  readonly subject: SimulationDecisionSubject;
+  readonly prompt: string;
+}[] {
+  return listSimulationDecisionSubjects(run).map((subject) => ({
+    subject,
+    prompt: buildDecisionPrompt(run, subject),
+  }));
 }
 
 export function parseModelDecisionCandidate(
@@ -2741,6 +5195,8 @@ export function parseModelDecisionCandidate(
     "world-process",
     "epoch",
   ];
+  const isStringList = (value: unknown): value is readonly string[] =>
+    Array.isArray(value) && value.every((item) => typeof item === "string");
   if (
     typeof candidate.title !== "string" ||
     typeof candidate.summary !== "string" ||
@@ -2750,7 +5206,21 @@ export function parseModelDecisionCandidate(
     !Array.isArray(candidate.regionIds) ||
     !Array.isArray(candidate.itemIds) ||
     !Array.isArray(candidate.commands) ||
-    typeof candidate.confidence !== "number"
+    typeof candidate.confidence !== "number" ||
+    !Number.isFinite(candidate.confidence) ||
+    candidate.confidence < 0 ||
+    candidate.confidence > 1 ||
+    (candidate.objective !== undefined &&
+      typeof candidate.objective !== "string") ||
+    (candidate.perceivedFacts !== undefined &&
+      !isStringList(candidate.perceivedFacts)) ||
+    (candidate.assumptions !== undefined &&
+      !isStringList(candidate.assumptions)) ||
+    (candidate.expectedUtility !== undefined &&
+      (!Number.isFinite(candidate.expectedUtility) ||
+        candidate.expectedUtility < 0 ||
+        candidate.expectedUtility > 100)) ||
+    (candidate.risks !== undefined && !isStringList(candidate.risks))
   ) {
     throw new Error("模型候选缺少必要字段");
   }
@@ -2762,13 +5232,17 @@ export function buildResolutionPrompt(
   candidate: ModelDecisionCandidate,
 ): string {
   const branch = getActiveSimulationBranch(run);
-  return `你是小说世界推演的候选复核层。检查候选是否违反实体存在性、人物知识边界、空间距离、资源成本、寿命、修炼前置、世界硬规则和剧情硬护栏。不得直接写入世界状态；需要修正时返回修正后的同结构候选。\n\n当前时间：${branch.state.currentTime.displayText}\n候选：${JSON.stringify(candidate)}\n硬规则：${JSON.stringify(run.baseline.rules.filter((rule) => rule.severity === "hard").map((rule) => ({ id: rule.id, title: rule.title, description: rule.description })))}\n剧情硬护栏：${JSON.stringify(
+  return `你是小说世界推演的候选复核层。检查候选是否违反实体存在性、人物知识边界、空间距离、资源成本、寿命、修炼前置、世界硬规则和剧情硬护栏。不得直接写入世界状态；需要修正时返回修正后的同结构候选。\n\n当前时间：${branch.state.currentTime.displayText}\n作者硬约束：${JSON.stringify(activeAuthorConstraints(run, branch))}\n作者投递线索（只可作为候选的软倾向，不能补充事实、绕过规则或视为人物已知信息）：${JSON.stringify(activeAuthorLeads(branch))}\n候选：${JSON.stringify(candidate)}\n硬规则：${JSON.stringify(run.baseline.rules.filter((rule) => rule.severity === "hard").map((rule) => ({ id: rule.id, title: rule.title, description: rule.description })))}\n剧情硬护栏：${JSON.stringify(
     activeNarrativeConstraints(run, branch)
       .filter((constraint) => constraint.mode === "strict")
       .map((constraint) => ({
         id: constraint.id,
         title: constraint.title,
         content: constraint.content,
+        timeWindow: constraint.timeWindow ?? null,
+        requiredOutcomes: constraint.requiredOutcomes ?? [],
+        forbiddenOutcomes: constraint.forbiddenOutcomes ?? [],
+        flexibility: constraint.flexibility ?? 50,
       })),
   )}\n当前状态：${JSON.stringify(branch.state)}\n\n只输出与输入相同结构的 JSON 候选；无法成立时把 commands 置空，并在 summary 中说明拒绝原因。`;
 }
@@ -2787,7 +5261,7 @@ export function buildCouncilPrompt(
       ? [...target.characterIds, ...target.factionIds]
       : [
           ...activeCharacters(run, branch).map((character) => character.id),
-          ...activeFactions(run).map((faction) => faction.id),
+          ...activeFactions(run, branch).map((faction) => faction.id),
         ],
   );
   const characters = run.baseline.characters
@@ -2798,11 +5272,13 @@ export function buildCouncilPrompt(
       name: character.name,
       goals: character.goals,
       risks: [...character.fears, ...character.weaknesses],
-      knowledge: character.knowledge.map((knowledge) => ({
-        id: knowledge.id,
-        statement: knowledge.statement,
-        authority: knowledge.authority,
-      })),
+      knowledge: visibleKnowledgeForCharacter(run, branch, character.id).map(
+        (knowledge) => ({
+          id: knowledge.id,
+          statement: knowledge.statement,
+          authority: knowledge.authority,
+        }),
+      ),
       resources: {
         cultivation: character.cultivation,
         items: character.inventoryItemIds,
@@ -2842,7 +5318,7 @@ export function buildCouncilParticipantPrompts(
       ? [...target.characterIds, ...target.factionIds]
       : [
           ...activeCharacters(run, branch).map((character) => character.id),
-          ...activeFactions(run).map((faction) => faction.id),
+          ...activeFactions(run, branch).map((faction) => faction.id),
         ],
   );
   const publicSituation = target
@@ -2872,7 +5348,15 @@ export function buildCouncilParticipantPrompts(
         name: character.name,
         goals: character.goals,
         risks: [...character.fears, ...character.weaknesses],
-        knowledge: character.knowledge,
+        knowledge: visibleKnowledgeForCharacter(run, branch, character.id),
+        memory: memoryEntriesForRuntime(
+          branch.state.characters.find(
+            (runtime) => runtime.id === character.id,
+          ) ?? {
+            knowledgeIds: [],
+          },
+          branch.state.currentTime.sortKey,
+        ),
         resources: {
           cultivation: character.cultivation,
           items: character.inventoryItemIds,
@@ -2895,6 +5379,14 @@ export function buildCouncilParticipantPrompts(
         resources: faction.resources,
         relations: faction.relations,
         state: faction.stateText,
+        knownFacts: visibleTimelineFactsForSubject(run, branch, {
+          type: "faction",
+          id: faction.id,
+        }).map((fact) => ({
+          id: fact.id,
+          title: fact.title,
+          summary: fact.summary,
+        })),
       };
       prompts.push({
         participantType: "faction",
@@ -2992,6 +5484,7 @@ function deterministicReportSections(
   const narrativeEvents = branch.ledger.filter(
     (entry) => entry.narrativeConstraintIds.length > 0,
   );
+  const narrativeEvaluations = evaluateNarrativeConstraints(run, branch);
   const sections: SimulationReportSection[] = [
     {
       id: "report-section-world",
@@ -3112,10 +5605,16 @@ function deterministicReportSections(
         run.scenario.narrativeContext.mode === "off"
           ? "本次运行未使用剧情工程约束。"
           : `${narrativeEvents.length} 个事件受到剧情工程的观察、引导或护栏影响。`,
-      findings: run.baseline.narrativeConstraints.map(
-        (constraint) =>
-          `${constraint.title}：${branch.ledger.filter((entry) => entry.narrativeConstraintIds.includes(constraint.id)).length} 次命中`,
-      ),
+      findings:
+        narrativeEvaluations.length > 0
+          ? narrativeEvaluations.map(
+              (evaluation) =>
+                `${evaluation.constraint.title}：达成度 ${evaluation.score}%；必需结果 ${evaluation.requiredSatisfied}/${evaluation.requiredCount}，禁止结果命中 ${evaluation.forbiddenMatched}/${evaluation.forbiddenCount}`,
+            )
+          : run.baseline.narrativeConstraints.map(
+              (constraint) =>
+                `${constraint.title}：${branch.ledger.filter((entry) => entry.narrativeConstraintIds.includes(constraint.id)).length} 次命中`,
+            ),
       eventIds: narrativeEvents.map((entry) => entry.id),
       entityIds: [
         ...new Set(
@@ -3124,7 +5623,9 @@ function deterministicReportSections(
           ),
         ),
       ],
-      severity: "info",
+      severity: narrativeEvaluations.some((evaluation) => !evaluation.complete)
+        ? "warning"
+        : "info",
     },
     {
       id: "report-section-risk",
@@ -3148,7 +5649,10 @@ function deterministicReportSections(
 
 const TIME_SCALE_LABELS_FOR_REPORT: Readonly<Record<TimeScale, string>> = {
   day: "日",
+  "ten-day": "十日",
   month: "月",
+  quarter: "季度",
+  "three-month": "三月",
   year: "年",
   century: "百年",
   millennium: "千年",
@@ -3161,6 +5665,49 @@ export function buildReportPrompt(run: WorldSimulationRun): string {
   const branch = getActiveSimulationBranch(run);
   const sections = deterministicReportSections(run, branch);
   return `你是小说世界推演报告编辑。基于事件账本、观察层和确定性初稿，生成精炼、可追溯的报告。不得补造账本中不存在的事实；所有 eventIds 和 entityIds 必须来自输入。\n\n运行：${run.name}\n分支：${branch.name}\n确定性初稿：${JSON.stringify(sections)}\n事件账本：${JSON.stringify(branch.ledger)}\n\n只输出 JSON：{"title":string,"summary":string,"sections":[{"kind":"world-overview|multi-scale|actors|factions|regions|causal|narrative|risk","title":string,"summary":string,"findings":string[],"eventIds":string[],"entityIds":string[],"severity":"info|warning|critical"}]}`;
+}
+
+export function buildEpochNarrationPrompt(run: WorldSimulationRun): string {
+  const branch = getActiveSimulationBranch(run);
+  const epochEvents = branch.ledger
+    .filter((entry) => entry.kind === "epoch")
+    .slice(-12);
+  return `你是小说世界推演的纪元叙事编辑。只能根据确定性内核已经记录的纪元事件、聚合状态和观察节点，解释长尺度世界如何变化；不能补造未出现在输入中的人物、地点、文明或法则事实。输出应明确这是统计聚合叙事，不是精确人口或逐日历史。\n\n运行：${run.name}\n分支：${branch.name}\n当前时间：${branch.state.currentTime.displayText}\n纪元状态：${JSON.stringify(branch.state.epoch)}\n纪元事件：${JSON.stringify(epochEvents)}\n观察节点：${JSON.stringify(branch.observations.filter((item) => ["millennium", "ten-thousand-years", "hundred-billion-years", "trillion-years"].includes(item.scale)).slice(-12))}\n\n只输出 JSON：{"title":string,"summary":string,"findings":string[],"eventIds":string[]}`;
+}
+
+export function parseEpochNarrationCandidate(
+  output: string,
+): EpochNarrationCandidate {
+  const fenced = output.match(/```(?:json)?\s*([\s\S]*?)```/iu)?.[1] ?? output;
+  let value: unknown;
+  try {
+    value = JSON.parse(fenced.trim());
+  } catch (cause) {
+    throw new Error(
+      `纪元叙事不是有效 JSON：${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("纪元叙事根节点必须是对象");
+  const candidate = value as Partial<EpochNarrationCandidate>;
+  if (
+    typeof candidate.title !== "string" ||
+    typeof candidate.summary !== "string" ||
+    !Array.isArray(candidate.findings) ||
+    !candidate.findings.every((finding) => typeof finding === "string") ||
+    !Array.isArray(candidate.eventIds) ||
+    !candidate.eventIds.every((eventId) => typeof eventId === "string")
+  ) {
+    throw new Error("纪元叙事缺少必要字段");
+  }
+  return {
+    title: candidate.title.trim(),
+    summary: candidate.summary.trim(),
+    findings: candidate.findings
+      .map((finding) => finding.trim())
+      .filter(Boolean),
+    eventIds: candidate.eventIds,
+  };
 }
 
 export function parseSimulationReportCandidate(
@@ -3215,6 +5762,7 @@ export function createSimulationReport(
   candidate?: SimulationReportCandidate,
   degradedReason: string | null = null,
   now = new Date().toISOString(),
+  epochNarrative?: EpochNarrationCandidate,
 ): WorldSimulationRun {
   const branch = getActiveSimulationBranch(run);
   const knownEventIds = new Set(branch.ledger.map((entry) => entry.id));
@@ -3225,7 +5773,25 @@ export function createSimulationReport(
     ...run.baseline.items.map((item) => item.id),
   ]);
   const fallbackSections = deterministicReportSections(run, branch);
-  const rawSections = candidate?.sections ?? fallbackSections;
+  const narrativeSection: Omit<SimulationReportSection, "id"> | null =
+    epochNarrative
+      ? {
+          kind: "narrative",
+          title: epochNarrative.title,
+          summary: epochNarrative.summary,
+          findings: epochNarrative.findings,
+          eventIds: epochNarrative.eventIds,
+          entityIds: [],
+          severity: "info",
+        }
+      : null;
+  const baseSections = (candidate?.sections ?? fallbackSections).filter(
+    (section) => !narrativeSection || section.kind !== "narrative",
+  );
+  const rawSections = [
+    ...baseSections,
+    ...(narrativeSection ? [narrativeSection] : []),
+  ];
   const sections = rawSections.map((section, index) => ({
     ...section,
     id: `report-section-${String(index + 1).padStart(2, "0")}`,
@@ -3238,10 +5804,11 @@ export function createSimulationReport(
     title: candidate?.title.trim() || `${run.name} · ${branch.name}报告`,
     summary:
       candidate?.summary.trim() ||
+      epochNarrative?.summary ||
       sections.find((section) => section.kind === "world-overview")?.summary ||
       "当前分支报告",
     generatedAt: now,
-    generatedBy: candidate ? "model" : "fallback",
+    generatedBy: candidate || epochNarrative ? "model" : "fallback",
     degradedReason: candidate ? null : degradedReason,
     throughEventSequence: branch.ledger.length,
     sections,

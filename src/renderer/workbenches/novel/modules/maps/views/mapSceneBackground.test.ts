@@ -6,6 +6,7 @@ import {
   drawMapSceneBackground,
   drawMapSceneBackgroundSlice,
 } from "./mapSceneBackground";
+import { isMapBackgroundImageVisible } from "../business/mapBackgrounds";
 
 function createMap(backgroundPreset: "ocean" | "parchment" | "starfield") {
   const map = createEmptyMapDocument({
@@ -134,5 +135,14 @@ describe("地图场景背景", () => {
 
     expect(context.fillRect).toHaveBeenCalledWith(-960, -640, 640, 480);
     expect(context.arc).toHaveBeenCalled();
+  });
+
+  it("隐藏底图只改变显示状态，不改变底图事实", () => {
+    const map = createMap("parchment");
+    map.canvas.backgroundImage = "data:image/svg+xml;base64,reference";
+    expect(isMapBackgroundImageVisible(map.canvas)).toBe(true);
+    map.canvas.backgroundImageVisible = false;
+    expect(isMapBackgroundImageVisible(map.canvas)).toBe(false);
+    expect(map.canvas.backgroundImage).toContain("reference");
   });
 });

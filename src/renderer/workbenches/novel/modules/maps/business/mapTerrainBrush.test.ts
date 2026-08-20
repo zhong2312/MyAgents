@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { mapArtworkBrushDabs, mapTerrainBrushDabs } from "./mapTerrainBrush";
+import {
+  mapArtworkBrushDabs,
+  mapArtworkBrushMaxLateralSpread,
+  mapTerrainBrushDabs,
+} from "./mapTerrainBrush";
 
 describe("mapTerrainBrush", () => {
   const input = {
@@ -108,5 +112,142 @@ describe("mapTerrainBrush", () => {
     expect(
       Math.abs((vertical[0]?.rotation ?? Number.NaN) - Math.PI / 2),
     ).toBeLessThan(0.11);
+  });
+
+  it("按素材类型使用不同的成片散布规则", () => {
+    const base = {
+      id: "profiled-stroke",
+      points: [
+        { x: 100, y: 140 },
+        { x: 420, y: 190 },
+      ],
+      width: 120,
+      spacing: 48,
+      scatter: 1,
+      followPath: false,
+    } as const;
+    const mountain = mapArtworkBrushDabs({
+      ...base,
+      assetId: "mountain-range",
+      followPath: true,
+    });
+    const forest = mapArtworkBrushDabs({ ...base, assetId: "forest" });
+    const wetland = mapArtworkBrushDabs({ ...base, assetId: "wetland" });
+
+    expect(forest.length).toBeGreaterThan(mountain.length);
+    expect(wetland.length).toBeGreaterThan(mountain.length);
+    expect(
+      Math.max(...forest.map((dab) => Math.abs(dab.y - 140))),
+    ).toBeGreaterThan(
+      Math.max(...mountain.map((dab) => Math.abs(dab.y - 140))),
+    );
+    expect(mountain).toEqual(
+      mapArtworkBrushDabs({
+        ...base,
+        assetId: "mountain-range",
+        followPath: true,
+      }),
+    );
+  });
+
+  it("新增笔刷为断崖、沙丘和珊瑚礁保留不同的稳定散布密度", () => {
+    const base = {
+      id: "expanded-brush-stroke",
+      points: [
+        { x: 100, y: 140 },
+        { x: 420, y: 190 },
+      ],
+      width: 120,
+      spacing: 48,
+      scatter: 1,
+    } as const;
+    const cliff = mapArtworkBrushDabs({
+      ...base,
+      assetId: "cliff",
+      followPath: true,
+    });
+    const dunes = mapArtworkBrushDabs({ ...base, assetId: "dunes" });
+    const coral = mapArtworkBrushDabs({ ...base, assetId: "coral-reef" });
+
+    expect(cliff).toEqual(
+      mapArtworkBrushDabs({
+        ...base,
+        assetId: "cliff",
+        followPath: true,
+      }),
+    );
+    expect(dunes.length).toBeGreaterThan(cliff.length);
+    expect(coral.length).toBeGreaterThan(cliff.length);
+    expect(
+      mapArtworkBrushMaxLateralSpread({
+        assetId: "coral-reef",
+        width: 120,
+        scatter: 1,
+      }),
+    ).toBeGreaterThan(
+      mapArtworkBrushMaxLateralSpread({
+        assetId: "cliff",
+        width: 120,
+        scatter: 1,
+      }),
+    );
+  });
+
+  it("生态、海岸与文明笔刷使用各自稳定的散布轮廓", () => {
+    const base = {
+      id: "biome-brush-stroke",
+      points: [
+        { x: 100, y: 140 },
+        { x: 420, y: 190 },
+      ],
+      width: 120,
+      spacing: 48,
+      scatter: 1,
+    } as const;
+    const broadleaf = mapArtworkBrushDabs({
+      ...base,
+      assetId: "broadleaf-grove",
+    });
+    const foam = mapArtworkBrushDabs({
+      ...base,
+      assetId: "sea-foam",
+      followPath: true,
+    });
+    const terraces = mapArtworkBrushDabs({ ...base, assetId: "terraces" });
+
+    expect(broadleaf).toEqual(
+      mapArtworkBrushDabs({ ...base, assetId: "broadleaf-grove" }),
+    );
+    expect(broadleaf.length).toBeGreaterThan(terraces.length);
+    expect(foam.length).toBeLessThan(broadleaf.length);
+    expect(
+      mapArtworkBrushMaxLateralSpread({
+        assetId: "broadleaf-grove",
+        width: 120,
+        scatter: 1,
+      }),
+    ).toBeGreaterThan(
+      mapArtworkBrushMaxLateralSpread({
+        assetId: "sea-foam",
+        width: 120,
+        scatter: 1,
+      }),
+    );
+  });
+
+  it("边界半径使用与实际盖印相同的 profile 散布范围", () => {
+    const mountain = mapArtworkBrushMaxLateralSpread({
+      assetId: "mountain-range",
+      width: 120,
+      scatter: 1,
+    });
+    const wetland = mapArtworkBrushMaxLateralSpread({
+      assetId: "wetland",
+      width: 120,
+      scatter: 1,
+    });
+
+    expect(wetland).toBeGreaterThan(mountain);
+    expect(wetland).toBeCloseTo(120 * (0.42 + 3 * 0.08), 8);
   });
 });

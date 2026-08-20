@@ -1,4 +1,9 @@
-import type { MapDocument, MapScenePoint } from "../entities/mapSchema";
+import {
+  MAP_CANVAS_HEIGHT,
+  MAP_CANVAS_WIDTH,
+  type MapDocument,
+  type MapScenePoint,
+} from "../entities/mapSchema";
 import { getMapBackgroundImageContentPlacement } from "./mapBackgrounds";
 import { getMapArtworkStampAsset } from "./mapArtwork";
 import {
@@ -12,10 +17,15 @@ import {
   smoothMapPath,
 } from "./mapHydrography";
 import { getMapRouteStyle, mapRouteStrokeLayers } from "./mapRoutes";
+import { mapArtworkBrushMaxLateralSpread } from "./mapTerrainBrush";
 
 export const MAP_CANVAS_CONTENT_PADDING = 160;
 const CANVAS_EXTENSION = MAP_CANVAS_CONTENT_PADDING;
 const EDGE_EPSILON = 1;
+const GENERATED_FEATURE_GENERATOR_PATTERN =
+  /^(?:fantasy-map|fantasy-map-tool|red-blob|agent-azgaar|azgaar|azgaar-runtime)$/u;
+const GENERATED_SCENE_LAYER_PATTERN =
+  /^scene-generator-(?:fantasy-map|fantasy-map-tool|red-blob|agent-azgaar|azgaar|azgaar-runtime)$/u;
 
 type MapCanvasContentBounds = {
   left: number;
@@ -55,6 +65,30 @@ export function mapDocumentGainedContent(
   next: MapDocument,
 ): boolean {
   return !mapDocumentHasContent(previous) && mapDocumentHasContent(next);
+}
+
+/** 识别由地图生成工具写入的事实，供提案落盘时复用首次构图契约。 */
+export function mapDocumentHasGeneratedContent(map: MapDocument): boolean {
+  return (
+    map.features.some((feature) =>
+      GENERATED_FEATURE_GENERATOR_PATTERN.test(feature.props.generator ?? ""),
+    ) ||
+    map.scene?.layers.some((layer) =>
+      GENERATED_SCENE_LAYER_PATTERN.test(layer.id),
+    ) === true
+  );
+}
+
+/** 识别所有生成器输出，供打开地图时决定是否按内容自动构图。 */
+export function mapDocumentHasGeneratorOutput(map: MapDocument): boolean {
+  return (
+    map.features.some((feature) =>
+      GENERATED_FEATURE_GENERATOR_PATTERN.test(feature.props.generator ?? ""),
+    ) ||
+    map.scene?.layers.some((layer) =>
+      GENERATED_SCENE_LAYER_PATTERN.test(layer.id),
+    ) === true
+  );
 }
 
 function emptyBounds(): MapCanvasContentBounds {
@@ -182,8 +216,11 @@ function artworkBrushRadius(
   if (!dimensions) return stroke.width / 2;
   const height = (stroke.width * dimensions.height) / dimensions.width;
   const halfDiagonal = Math.hypot(stroke.width, height) / 2;
-  const scatterReach =
-    stroke.width * Math.max(0, Math.min(1, stroke.scatter)) * 0.32;
+  const scatterReach = mapArtworkBrushMaxLateralSpread({
+    assetId: stroke.brushAssetId,
+    width: stroke.width,
+    scatter: stroke.scatter,
+  });
   const longitudinalReach = Math.min(
     stroke.spacing * 0.28,
     stroke.width * 0.16,
@@ -247,14 +284,36 @@ function includeFeatureLabel(
   );
 }
 
-function collectContentBounds(map: MapDocument): MapCanvasContentBounds {
+function collectContentBounds(
+  map: MapDocument,
+  options: { readonly includeBackground?: boolean } = {},
+): MapCanvasContentBounds {
   let bounds = emptyBounds();
   const backgroundWidth = map.canvas.backgroundImageWidth;
   const backgroundHeight = map.canvas.backgroundImageHeight;
-  // 底图也是 MapDocument 的内容。其 placement 一旦生成便是世界事实，
-  // 因而必须与地形、要素一起参与四向扩展，不能在左上扩展后留在旧原点。
+  const hasBackground = Boolean(
+    map.canvas.backgroundImage || map.canvas.backgroundAssetPath,
+  );
+  // Azgaar 的 SVG 是完整渲染矩形，通常比转换后的可编辑几何大很多。
+  // 生成几何已经是 MapDocument 的事实；把整张 SVG 当作边界会让首张地图
+  // 固定在 1600x1000，并保留大量无法编辑的空海域。普通导入底图仍默认
+  // 参与边界，只有生成器输出明确要求按几何包络构图时才跳过它。
+  const includeBackground =
+    options.includeBackground ??
+    (!mapDocumentHasGeneratedContent(map) ||
+      map.canvas.backgroundImagePlacement?.source === "author");
+  // 普通导入底图也是 MapDocument 的内容。其 placement 一旦生成便是世界
+  // 事实，因而必须与地形、要素一起参与四向扩展，不能在左上扩展后留在旧
+  // 原点；生成器底图按上面的几何包络规则处理。
   if (
-    (map.canvas.backgroundImage || map.canvas.backgroundAssetPath) &&
+    includeBackground &&
+    hasBackground &&
+    map.canvas.backgroundImagePlacement
+  ) {
+    bounds = includeRectangle(bounds, map.canvas.backgroundImagePlacement);
+  } else if (
+    includeBackground &&
+    hasBackground &&
     typeof backgroundWidth === "number" &&
     Number.isFinite(backgroundWidth) &&
     typeof backgroundHeight === "number" &&
@@ -322,7 +381,8 @@ function translateMapDocument(
     map.canvas.backgroundImage || map.canvas.backgroundAssetPath,
   );
   const backgroundPlacement =
-    hasBackground &&
+    map.canvas.backgroundImagePlacement ??
+    (hasBackground &&
     typeof backgroundWidth === "number" &&
     Number.isFinite(backgroundWidth) &&
     typeof backgroundHeight === "number" &&
@@ -332,7 +392,13 @@ function translateMapDocument(
           backgroundWidth,
           backgroundHeight,
         )
-      : null;
+      : null);
+  const generatedAutomaticPlacement =
+    !map.canvas.backgroundImagePlacement &&
+    mapDocumentHasGeneratedContent(map) &&
+    backgroundPlacement
+      ? { source: "automatic" as const }
+      : {};
   if (translation.x === 0 && translation.y === 0 && !backgroundPlacement) {
     return map;
   }
@@ -343,6 +409,7 @@ function translateMapDocument(
           ...map.canvas,
           backgroundImagePlacement: {
             ...backgroundPlacement,
+            ...generatedAutomaticPlacement,
             x: backgroundPlacement.x + translation.x,
             y: backgroundPlacement.y + translation.y,
           },
@@ -462,4 +529,139 @@ export function expandMapCanvasToContent(
   extension = CANVAS_EXTENSION,
 ): MapDocument {
   return expandMapCanvasToContentWithTranslation(map, extension).map;
+}
+
+/**
+ * 将空地图首次接收的生成结果收束到实际内容包络。
+ *
+ * 默认画布是作者开始手绘时的工作区，不应成为生成地图的永久空白边界。
+ * 该函数只允许从“无事实”到“首次生成事实”的过渡使用；已有地图一律返回
+ * 原对象，后续编辑仍只走 expandMapCanvasToContent，保证作者手工留白不会
+ * 因为一次生成或删除被重写。普通导入底图仍保留底图矩形作为世界事实；
+ * 生成器的可编辑几何则优先决定首张地图包络，完整 SVG 只作为成图底稿裁切到
+ * 这个包络内，避免固定的渲染矩形制造不可编辑空白。
+ */
+export function fitMapCanvasToContentWhenEmpty(
+  previous: MapDocument,
+  next: MapDocument,
+  extension = CANVAS_EXTENSION,
+): MapDocument {
+  if (mapDocumentHasContent(previous) || !mapDocumentHasContent(next)) {
+    return next;
+  }
+
+  const generatedGeometry = mapDocumentHasGeneratedContent(next);
+  if (
+    !generatedGeometry &&
+    (next.canvas.backgroundImage || next.canvas.backgroundAssetPath)
+  ) {
+    return next;
+  }
+
+  return fitMapCanvasToGeneratedContentBounds(
+    next,
+    generatedGeometry,
+    extension,
+  );
+}
+
+function fitMapCanvasToGeneratedContentBounds(
+  next: MapDocument,
+  generatedGeometry: boolean,
+  extension: number,
+): MapDocument {
+  const bounds = collectContentBounds(next, {
+    // 生成器的完整 SVG 首次构图时仍按可编辑几何收束；一旦作者明确
+    // 写入 placement，底图矩形就成为可编辑的世界事实，必须参与边界。
+    includeBackground:
+      !generatedGeometry ||
+      next.canvas.backgroundImagePlacement?.source === "author",
+  });
+  if (
+    !Number.isFinite(bounds.left) ||
+    !Number.isFinite(bounds.right) ||
+    !Number.isFinite(bounds.top) ||
+    !Number.isFinite(bounds.bottom)
+  ) {
+    return next;
+  }
+
+  // 首次内容本身已经完全位于默认工作区之外时，作者或调用方表达的是
+  // “向那个方向扩展”，而不是把世界坐标重新收进中心。只有和初始画布
+  // 相交的首批内容才需要消除默认 1600 x 1000 空白并按内容构图。
+  const intersectsInitialCanvas =
+    bounds.right >= 0 &&
+    bounds.bottom >= 0 &&
+    bounds.left <= next.canvas.width &&
+    bounds.top <= next.canvas.height;
+  if (!intersectsInitialCanvas) return next;
+
+  const safeExtension = Math.max(32, Math.round(extension));
+  const contentWidth = Math.max(0, bounds.right - bounds.left);
+  const contentHeight = Math.max(0, bounds.bottom - bounds.top);
+  // 初始尺寸只是空白工作区的临时默认值，不能成为有内容地图的隐式边界。
+  // 第一次落图后，MapDocument 的尺寸精确由内容包络与四周留白推导；随后
+  // 只允许 expandMapCanvasToContent 向外生长。这样小型群岛、单个聚落等
+  // 不会被固定在一片巨大的空海域中，也不存在人工设置的最大尺寸。
+  const width = Math.max(1, Math.ceil(contentWidth + safeExtension * 2));
+  const height = Math.max(1, Math.ceil(contentHeight + safeExtension * 2));
+  const leadingMarginX = safeExtension;
+  const leadingMarginY = safeExtension;
+  const translation = {
+    x: Math.ceil(leadingMarginX - bounds.left),
+    y: Math.ceil(leadingMarginY - bounds.top),
+  };
+  const translated = translateMapDocument(next, translation);
+  return {
+    ...translated,
+    canvas: {
+      ...translated.canvas,
+      width,
+      height,
+    },
+  };
+}
+
+/**
+ * 将旧版仍使用默认尺寸的地图迁移到内容包络。
+ *
+ * 空白地图的 1600×1000 只属于新建时的临时交互工作区，并非作者显式定义的
+ * 成图范围。旧版无论是 Agent 生成还是手工落下组件，只要仍保留该默认尺寸，
+ * 打开时都应依据事实内容收束。已经向外扩展过的地图不满足尺寸条件，继续
+ * 遵守只扩展不收缩；普通导入底图仍以其完整矩形作为作者定义的成图范围。
+ */
+export function fitMapCanvasToDefaultContent(
+  map: MapDocument,
+  extension = CANVAS_EXTENSION,
+): MapDocument {
+  if (
+    map.canvas.width !== MAP_CANVAS_WIDTH ||
+    map.canvas.height !== MAP_CANVAS_HEIGHT ||
+    !mapDocumentHasContent(map)
+  ) {
+    return map;
+  }
+  const generatedGeometry = mapDocumentHasGeneratedContent(map);
+  if (
+    !generatedGeometry &&
+    (map.canvas.backgroundImage || map.canvas.backgroundAssetPath)
+  ) {
+    return map;
+  }
+  return fitMapCanvasToGeneratedContentBounds(
+    map,
+    generatedGeometry,
+    extension,
+  );
+}
+
+/**
+ * 兼容旧调用方：历史名称只表达最初的生成器迁移场景，实际契约已经扩展为
+ * 所有仍使用默认空白尺寸的有内容地图。
+ */
+export function fitMapCanvasToGeneratedContent(
+  map: MapDocument,
+  extension = CANVAS_EXTENSION,
+): MapDocument {
+  return fitMapCanvasToDefaultContent(map, extension);
 }

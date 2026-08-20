@@ -35,12 +35,17 @@ describe("NarrativeEngineeringRepository", () => {
       lines: [line("line-main", "主线"), line("line-second", "副线")],
     });
 
-    const index = JSON.parse((await storage.readText("narrative/index.json")).content);
+    const index = JSON.parse(
+      (await storage.readText("narrative/index.json")).content,
+    );
     expect(index).toMatchObject({
       storageVersion: 1,
       lines: [
         { id: "line-main", path: narrativeRecordPath("lines", "line-main") },
-        { id: "line-second", path: narrativeRecordPath("lines", "line-second") },
+        {
+          id: "line-second",
+          path: narrativeRecordPath("lines", "line-second"),
+        },
       ],
     });
     expect(index.lines[0]).not.toHaveProperty("content");
@@ -107,5 +112,42 @@ describe("NarrativeEngineeringRepository", () => {
     await repository.save(current, { ...current.library, lines: [] });
 
     await expect(storage.readText(path)).rejects.toThrow("File not found");
+  });
+
+  it("往返持久化结构化世界推演约束", async () => {
+    const storage = new NovelMemoryStorage({});
+    const repository = createNarrativeEngineeringRepository(storage);
+    const initialized = await repository.load();
+    const saved = await repository.save(initialized, {
+      ...initialized.library,
+      lines: [
+        {
+          ...line("line-main", "主线"),
+          simulationConstraint: {
+            timeWindow: { startSortKey: "0", endSortKey: "360" },
+            requiredActorIds: ["hero-1"],
+            requiredRegionIds: ["region-1"],
+            requiredOutcomes: [
+              {
+                id: "arrival",
+                kind: "command",
+                commandType: "character.arrive",
+                entityType: "character",
+                entityId: "hero-1",
+                field: "toRegionId",
+                operator: "equals",
+                value: "region-1",
+              },
+            ],
+            forbiddenOutcomes: [],
+            flexibility: 15,
+          },
+        },
+      ],
+    });
+    const reloaded = await repository.load();
+    expect(reloaded.library.lines[0]?.simulationConstraint).toEqual(
+      saved.library.lines[0]?.simulationConstraint,
+    );
   });
 });

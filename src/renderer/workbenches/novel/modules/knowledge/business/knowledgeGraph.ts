@@ -1,5 +1,9 @@
 import type { WorkbenchStorage } from "@/workbench-sdk";
 
+import {
+  isKnowledgeSourcePath,
+  normalizeKnowledgePath,
+} from "../../../../../../shared/workbenches/novel/knowledgeScope";
 import { TIMELINE_INDEX_PATH } from "../../../../../../shared/workbenches/novel/timelineStorage";
 import { FACTION_INDEX_PATH } from "../../../../../../shared/workbenches/novel/factionStorage";
 import { LOCATION_INDEX_PATH } from "../../../../../../shared/workbenches/novel/locationStorage";
@@ -11,6 +15,10 @@ import {
   loadKnowledgeFiles,
   type KnowledgeCollection,
 } from "../../../../../../shared/workbenches/novel/knowledgeStorage";
+import {
+  buildDomainIndex,
+  type DomainEntityRef,
+} from "../../../shared/business/domainIndex";
 
 export type KnowledgeNodeKind =
   | "entity"
@@ -76,6 +84,19 @@ export interface KnowledgeGraphSnapshot {
   readonly nodes: readonly KnowledgeNode[];
   readonly edges: readonly KnowledgeEdge[];
   readonly documents: readonly KnowledgeDocument[];
+  readonly diagnostics: readonly KnowledgeDiagnostic[];
+}
+
+export type KnowledgeDiagnosticKind =
+  | "invalid-json"
+  | "dangling-reference"
+  | "ambiguous-label"
+  | "source-read";
+
+export interface KnowledgeDiagnostic {
+  readonly kind: KnowledgeDiagnosticKind;
+  readonly message: string;
+  readonly source?: KnowledgeSourceRef;
 }
 
 export interface KnowledgeSearchResult {
@@ -85,13 +106,6 @@ export interface KnowledgeSearchResult {
   readonly matchedBy: readonly ("名称" | "别名" | "内容" | "来源")[];
 }
 
-const INDEXABLE_EXTENSIONS = new Set([".md", ".json"]);
-const IGNORED_PREFIXES = [
-  ".git/",
-  "prompts/",
-  "world/setting-library/proposals/",
-  "knowledge/derived/",
-];
 const TIMELINE_RECORD_PATH_PATTERN =
   /^timeline\/(?:calendars|periods|views|branches|events)\/records\/[a-z0-9][a-z0-9-]*\.json$/u;
 const FACTION_RECORD_PATH_PATTERN =
@@ -100,6 +114,32 @@ const LOCATION_RECORD_PATH_PATTERN =
   /^world\/locations\/records\/[a-z0-9][a-z0-9-]*\.json$/u;
 const KNOWLEDGE_RECORD_PATH_PATTERN =
   /^knowledge\/(entities|relations|facts)\/records\/([a-z0-9][a-z0-9-]*)\.json$/u;
+const DOMAIN_MANIFEST_PATHS = new Set([
+  "characters/index.json",
+  "world/items/index.json",
+  "world/locations/index.json",
+  "world/factions/index.json",
+  "timeline/index.json",
+  "narrative/index.json",
+  "inspiration/index.json",
+  "world/maps/index.json",
+  "world/cultivation/index.json",
+  "manuscript/index.json",
+]);
+
+function domainNodeId(entity: DomainEntityRef): string {
+  const legacyPaths: Readonly<Record<string, string>> = {
+    character: "characters/index.json",
+    item: "world/items/index.json",
+    location: LOCATION_INDEX_PATH,
+    faction: FACTION_INDEX_PATH,
+    event: TIMELINE_INDEX_PATH,
+  };
+  const legacyPath = legacyPaths[entity.kind];
+  return legacyPath
+    ? `entity:${legacyPath}:${entity.id}`
+    : `domain:${entity.kind}:${entity.id}`;
+}
 
 function knowledgeRecordDescriptor(
   path: string,
@@ -115,8 +155,6 @@ function knowledgeRecordDescriptor(
 function normalize(value: string): string {
   return value.trim().toLocaleLowerCase("zh-CN");
 }
-
-const DERIVED_GRAPH_PATH = "knowledge/derived/graph.json";
 
 function knowledgeSourceHash(documents: readonly KnowledgeDocument[]): string {
   let hash = 0x811c9dc5;
@@ -201,11 +239,7 @@ async function listFiles(
       paths.push(...(await listFiles(storage, entry.path)));
       continue;
     }
-    const lower = entry.path.toLocaleLowerCase("en-US");
-    const extension = lower.slice(lower.lastIndexOf("."));
-    if (!INDEXABLE_EXTENSIONS.has(extension)) continue;
-    if (IGNORED_PREFIXES.some((prefix) => lower.startsWith(prefix))) continue;
-    paths.push(entry.path);
+    if (isKnowledgeSourcePath(entry.path)) paths.push(normalizeKnowledgePath(entry.path));
   }
   return paths;
 }
@@ -266,9 +300,12 @@ export async function readKnowledgeDocuments(
 
 export function buildKnowledgeGraph(
   documents: readonly KnowledgeDocument[],
+  domainEntities: readonly DomainEntityRef[] = [],
 ): KnowledgeGraphSnapshot {
   const nodes = new Map<string, KnowledgeNode>();
   const edges = new Map<string, KnowledgeEdge>();
+  const diagnostics: KnowledgeDiagnostic[] = [];
+  const ambiguityKeys = new Set<string>();
   const idByLabel = new Map<string, string>();
   const idAliases = new Map<string, string>();
   const orderedDocuments = [...documents].sort((left, right) => {
@@ -318,7 +355,21 @@ export function buildKnowledgeGraph(
         sourceRefs: Object.freeze(node.sourceRefs),
       }),
     );
-    idByLabel.set(normalize(node.label), node.id);
+    const normalizedLabel = normalize(node.label);
+    const previous = idByLabel.get(normalizedLabel);
+    if (previous && previous !== node.id) {
+      const key = `${normalizedLabel}:${previous}:${node.id}`;
+      if (!ambiguityKeys.has(key)) {
+        ambiguityKeys.add(key);
+        diagnostics.push({
+          kind: "ambiguous-label",
+          message: `标签“${node.label}”对应多个实体`,
+          source: node.sourceRefs[0],
+        });
+      }
+    } else {
+      idByLabel.set(normalizedLabel, node.id);
+    }
     for (const alias of node.aliases) idAliases.set(normalize(alias), node.id);
     return node.id;
   };
@@ -331,8 +382,15 @@ export function buildKnowledgeGraph(
   };
 
   const addEdge = (edge: KnowledgeEdge): void => {
-    if (edge.from === edge.to || !nodes.has(edge.from) || !nodes.has(edge.to))
+    if (edge.from === edge.to) return;
+    if (!nodes.has(edge.from) || !nodes.has(edge.to)) {
+      diagnostics.push({
+        kind: "dangling-reference",
+        message: `关系“${edge.label}”引用了不存在的节点`,
+        source: edge.sourceRefs[0],
+      });
       return;
+    }
     const existing = edges.get(edge.id);
     if (existing) {
       edges.set(
@@ -349,6 +407,21 @@ export function buildKnowledgeGraph(
     }
     edges.set(edge.id, Object.freeze(edge));
   };
+
+  // 领域库已经有各自的 Schema/Repository，这里只消费它们的最小投影，
+  // 避免用通用 JSON 数组猜测实体并产生重复节点。
+  for (const entity of domainEntities) {
+    const nodeId = domainNodeId(entity);
+    addNode({
+      id: nodeId,
+      label: entity.name,
+      kind: "entity",
+      description: entity.summary,
+      aliases: entity.aliases,
+      sourceRefs: [{ path: entity.sourcePath }],
+    });
+    idByLabel.set(normalize(entity.id), nodeId);
+  }
 
   const addHeading = (
     path: string,
@@ -444,11 +517,40 @@ export function buildKnowledgeGraph(
     const parsed = document.path.endsWith(".json")
       ? safeJson(document.content)
       : undefined;
+    if (document.path.endsWith(".json") && parsed === undefined) {
+      diagnostics.push({
+        kind: "invalid-json",
+        message: `无法解析 JSON：${document.path}`,
+        source: { path: document.path },
+      });
+    }
     const root = asRecord(parsed);
     if (!root) continue;
     const isTimelineRecord = TIMELINE_RECORD_PATH_PATTERN.test(document.path);
     const isFactionRecord = FACTION_RECORD_PATH_PATTERN.test(document.path);
     const isLocationRecord = LOCATION_RECORD_PATH_PATTERN.test(document.path);
+
+    // 纯函数构建入口没有 storage/domainIndex 参数时，仍需兼容旧的
+    // characters/index.json 稳定实体契约；从 storage 构建时会由 domainIndex
+    // 提供同一节点并在 addNode 中合并来源引用。
+    if (document.path === "characters/index.json") {
+      for (const [index, item] of asRecords(root.characters).entries()) {
+        const idValue = recordValue(item, ["id"]);
+        const label = recordValue(item, ["name", "title", "label"]) ?? idValue;
+        if (!idValue || !label) continue;
+        const nodeId = addNode({
+          id: `entity:characters/index.json:${idValue}`,
+          label,
+          kind: "entity",
+          description: recordValue(item, ["summary", "description"]) ?? "人物记录",
+          aliases: Array.isArray(item.aliases)
+            ? item.aliases.filter((value): value is string => typeof value === "string")
+            : [],
+          sourceRefs: [{ path: document.path, jsonPointer: pointerFor(index, "characters") }],
+        });
+        idByLabel.set(normalize(idValue), nodeId);
+      }
+    }
 
     if (isTimelineRecord) {
       const idValue = recordValue(root, ["id"]);
@@ -694,7 +796,8 @@ export function buildKnowledgeGraph(
       document.path !== "world/setting-library/settings.json" &&
       document.path !== "world/setting-library/spatial-tree.json" &&
       !document.path.startsWith("world/setting-library/entries/") &&
-      !document.path.startsWith("knowledge/")
+      !document.path.startsWith("knowledge/") &&
+      !DOMAIN_MANIFEST_PATHS.has(document.path)
     ) {
       for (const [key, value] of Object.entries(root)) {
         for (const [index, item] of asRecords(value).entries()) {
@@ -764,19 +867,21 @@ export function buildKnowledgeGraph(
   const stableLinkPattern =
     /\[\[([a-zA-Z]+):([a-zA-Z0-9-]+)(?:\|([^\]]+))?\]\]/gu;
   const legacyLinkPattern = /\[\[([^[\]|:]+)\]\]/gu;
-  const stableKindPaths: Readonly<Record<string, string>> = Object.freeze({
-    character: "characters/index.json",
-    location: "world/locations/index.json",
-    faction: "world/factions/index.json",
-    item: "world/items/index.json",
-    event: "timeline/index.json",
-  });
   const resolveStableTarget = (
     kind: string,
     id: string,
     label: string,
   ): string | undefined => {
-    const kindPath = stableKindPaths[kind];
+    const viaDomain = resolveId(`domain:${kind}:${id}`);
+    if (viaDomain) return viaDomain;
+    const legacyKindPaths: Readonly<Record<string, string>> = {
+      character: "characters/index.json",
+      location: LOCATION_INDEX_PATH,
+      faction: FACTION_INDEX_PATH,
+      item: "world/items/index.json",
+      event: TIMELINE_INDEX_PATH,
+    };
+    const kindPath = legacyKindPaths[kind];
     if (kindPath) {
       const viaPath = resolveId(`entity:${kindPath}:${id}`);
       if (viaPath) return viaPath;
@@ -791,6 +896,105 @@ export function buildKnowledgeGraph(
     }
     return resolveId(label);
   };
+
+  const referenceFields: Readonly<
+    Record<string, { readonly kind: string; readonly label: string }>
+  > = Object.freeze({
+    characterId: { kind: "character", label: "关联人物" },
+    characterIds: { kind: "character", label: "关联人物" },
+    factionId: { kind: "faction", label: "关联势力" },
+    factionIds: { kind: "faction", label: "关联势力" },
+    itemId: { kind: "item", label: "关联物品" },
+    itemIds: { kind: "item", label: "关联物品" },
+    locationId: { kind: "location", label: "关联地点" },
+    locationIds: { kind: "location", label: "关联地点" },
+    eventId: { kind: "event", label: "关联事件" },
+    eventIds: { kind: "event", label: "关联事件" },
+    causeEventIds: { kind: "event", label: "前因事件" },
+    chapterId: { kind: "chapter", label: "关联章节" },
+    chapterIds: { kind: "chapter", label: "关联章节" },
+    narrativeChapterId: { kind: "narrativeChapter", label: "关联剧情章节" },
+    narrativeDirectoryId: { kind: "narrativeDirectory", label: "关联剧情目录" },
+    protagonistCharacterId: { kind: "character", label: "主角" },
+    povCharacterId: { kind: "character", label: "场景视角" },
+    worldNodeId: { kind: "space", label: "所属空间" },
+    lineId: { kind: "plotLine", label: "关联剧情线" },
+    arcId: { kind: "storyArc", label: "关联故事弧" },
+  });
+
+  const pointerSegment = (value: string): string =>
+    value.replaceAll("~", "~0").replaceAll("/", "~1");
+
+  const addStructuredReferences = (
+    document: KnowledgeDocument,
+    value: unknown,
+    ownerId: string | undefined,
+    pointer: string,
+  ): void => {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) =>
+        addStructuredReferences(document, item, ownerId, `${pointer}/${index}`),
+      );
+      return;
+    }
+    const record = asRecord(value);
+    if (!record) return;
+    const recordId = recordValue(record, ["id", "key"]);
+    const nextOwner = recordId ? resolveId(recordId) ?? ownerId : ownerId;
+    for (const [key, child] of Object.entries(record)) {
+      const field = referenceFields[key];
+      if (field) {
+        const values = Array.isArray(child) ? child : [child];
+        values.forEach((candidate, index) => {
+          if (typeof candidate !== "string" || !candidate.trim()) return;
+          const source = {
+            path: document.path,
+            jsonPointer: `${pointer}/${pointerSegment(key)}${
+              Array.isArray(child) ? `/${index}` : ""
+            }`,
+          };
+          const target = resolveStableTarget(
+            field.kind,
+            candidate.trim(),
+            candidate.trim(),
+          );
+          if (!target) {
+            diagnostics.push({
+              kind: "dangling-reference",
+              message: `${document.path} 的 ${key} 引用了不存在的 ID：${candidate}`,
+              source,
+            });
+            return;
+          }
+          if (!nextOwner) return;
+          addEdge({
+            id: `structured:${document.path}:${nextOwner}:${key}:${target}`,
+            from: nextOwner,
+            to: target,
+            label: field.label,
+            kind: "relation",
+            sourceRefs: [source],
+          });
+        });
+      }
+      if (child && typeof child === "object") {
+        addStructuredReferences(
+          document,
+          child,
+          nextOwner,
+          `${pointer}/${pointerSegment(key)}`,
+        );
+      }
+    }
+  };
+
+  // 第二遍解析结构化引用，确保跨域关系不受文件排序影响。
+  for (const document of orderedDocuments) {
+    if (document.path.endsWith(".json")) {
+      addStructuredReferences(document, safeJson(document.content), undefined, "");
+    }
+  }
+
   for (const document of orderedDocuments) {
     if (!document.path.endsWith(".md")) continue;
     const headingLines = [...nodes.values()]
@@ -877,48 +1081,30 @@ export function buildKnowledgeGraph(
     nodes: Object.freeze([...nodes.values()]),
     edges: Object.freeze([...edges.values()]),
     documents: Object.freeze([...documents]),
+    diagnostics: Object.freeze(diagnostics),
   });
 }
+
+const memorySnapshots = new WeakMap<
+  WorkbenchStorage,
+  { readonly sourceHash: string; readonly snapshot: KnowledgeGraphSnapshot }
+>();
 
 export async function buildKnowledgeGraphFromStorage(
   storage: WorkbenchStorage,
 ): Promise<KnowledgeGraphSnapshot> {
   const documents = await readKnowledgeDocuments(storage);
   const sourceHash = knowledgeSourceHash(documents);
-  try {
-    const cached = JSON.parse(
-      (await storage.readText(DERIVED_GRAPH_PATH)).content,
-    ) as { readonly sourceHash?: unknown; readonly snapshot?: unknown };
-    if (
-      cached.sourceHash === sourceHash &&
-      cached.snapshot &&
-      typeof cached.snapshot === "object"
-    ) {
-      const snapshot = cached.snapshot as KnowledgeGraphSnapshot;
-      if (
-        Array.isArray(snapshot.nodes) &&
-        Array.isArray(snapshot.edges) &&
-        Array.isArray(snapshot.documents)
-      ) {
-        return Object.freeze({ ...snapshot, sourceHash });
-      }
-    }
-  } catch {
-    // 缓存不存在、损坏或版本不兼容时重建派生图谱；事实源不受影响。
+  const cached = memorySnapshots.get(storage);
+  if (cached?.sourceHash === sourceHash) {
+    return cached.snapshot;
   }
 
-  const snapshot = buildKnowledgeGraph(documents);
-  try {
-    await storage.createDirectory("knowledge").catch(() => undefined);
-    await storage.createDirectory("knowledge/derived").catch(() => undefined);
-    const content = `${JSON.stringify({ schemaVersion: 1, sourceHash, snapshot }, null, 2)}\n`;
-    const [info] = await storage.stat([DERIVED_GRAPH_PATH]);
-    if (info?.exists) await storage.writeText(DERIVED_GRAPH_PATH, content);
-    else await storage.createText(DERIVED_GRAPH_PATH, content);
-  } catch {
-    // 派生缓存写入失败不应阻断当前检索；下一次读取会重新构建。
-  }
-  return Object.freeze({ ...snapshot, sourceHash });
+  const domainIndex = await buildDomainIndex(storage).catch(() => null);
+  const snapshot = buildKnowledgeGraph(documents, domainIndex?.entities ?? []);
+  const result = Object.freeze({ ...snapshot, sourceHash });
+  memorySnapshots.set(storage, { sourceHash, snapshot: result });
+  return result;
 }
 
 function scoreNode(

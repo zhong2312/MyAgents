@@ -28,6 +28,13 @@ export const mapProjectionTypeSchema = z.enum([
 
 export type MapProjectionType = z.infer<typeof mapProjectionTypeSchema>;
 
+/**
+ * 拓扑路线以稳定节点 id 建立关系；控制点只是由端点实时派生的绘制缓存。
+ * 将键名放在 MapDocument 契约层，避免画布、编辑器和校验器各自约定字符串。
+ */
+export const MAP_TOPOLOGY_SOURCE_NODE_PROP = "sourceNodeId";
+export const MAP_TOPOLOGY_TARGET_NODE_PROP = "targetNodeId";
+
 export const MAP_PROJECTION_LABELS: Readonly<
   Record<MapProjectionType, string>
 > = Object.freeze({
@@ -53,12 +60,24 @@ export const mapFeatureKindSchema = z.enum([
   "marker",
   "label",
   "area",
+  /**
+   * 历史地图兼容值。新建闭合区域一律写入 `area`，不能再把两种几何语义
+   * 暴露为两个编辑工具。
+   */
   "polygon",
   "route",
   "node",
 ]);
 
 export type MapFeatureKind = z.infer<typeof mapFeatureKindSchema>;
+
+/**
+ * `polygon` 是早期闭合区域的存储值。读取旧地图时仍按自由圈定区域处理，
+ * 但所有新的写入路径必须使用 `area`。
+ */
+export function isMapFeatureFreeformArea(kind: MapFeatureKind): boolean {
+  return kind === "area" || kind === "polygon";
+}
 
 export const mapFeatureSchema = z
   .object({
@@ -106,11 +125,11 @@ export const mapFeatureSchema = z
         message: "路线至少需要两个坐标点",
       });
     }
-    if (feature.kind === "polygon" && pointCount < 3) {
+    if (isMapFeatureFreeformArea(feature.kind) && pointCount < 3) {
       context.addIssue({
         code: "custom",
         path: ["points"],
-        message: "多边形至少需要三个坐标点",
+        message: "自由圈定区域至少需要三个坐标点",
       });
     }
   });
@@ -300,23 +319,63 @@ export const mapScenePointSchema = z.object({
 
 export type MapScenePoint = z.infer<typeof mapScenePointSchema>;
 
-/** 陆地表面可混合材质；它只改变成图外观，不改变海陆形状。 */
+/** 海陆表面可混合材质；它只改变成图外观，不改变海陆形状。 */
 export const mapTerrainMaterialSchema = z.enum([
   "grassland",
   "forest",
   "desert",
+  "beach",
+  "gravel-beach",
+  "salt-flat",
   "badlands",
   "tundra",
   "snow",
+  "snow-cover",
   "swamp",
   "volcanic",
+  "volcanic-ash",
+  "lava",
+  "karst",
+  "shallow-sea",
+  "deep-sea",
 ]);
 
 export type MapTerrainMaterial = z.infer<typeof mapTerrainMaterialSchema>;
 
+export const mapTerrainMaterialSurfaceSchema = z.enum(["land", "water"]);
+export type MapTerrainMaterialSurface = z.infer<
+  typeof mapTerrainMaterialSurfaceSchema
+>;
+
+const WATER_TERRAIN_MATERIALS = new Set<MapTerrainMaterial>([
+  "shallow-sea",
+  "deep-sea",
+]);
+
+export function mapTerrainMaterialSurface(
+  material: MapTerrainMaterial,
+): MapTerrainMaterialSurface {
+  return WATER_TERRAIN_MATERIALS.has(material) ? "water" : "land";
+}
+
+export function mapTerrainMaterialSupportsLayer(
+  material: MapTerrainMaterial,
+  layerKind: MapSceneLayerKind,
+): boolean {
+  return (
+    (mapTerrainMaterialSurface(material) === "land" &&
+      layerKind === "terrain") ||
+    (mapTerrainMaterialSurface(material) === "water" && layerKind === "water")
+  );
+}
+
 /** 地形笔触的轮廓；形状是可重建的矢量渲染参数，不保存像素。 */
 export const mapTerrainBrushShapeSchema = z.enum(["round", "organic"]);
 export type MapTerrainBrushShape = z.infer<typeof mapTerrainBrushShapeSchema>;
+
+/** 笔触中心线的几何模式；旧地图缺失时按直线兼容读取。 */
+export const mapBrushPointCurveSchema = z.enum(["line", "arc"]);
+export type MapBrushPointCurve = z.infer<typeof mapBrushPointCurveSchema>;
 
 export const mapSceneStrokeSchema = z
   .object({
@@ -329,6 +388,8 @@ export const mapSceneStrokeSchema = z
     terrainMaterial: mapTerrainMaterialSchema.nullable().default(null),
     /** `organic` 由稳定笔触 id 派生不规则海岸，不保存栅格。 */
     shape: mapTerrainBrushShapeSchema.default("round"),
+    /** 交互和导出都必须尊重同一条中心线几何。 */
+    curve: mapBrushPointCurveSchema.optional(),
     points: z.array(mapScenePointSchema).min(1).max(8192),
     color: z.string().trim().min(1).max(32),
     width: z.number().finite().positive().max(8192),
@@ -347,6 +408,9 @@ export type MapSceneRegionKind = z.infer<typeof mapSceneRegionKindSchema>;
 export const mapSceneRegionTextureSchema = z.enum([
   "paper-land",
   "water-ripple",
+  "territory-hatch",
+  "administrative-grid",
+  "stellar-domain",
 ]);
 export type MapSceneRegionTexture = z.infer<typeof mapSceneRegionTextureSchema>;
 
@@ -361,10 +425,27 @@ export const mapSceneRegionSchema = z
     opacity: z.number().finite().min(0).max(1),
     edgeColor: z.string().trim().min(1).max(32),
     edgeWidth: z.number().finite().positive().max(256),
+    /** 区域闭合轮廓的控制点模式；旧地图缺失时沿用历史平滑弧线。 */
+    curve: mapBrushPointCurveSchema.optional(),
+    /** 闭合画笔确认后的区域材质；为空时沿用区域自身填充与纹理。 */
+    terrainMaterial: mapTerrainMaterialSchema.nullable().optional(),
   })
   .strict();
 
 export type MapSceneRegion = z.infer<typeof mapSceneRegionSchema>;
+
+/**
+ * 区域是海陆遮罩的唯一矢量事实，只能存在于地形或水系底层。陆地必须归属
+ * 地形层；水域还可归属水系层，以保留独立水域图层的编辑语义。
+ */
+export function mapSceneLayerSupportsRegion(
+  layerKind: MapSceneLayerKind,
+  regionKind: MapSceneRegionKind,
+): boolean {
+  return (
+    layerKind === "terrain" || (layerKind === "water" && regionKind === "water")
+  );
+}
 
 /**
  * 地形合成器的视觉参数。它们描述“如何渲染”矢量海陆事实，
@@ -448,6 +529,29 @@ export const mapSceneSchema = z
             message: "地形区域必须引用所属场景图层",
           });
         }
+        if (!mapSceneLayerSupportsRegion(layer.kind, region.kind)) {
+          context.addIssue({
+            code: "custom",
+            path: ["layers", layerIndex, "regions", regionIndex],
+            message: "海陆区域只能写入地形层或水系层",
+          });
+        }
+        if (
+          region.terrainMaterial &&
+          mapTerrainMaterialSurface(region.terrainMaterial) !== region.kind
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: [
+              "layers",
+              layerIndex,
+              "regions",
+              regionIndex,
+              "terrainMaterial",
+            ],
+            message: "区域附加材质必须与区域的海陆表面一致",
+          });
+        }
       });
       layer.strokes.forEach((stroke, strokeIndex) => {
         if (strokeIds.has(stroke.id)) {
@@ -467,14 +571,14 @@ export const mapSceneSchema = z
         }
         if (
           stroke.terrainMaterial !== null &&
-          (layer.kind !== "terrain" ||
-            stroke.tool !== "paint" ||
-            stroke.brushAssetId !== null)
+          (stroke.tool !== "paint" ||
+            stroke.brushAssetId !== null ||
+            !mapTerrainMaterialSupportsLayer(stroke.terrainMaterial, layer.kind))
         ) {
           context.addIssue({
             code: "custom",
             path: ["layers", layerIndex, "strokes", strokeIndex],
-            message: "地貌材质笔触只能使用地形层的纯色绘制笔触",
+            message: "地貌材质笔触必须写入与材质表面匹配的地形或水系层",
           });
         }
       });
@@ -482,6 +586,33 @@ export const mapSceneSchema = z
   });
 
 export type MapScene = z.infer<typeof mapSceneSchema>;
+
+/**
+ * 地图组合只保存既有可选对象的稳定 id。陆地、材质笔触、素材和普通要素
+ * 仍然各自保有独立的几何与样式事实，组合只声明它们需要一起变换。
+ */
+export const mapObjectGroupSchema = z
+  .object({
+    id: idSchema,
+    name: z.string().trim().min(1).max(160),
+    itemIds: z.array(idSchema).min(2).max(512),
+  })
+  .strict()
+  .superRefine((group, context) => {
+    const itemIds = new Set<string>();
+    group.itemIds.forEach((itemId, index) => {
+      if (itemIds.has(itemId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["itemIds", index],
+          message: "组合成员不得重复",
+        });
+      }
+      itemIds.add(itemId);
+    });
+  });
+
+export type MapObjectGroup = z.infer<typeof mapObjectGroupSchema>;
 
 export function createEmptyMapScene(): MapScene {
   const layers: readonly [
@@ -594,6 +725,8 @@ export const mapDocumentSchema = z
           )
           .nullable()
           .optional(),
+        /** 底图是可隐藏的参考层；隐藏不删除底图事实，也不改变自动边界。 */
+        backgroundImageVisible: z.boolean().optional(),
         /**
          * 导入底图在地图世界坐标中的实际覆盖区域。缺失时兼容旧地图的
          * "按当前画布 contain" 规则；一旦地图因内容自动延展，边界计算会
@@ -605,6 +738,11 @@ export const mapDocumentSchema = z
             y: z.number().finite(),
             width: z.number().finite().positive(),
             height: z.number().finite().positive(),
+            /**
+             * 自动生成的 SVG 底图需要随内容重定位以保持对齐，但初始完整
+             * 渲染矩形不应重新主导画布尺寸；作者编辑变换后才参与边界。
+             */
+            source: z.enum(["automatic", "author"]).optional(),
           })
           .strict()
           .optional(),
@@ -621,6 +759,7 @@ export const mapDocumentSchema = z
         backgroundPreset: "parchment",
         backgroundImage: null,
         backgroundAssetPath: null,
+        backgroundImageVisible: true,
         backgroundOpacity: 1,
         showGrid: true,
       }),
@@ -630,6 +769,11 @@ export const mapDocumentSchema = z
     artwork: mapArtworkSchema.default(createEmptyMapArtwork()),
     /** 独立绘图场景；旧地图缺失时由渲染器从 features/artwork 兼容投影。 */
     scene: mapSceneSchema.optional(),
+    /**
+     * 组合只用于一起选择和变换，不能替代成员自身的地图事实。旧地图没有
+     * 组合时保持缺省，首次创建组合后才写入该字段。
+     */
+    groups: z.array(mapObjectGroupSchema).optional(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -674,7 +818,94 @@ export const mapDocumentSchema = z
           message: "时间区间无效（结束早于开始）",
         });
       }
+      if (
+        feature.kind === "node" &&
+        feature.props.linkedMapId === map.id
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["features", index, "props", "linkedMapId"],
+          message: "拓扑节点不能关联当前地图本身",
+        });
+      }
     });
+
+    if (
+      map.projectionType === "multiverse" ||
+      map.projectionType === "parallel"
+    ) {
+      const topologyNodeIds = new Set(
+        map.features
+          .filter((feature) => feature.kind === "node")
+          .map((feature) => feature.id),
+      );
+      map.features.forEach((feature, index) => {
+        if (feature.kind !== "route") return;
+        const sourceId = feature.props[MAP_TOPOLOGY_SOURCE_NODE_PROP];
+        const targetId = feature.props[MAP_TOPOLOGY_TARGET_NODE_PROP];
+        if (!sourceId || !topologyNodeIds.has(sourceId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["features", index, "props", MAP_TOPOLOGY_SOURCE_NODE_PROP],
+            message: "拓扑路线必须引用存在的来源节点",
+          });
+        }
+        if (!targetId || !topologyNodeIds.has(targetId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["features", index, "props", MAP_TOPOLOGY_TARGET_NODE_PROP],
+            message: "拓扑路线必须引用存在的目标节点",
+          });
+        }
+        if (sourceId && targetId && sourceId === targetId) {
+          context.addIssue({
+            code: "custom",
+            path: ["features", index, "props"],
+            message: "拓扑路线不能连接节点自身",
+          });
+        }
+      });
+    }
+    const selectableItemIds = new Set<string>([
+      ...map.features.map((feature) => feature.id),
+      ...map.artwork.layers.flatMap((layer) =>
+        layer.stamps.map((stamp) => stamp.id),
+      ),
+      ...(map.scene?.layers.flatMap((layer) => [
+        ...layer.strokes.map((stroke) => stroke.id),
+        ...layer.regions.map((region) => region.id),
+      ]) ?? []),
+    ]);
+    const groupIds = new Set<string>();
+    const groupedItemIds = new Set<string>();
+    (map.groups ?? []).forEach((group, groupIndex) => {
+      if (groupIds.has(group.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["groups", groupIndex, "id"],
+          message: "地图组合 id 不得重复",
+        });
+      }
+      groupIds.add(group.id);
+      group.itemIds.forEach((itemId, itemIndex) => {
+        if (!selectableItemIds.has(itemId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["groups", groupIndex, "itemIds", itemIndex],
+            message: "组合成员必须引用存在的可选地图对象",
+          });
+        }
+        if (groupedItemIds.has(itemId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["groups", groupIndex, "itemIds", itemIndex],
+            message: "一个地图对象只能属于一个组合",
+          });
+        }
+        groupedItemIds.add(itemId);
+      });
+    });
+
     const artworkPathPrefix = `world/maps/assets/${map.id}/artwork/`;
     map.artwork.assets.forEach((asset, index) => {
       if (!asset.path.startsWith(artworkPathPrefix)) {
@@ -819,12 +1050,14 @@ export function createEmptyMapDocument(input: {
       backgroundPreset: "parchment",
       backgroundImage: null,
       backgroundAssetPath: null,
+      backgroundImageVisible: true,
       backgroundOpacity: 1,
       showGrid: true,
     },
     features: [],
     artwork: createEmptyMapArtwork(),
     scene: createEmptyMapScene(),
+    groups: [],
     createdAt: input.createdAt,
     updatedAt: input.createdAt,
   };

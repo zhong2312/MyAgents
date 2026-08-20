@@ -14,7 +14,8 @@ import {
   type LoadedMapProposal,
 } from "../data-access/mapProposalRepository";
 import type { MapProposalOperation } from "../entities/mapProposalSchema";
-import { MAP_PROJECTION_LABELS } from "../entities/mapSchema";
+import { MAP_PROJECTION_LABELS, type MapDocument } from "../entities/mapSchema";
+import MapProposalPreview from "./MapProposalPreview";
 
 interface MapProposalReviewProps {
   readonly storage: WorkbenchStorage;
@@ -38,6 +39,7 @@ function OperationCard({
   onReject,
   acting,
   selected,
+  sideBySide,
 }: {
   readonly operation: MapProposalOperation;
   readonly onToggle: () => void;
@@ -45,12 +47,12 @@ function OperationCard({
   readonly onReject: () => void;
   readonly acting: boolean;
   readonly selected: boolean;
+  readonly sideBySide: boolean;
 }) {
-  const value = operation.value as {
-    readonly name?: unknown;
-    readonly projectionType?: unknown;
-    readonly features?: unknown;
-  };
+  // Repository 在读取 v2 清单时已经以 mapDocumentSchema 解析候选文件；
+  // Operation 的通用提案类型仍将 value 保持为 Record，因此只在展示边界
+  // 恢复成 MapDocument，不在审阅界面另行修补或写回候选事实。
+  const map = operation.value as unknown as MapDocument;
   return (
     <article
       className={`rounded-lg border p-4 transition-colors ${
@@ -73,7 +75,7 @@ function OperationCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <strong className="truncate text-sm">
-              {typeof value.name === "string" ? value.name : "（未命名地图）"}
+              {map.name || "（未命名地图）"}
             </strong>
             <span className="rounded-full bg-[var(--accent-cool-subtle)] px-2 py-0.5 text-xs text-[var(--accent-cool)]">
               {operation.action === "create" ? "新建" : "更新"}
@@ -82,14 +84,6 @@ function OperationCard({
               {operation.summary}
             </span>
           </div>
-          <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-            {typeof value.projectionType === "string"
-              ? (MAP_PROJECTION_LABELS[
-                  value.projectionType as keyof typeof MAP_PROJECTION_LABELS
-                ] ?? value.projectionType)
-              : ""}{" "}
-            · {Array.isArray(value.features) ? value.features.length : 0} 个要素
-          </p>
         </div>
         {operation.status === "pending" && (
           <div className="flex shrink-0 items-center gap-1">
@@ -119,6 +113,33 @@ function OperationCard({
             已拒绝
           </span>
         )}
+      </div>
+      <div
+        className={`mt-3 gap-3 ${
+          sideBySide
+            ? "grid min-[860px]:grid-cols-[minmax(250px,1.08fr)_minmax(190px,0.92fr)]"
+            : "space-y-3"
+        }`}
+      >
+        <MapProposalPreview map={map} />
+        <div className="min-w-0 text-xs leading-5 text-[var(--ink-muted)]">
+          <p>
+            {MAP_PROJECTION_LABELS[map.projectionType] ?? map.projectionType}
+            {" · "}
+            {map.features.length} 个语义要素
+            {" · "}
+            {map.scene?.layers.reduce(
+              (total, layer) =>
+                total + layer.regions.length + layer.strokes.length,
+              0,
+            ) ?? 0}{" "}
+            个地形成分
+          </p>
+          <p className="mt-1.5">{operation.summary}</p>
+          {map.canvas.backgroundImage || map.canvas.backgroundAssetPath ? (
+            <p className="mt-2 text-[var(--accent-cool)]">含生成底图参考层</p>
+          ) : null}
+        </div>
       </div>
     </article>
   );
@@ -313,6 +334,7 @@ export default function MapProposalReview({
                           operation.candidateId,
                         ),
                       )}
+                      sideBySide={sideBySide}
                       onToggle={() =>
                         setSelected((current) => {
                           const next = new Set(current);

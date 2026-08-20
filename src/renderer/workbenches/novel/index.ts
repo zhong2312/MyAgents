@@ -9,8 +9,8 @@ const novelWorkbenchDefinition = defineWorkbench(
     version: "0.3.0",
     api: {
       major: 1,
-      minMinor: 10,
-      maxMinor: 10,
+      minMinor: 11,
+      maxMinor: 11,
     },
     entry: {
       renderer: "builtin-novel",
@@ -37,28 +37,31 @@ const novelWorkbenchDefinition = defineWorkbench(
       { id: "utilities", label: "辅助", icon: "boxes", order: 50 },
       { id: "knowledge", label: "知识库", parentId: "utilities", order: 10 },
       { id: "research", label: "资料", parentId: "utilities", order: 20 },
-      { id: "simulation", label: "世界推演", icon: "orbit", order: 55 },
-      { id: "simulation-console", label: "运行控制台", parentId: "simulation", order: 10 },
-      { id: "simulation-lab", label: "世界实验室", parentId: "simulation", order: 20 },
-      { id: "simulation-council", label: "立场会商", parentId: "simulation", order: 30 },
+      {
+        id: "simulation",
+        label: "世界推演",
+        icon: "orbit",
+        parentId: "utilities",
+        order: 30,
+      },
 
       { id: "settings", label: "设置", icon: "settings-2", order: 60 },
       { id: "ai-prompts", label: "提示词", parentId: "settings", order: 10 },
       { id: "lore-config", label: "设定模板", parentId: "settings", order: 20 },
-      { id: "model-scenes", label: "模型场景", parentId: "settings", order: 30 },
+      {
+        id: "model-scenes",
+        label: "模型场景",
+        parentId: "settings",
+        order: 30,
+      },
     ],
-    capabilities: [
-      "storage",
-      "agent-session",
-      "agent-dialog",
-    ],
+    capabilities: ["storage", "agent-session", "agent-dialog"],
   },
   () => import("./renderer"),
   {
     shell: {
       defaultNavigationCollapsed: true,
     },
-    loadAgentCompanion: () => import("./ManuscriptAgentCompanion"),
     launcher: {
       createLabel: "新建小说",
       projectTypeLabel: "小说",

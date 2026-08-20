@@ -42,6 +42,8 @@ import NarrativeUnsavedChangesGuard from "../../../NarrativeUnsavedChangesGuard"
 
 type InspirationFilter = "all" | "inbox" | "organizing" | "unused" | "archived";
 
+export const INSPIRATION_DETAIL_DRAWER_MEDIA_QUERY = "(max-width: 1240px)";
+
 interface InspirationWorkbenchProps {
   readonly storage: WorkbenchStorage;
   readonly isActive: boolean;
@@ -83,6 +85,16 @@ const STATE_LABELS: Readonly<Record<InspirationItem["state"], string>> = {
   archived: "已归档",
 };
 
+const SOURCE_LABELS: Readonly<
+  Record<InspirationItem["source"]["kind"], string>
+> = {
+  manual: "随手记录",
+  "myagents-thought": "来自 MyAgents 想法",
+  research: "研究记录",
+  web: "网页摘录",
+  other: "其它来源",
+};
+
 function createId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
@@ -115,22 +127,20 @@ function createInspiration(
     state: "inbox",
     source: {
       kind: sourceKind,
-      label:
-        sourceKind === "myagents-thought"
-          ? "来自 MyAgents 想法"
-          : sourceKind === "research"
-            ? "研究记录"
-            : sourceKind === "web"
-              ? "网页摘录"
-              : sourceKind === "other"
-                ? "其它来源"
-                : "随手记录",
+      label: SOURCE_LABELS[sourceKind],
       uri: "",
     },
     tags: [],
     createdAt: now,
     updatedAt: now,
   };
+}
+
+function matchesSearch(item: InspirationItem, query: string): boolean {
+  if (!query) return true;
+  return `${item.title} ${item.body} ${item.tags.join(" ")} ${item.source.label} ${item.source.uri}`
+    .toLocaleLowerCase("zh-CN")
+    .includes(query);
 }
 
 function CreateInspirationDialog({
@@ -301,12 +311,7 @@ export default function InspirationWorkbench({
   const visibleItems = draft.items
     .filter((item) => {
       if (filter !== "all" && item.state !== filter) return false;
-      return (
-        !normalizedSearch ||
-        `${item.title} ${item.body} ${item.tags.join(" ")}`
-          .toLocaleLowerCase("zh-CN")
-          .includes(normalizedSearch)
-      );
+      return matchesSearch(item, normalizedSearch);
     })
     .sort((left, right) =>
       sort === "source"
@@ -349,7 +354,7 @@ export default function InspirationWorkbench({
 
   const selectItem = useCallback((id: string) => {
     setSelectedId(id);
-    if (window.matchMedia("(max-width: 1100px)").matches) {
+    if (window.matchMedia(INSPIRATION_DETAIL_DRAWER_MEDIA_QUERY).matches) {
       setMobilePane("detail");
     }
   }, []);
@@ -578,20 +583,28 @@ export default function InspirationWorkbench({
               <option value="source">按来源</option>
             </NarrativeSelect>
           </div>
-          {visibleItems.length === 0 ? (
-            <div className="ns-empty">
-              <div>
-                <Lightbulb className="mx-auto h-5 w-5" />
-                <strong className="mt-3">当前视图没有灵感</strong>
-                <p>记录片段、意象、问题、场景、人设火花或研究触发点。</p>
-              </div>
-            </div>
-          ) : view === "canvas" ? (
+          {view === "canvas" ? (
             <InspirationCanvas
               storage={storage}
               projectTitle={projectTitle}
               isActive={isActive}
             />
+          ) : visibleItems.length === 0 ? (
+            <div className="ns-empty">
+              <div>
+                <Lightbulb className="mx-auto h-5 w-5" />
+                <strong className="mt-3">当前视图没有灵感</strong>
+                <p>记录片段、意象、问题、场景、人设火花或研究触发点。</p>
+                <button
+                  className="ns-button is-primary mt-4"
+                  type="button"
+                  onClick={() => setCreateOpen(true)}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  记录第一条灵感
+                </button>
+              </div>
+            </div>
           ) : view === "list" ? (
             <div className="ns-list">
               {visibleItems.map((item) => (
@@ -616,13 +629,7 @@ export default function InspirationWorkbench({
                 {boardColumns.map((column) => {
                   const items = draft.items
                     .filter((item) => item.state === column.id)
-                    .filter(
-                      (item) =>
-                        !normalizedSearch ||
-                        `${item.title} ${item.body}`
-                          .toLocaleLowerCase("zh-CN")
-                          .includes(normalizedSearch),
-                    );
+                    .filter((item) => matchesSearch(item, normalizedSearch));
                   return (
                     <section className="ns-kanban-column" key={column.id}>
                       <header className="ns-kanban-header">
@@ -733,6 +740,41 @@ export default function InspirationWorkbench({
                       : selected.source.uri || "项目内记录"}
                   </div>
                 </div>
+                <Field label="来源类型">
+                  <NarrativeSelect
+                    className="ns-select"
+                    value={selected.source.kind}
+                    onChange={(event) => {
+                      const kind = event.target
+                        .value as InspirationItem["source"]["kind"];
+                      updateItem({
+                        source: {
+                          ...selected.source,
+                          kind,
+                          label: SOURCE_LABELS[kind],
+                        },
+                      });
+                    }}
+                  >
+                    <option value="manual">随手记录</option>
+                    <option value="myagents-thought">MyAgents 想法</option>
+                    <option value="research">研究记录</option>
+                    <option value="web">网页摘录</option>
+                    <option value="other">其它来源</option>
+                  </NarrativeSelect>
+                </Field>
+                <Field label="来源地址">
+                  <input
+                    className="ns-input"
+                    value={selected.source.uri}
+                    placeholder="可选：网页、文档或研究记录地址"
+                    onChange={(event) =>
+                      updateItem({
+                        source: { ...selected.source, uri: event.target.value },
+                      })
+                    }
+                  />
+                </Field>
               </section>
               <section className="ns-section">
                 {convertNotice && (

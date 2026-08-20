@@ -1,8 +1,5 @@
-import {
-  getMapRiverStyle,
-  mapRiverWidthAt,
-  smoothMapPath,
-} from "../business/mapHydrography";
+import { getMapRiverStyle, mapRiverWidthAt } from "../business/mapHydrography";
+import { mapBrushCurvePoints } from "../business/mapFeatureShapes";
 import {
   getMapLabelLayout,
   getMapLabelStyle,
@@ -12,10 +9,15 @@ import {
 import { getMapRouteStyle, mapRouteStrokeLayers } from "../business/mapRoutes";
 import type {
   MapDocument,
+  MapBrushPointCurve,
   MapFeature,
   MapScenePoint,
   MapSceneRegion,
 } from "../entities/mapSchema";
+
+// 兼容现有视图/导出模块的导入路径；几何实现本身归属于业务层，避免
+// 渲染器和持久化层各自维护一套弧线采样算法。
+export { mapBrushCurvePoints } from "../business/mapFeatureShapes";
 
 export type MapRenderCamera = {
   readonly x: number;
@@ -97,14 +99,93 @@ export function drawPath(
   });
 }
 
+/**
+ * 用二次贝塞尔曲线绘制画笔要素。
+ *
+ * 画笔的控制点仍然来自 MapFeature.points；曲线只是由这个事实派生的
+ * 绘制结果。这样交互画布、导出器和缩略导航都可以复用同一条路径规则，
+ * 也不会把额外的采样点写入地图文档。
+ */
+export function drawMapBrushPath(
+  context: CanvasRenderingContext2D,
+  points: readonly MapScenePoint[],
+  camera: MapRenderCamera,
+  curve: "line" | "arc" = "line",
+  closed = false,
+): void {
+  // 先用同一份采样结果作为所有渲染器的控制点，再使用 Canvas 的二次
+  // 曲线 API 绘制。这样保留平滑端点，同时不会出现“主画布按原折线、
+  // 素材/导出按弧线”的分裂行为。
+  // 闭合区域继续以作者控制点作为曲线控制柄，保证边界编辑时每个
+  // 触点仍对应一个可拖动顶点；开放路径则使用统一的弧线采样中心线。
+  // 闭合区域也必须经过同一份弧线采样；此前闭合分支直接使用原始控制点，
+  // 导致开放路线能看到弧线，而自由画笔闭合后看起来仍像多边形。
+  const pathPoints = mapBrushCurvePoints(points, curve, closed);
+  if (curve !== "arc" || pathPoints.length < 2) {
+    drawPath(context, pathPoints, camera);
+    if (closed && pathPoints.length >= 3) context.closePath();
+    return;
+  }
+  const canvasPoints = pathPoints.map((point) =>
+    mapToCanvasPoint(point, camera),
+  );
+  const midpoint = (a: MapScenePoint, b: MapScenePoint): MapScenePoint => ({
+    x: (a.x + b.x) / 2,
+    y: (a.y + b.y) / 2,
+  });
+  context.beginPath();
+  if (closed) {
+    const first = canvasPoints[0]!;
+    const last = canvasPoints[canvasPoints.length - 1]!;
+    const start = midpoint(last, first);
+    context.moveTo(start.x, start.y);
+    canvasPoints.forEach((point, index) => {
+      const next = canvasPoints[(index + 1) % canvasPoints.length]!;
+      const end = midpoint(point, next);
+      context.quadraticCurveTo(point.x, point.y, end.x, end.y);
+    });
+    context.closePath();
+    return;
+  }
+  context.moveTo(canvasPoints[0]!.x, canvasPoints[0]!.y);
+  for (let index = 1; index < canvasPoints.length - 1; index += 1) {
+    const point = canvasPoints[index]!;
+    const next = canvasPoints[index + 1]!;
+    const end = midpoint(point, next);
+    context.quadraticCurveTo(point.x, point.y, end.x, end.y);
+  }
+  const last = canvasPoints[canvasPoints.length - 1]!;
+  context.quadraticCurveTo(last.x, last.y, last.x, last.y);
+}
+
+/** 从要素属性读取画笔曲线模式，旧数据默认保持折线语义。 */
+export function mapFeatureBrushCurve(
+  feature: Pick<MapFeature, "props">,
+): "line" | "arc" {
+  return feature.props.curve === "arc" ? "arc" : "line";
+}
+
 /** 使用平滑闭合路径绘制连续大陆、湖泊和行政区域的外沿。 */
 export function drawMapSceneRegionPath(
   context: CanvasRenderingContext2D,
   points: readonly MapScenePoint[],
   camera: MapRenderCamera,
+  curve: MapBrushPointCurve = "arc",
 ): void {
   if (points.length < 3) return;
-  const canvasPoints = points.map((point) => mapToCanvasPoint(point, camera));
+  if (curve === "line") {
+    drawPath(context, points, camera);
+    context.closePath();
+    return;
+  }
+  // 区域本身保存的是作者控制点；弧线模式必须先经过与画笔要素、地表
+  // 合成器和导出器相同的采样器。此前这里直接拿原始点做二次贝塞尔，
+  // 检查器切换曲线后虽然调用了 quadraticCurveTo，但闭合区域的触点
+  // 数量和曲率没有真正按统一契约变化，主画布与地表边界也会出现偏差。
+  const renderedPoints = mapBrushCurvePoints(points, curve, true);
+  const canvasPoints = renderedPoints.map((point) =>
+    mapToCanvasPoint(point, camera),
+  );
   const last = canvasPoints[canvasPoints.length - 1]!;
   const first = canvasPoints[0]!;
   context.beginPath();
@@ -136,7 +217,7 @@ export function drawMapSceneRegionEdge(
   context.lineWidth = Math.max(0.75, region.edgeWidth * camera.zoom);
   context.lineCap = "round";
   context.lineJoin = "round";
-  drawMapSceneRegionPath(context, points, camera);
+  drawMapSceneRegionPath(context, points, camera, region.curve);
   context.stroke();
   context.restore();
 }
@@ -160,7 +241,10 @@ export function drawTaperedRiver(
   camera: MapRenderCamera,
   opacity: number,
 ): void {
-  const smoothed = smoothMapPath(points);
+  // 旧河流未保存触点模式，继续保持自然平滑；只有新画笔显式选择 line
+  // 时才关闭平滑，避免打开旧地图后河道形状发生变化。
+  const curve = feature.props.curve === "line" ? "line" : "arc";
+  const smoothed = mapBrushCurvePoints(points, curve);
   if (smoothed.length < 2) return;
   const style = getMapRiverStyle(feature);
 
@@ -257,7 +341,10 @@ export function drawMapStyledRoute(
 ): boolean {
   const style = getMapRouteStyle(feature);
   if (!style || style.id === "plain") return false;
-  const smoothed = smoothMapPath(points);
+  // 样式路线也必须尊重画笔的直线/弧线选择，不能绕过通用触点契约。
+  // 缺少 curve 的历史路线沿用原先的自然平滑。
+  const curve = feature.props.curve === "line" ? "line" : "arc";
+  const smoothed = mapBrushCurvePoints(points, curve);
   if (smoothed.length < 2) return false;
 
   context.save();
@@ -318,7 +405,7 @@ export function isAzgaarOverlayFeature(feature: MapFeature): boolean {
   return azgaarOverlayLayer(feature) !== null;
 }
 
-/** 有 Azgaar SVG 底图时，保留 SVG 原生标注，避免叠出第二层地名。 */
+/** Azgaar SVG 的原生英文标签由样式适配层隐藏，中文可编辑要素负责重绘。 */
 export function shouldDrawMapFeatureTextOverlay(
   feature: MapFeature,
   hasAzgaarBaseMap: boolean,
@@ -373,7 +460,7 @@ export function drawAzgaarOverlayFeature(
     );
     if (layer === "route")
       context.setLineDash([4 * camera.zoom, 5 * camera.zoom]);
-    drawPath(context, points, camera);
+    drawMapBrushPath(context, points, camera, mapFeatureBrushCurve(feature));
     context.stroke();
     context.setLineDash([]);
     context.restore();
@@ -384,8 +471,16 @@ export function drawAzgaarOverlayFeature(
     context.restore();
     return true;
   }
-  drawPath(context, points, camera);
-  context.closePath();
+  // Azgaar 的州、省、湖泊和生物群系覆盖也属于可编辑画笔要素。
+  // 这里不能绕过统一曲线渲染，否则同一个自由画笔在普通地图上是弧线，
+  // 一旦附着到生成器底图就又退化成折线。
+  drawMapBrushPath(
+    context,
+    points,
+    camera,
+    mapFeatureBrushCurve(feature),
+    true,
+  );
   if (layer === "lake") {
     context.globalAlpha = opacity * 0.12;
     context.fillStyle = feature.props.fill ?? color;

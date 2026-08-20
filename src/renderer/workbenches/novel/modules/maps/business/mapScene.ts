@@ -6,6 +6,11 @@ import type {
   MapSceneStroke,
   MapTerrainStyle,
 } from "../entities/mapSchema";
+import {
+  mapSceneLayerSupportsRegion,
+  mapTerrainMaterialSurface,
+  mapTerrainMaterialSupportsLayer,
+} from "../entities/mapSchema";
 
 export function updateMapTerrainStyle(
   scene: MapScene,
@@ -28,9 +33,13 @@ export function sceneLayerKindForComponentCategory(
     case "vegetation":
       return "vegetation";
     case "civilization":
+    case "path":
       return "civilization";
     case "landmark":
       return "labels";
+    case "cartography":
+    case "decoration":
+      return "effects";
     default:
       return "terrain";
   }
@@ -57,6 +66,46 @@ export function mapSceneLayerBrushClipsToLand(
 }
 
 /**
+ * 地貌材质只能混合到实际陆地。这个判断只读取 MapScene 的海陆事实，
+ * 不把底图或背景图误当成可绘制地表，避免作者在空海域落下一笔不可见材质。
+ */
+export function mapSceneHasLandSurface(scene: MapScene): boolean {
+  return scene.layers.some(
+    (layer) =>
+      layer.visible &&
+      (layer.regions.some(
+        (region) =>
+          region.kind === "land" &&
+          mapSceneLayerSupportsRegion(layer.kind, region.kind),
+      ) ||
+        layer.strokes.some(
+          (stroke) =>
+            isMapTerrainMaskStroke(layer.kind, stroke) &&
+            stroke.tool === "paint",
+        )),
+  );
+}
+
+/**
+ * 水域和画布背景是两类独立事实。仅有明确的水域区域或切回水域的笔触时，
+ * 地表合成器才绘制水面；其余空白区域必须透出 MapDocument.canvas 背景。
+ */
+export function mapSceneHasWaterSurface(scene: MapScene): boolean {
+  return scene.layers.some(
+    (layer) =>
+      layer.visible &&
+      (layer.regions.some(
+        (region) =>
+          region.kind === "water" &&
+          mapSceneLayerSupportsRegion(layer.kind, region.kind),
+      ) ||
+        layer.strokes.some((stroke) =>
+          isMapTerrainWaterStroke(layer.kind, stroke),
+        )),
+  );
+}
+
+/**
  * 无素材的地形笔触直接参与海陆遮罩合成。旧版保存在效果层的擦除笔触
  * 也按地形削减处理，避免继续在最终画布上留下透明孔洞。
  */
@@ -71,15 +120,26 @@ export function isMapTerrainMaskStroke(
   );
 }
 
+/**
+ * 旧版“切回水域”以 erase 笔触保存。它仍会削减陆地遮罩，但也必须作为
+ * 水面事实参与合成，不能把整张未绘制画布误当成海洋。
+ */
+export function isMapTerrainWaterStroke(
+  layerKind: MapSceneLayerKind,
+  stroke: MapSceneStroke,
+): boolean {
+  return isMapTerrainMaskStroke(layerKind, stroke) && stroke.tool === "erase";
+}
+
 export function isMapTerrainMaterialStroke(
   layerKind: MapSceneLayerKind,
   stroke: MapSceneStroke,
 ): boolean {
   return (
-    layerKind === "terrain" &&
     stroke.tool === "paint" &&
     stroke.brushAssetId === null &&
-    stroke.terrainMaterial !== null
+    stroke.terrainMaterial !== null &&
+    mapTerrainMaterialSupportsLayer(stroke.terrainMaterial, layerKind)
   );
 }
 
@@ -90,6 +150,7 @@ export function createMapSceneStroke(input: {
   readonly brushAssetId?: string | null;
   readonly terrainMaterial?: MapSceneStroke["terrainMaterial"];
   readonly shape?: MapSceneStroke["shape"];
+  readonly curve?: MapSceneStroke["curve"];
   readonly points: readonly MapScenePoint[];
   readonly color: string;
   readonly width: number;
@@ -104,6 +165,7 @@ export function createMapSceneStroke(input: {
     brushAssetId: input.brushAssetId ?? null,
     terrainMaterial: input.terrainMaterial ?? null,
     shape: input.shape ?? "round",
+    curve: input.curve ?? "line",
     points: input.points.map((point) => ({
       x: point.x,
       y: point.y,
@@ -126,6 +188,8 @@ export function createMapSceneRegion(input: {
   readonly opacity?: number;
   readonly edgeColor?: string;
   readonly edgeWidth?: number;
+  readonly curve?: MapSceneRegion["curve"];
+  readonly terrainMaterial?: MapSceneRegion["terrainMaterial"];
 }): MapSceneRegion {
   const isLand = input.kind === "land";
   return {
@@ -138,6 +202,8 @@ export function createMapSceneRegion(input: {
     opacity: input.opacity ?? 1,
     edgeColor: input.edgeColor ?? (isLand ? "#5c5038" : "#2f6377"),
     edgeWidth: input.edgeWidth ?? (isLand ? 3 : 2.5),
+    ...(input.curve ? { curve: input.curve } : {}),
+    terrainMaterial: input.terrainMaterial ?? null,
   };
 }
 
@@ -161,8 +227,18 @@ export function addMapSceneRegion(
   scene: MapScene,
   region: MapSceneRegion,
 ): MapScene {
-  const layerExists = scene.layers.some((layer) => layer.id === region.layerId);
-  if (!layerExists) return scene;
+  const layer = scene.layers.find(
+    (candidate) => candidate.id === region.layerId,
+  );
+  if (
+    !layer ||
+    !mapSceneLayerSupportsRegion(layer.kind, region.kind) ||
+    (region.terrainMaterial !== null &&
+      region.terrainMaterial !== undefined &&
+      mapTerrainMaterialSurface(region.terrainMaterial) !== region.kind)
+  ) {
+    return scene;
+  }
   return {
     ...scene,
     layers: scene.layers.map((layer) =>
@@ -185,10 +261,13 @@ export function moveMapSceneLayer(
   const index = scene.layers.findIndex((layer) => layer.id === layerId);
   if (index < 0) return scene;
   const layer = scene.layers[index]!;
-  if (layer.kind === "terrain" || layer.kind === "water") return scene;
+  // 只有内置海陆底层固定在最底部。生成器来源层也可能使用 terrain
+  // kind（这样材质笔触才能进入地表合成器），但它仍属于可重排的覆盖层。
+  if (layer.id === "scene-terrain" || layer.id === "scene-water") return scene;
 
   const firstOverlayIndex = scene.layers.findIndex(
-    (candidate) => candidate.kind !== "terrain" && candidate.kind !== "water",
+    (candidate) =>
+      candidate.id !== "scene-terrain" && candidate.id !== "scene-water",
   );
   const target = index + direction;
   if (
@@ -201,6 +280,28 @@ export function moveMapSceneLayer(
   const layers = [...scene.layers];
   [layers[index], layers[target]] = [layers[target]!, layers[index]!];
   return { ...scene, layers };
+}
+
+/**
+ * 删除一个可选场景层。内置海陆底层是 MapScene 的结构性组成，不能删除；
+ * 其它层连同其中的区域和笔触一起移除，适合清理某次生成器的来源结果。
+ */
+export function removeMapSceneLayer(
+  scene: MapScene,
+  layerId: string,
+): MapScene {
+  if (
+    layerId === "scene-terrain" ||
+    layerId === "scene-water" ||
+    scene.layers.length <= 1 ||
+    !scene.layers.some((layer) => layer.id === layerId)
+  ) {
+    return scene;
+  }
+  return {
+    ...scene,
+    layers: scene.layers.filter((layer) => layer.id !== layerId),
+  };
 }
 
 export function removeMapSceneStroke(
@@ -250,13 +351,23 @@ export function updateMapSceneRegion(
   regionId: string,
   patch: Partial<Omit<MapSceneRegion, "id" | "layerId">>,
 ): MapScene {
-  return {
-    ...scene,
-    layers: scene.layers.map((layer) => ({
-      ...layer,
-      regions: layer.regions.map((region) =>
-        region.id === regionId ? { ...region, ...patch } : region,
-      ),
-    })),
-  };
+  let changed = false;
+  const layers = scene.layers.map((layer) => ({
+    ...layer,
+    regions: layer.regions.map((region) => {
+      if (region.id !== regionId) return region;
+      const next = { ...region, ...patch };
+      if (
+        !mapSceneLayerSupportsRegion(layer.kind, next.kind) ||
+        (next.terrainMaterial !== null &&
+          next.terrainMaterial !== undefined &&
+          mapTerrainMaterialSurface(next.terrainMaterial) !== next.kind)
+      ) {
+        return region;
+      }
+      changed = true;
+      return next;
+    }),
+  }));
+  return changed ? { ...scene, layers } : scene;
 }

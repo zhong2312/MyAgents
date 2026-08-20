@@ -9,7 +9,10 @@ const INTEGER_PATTERN = /^-?\d+$/u;
 
 export const TIME_SCALE_LABELS: Readonly<Record<TimeScale, string>> = Object.freeze({
   day: "日",
+  "ten-day": "十日",
   month: "月",
+  quarter: "季度",
+  "three-month": "三月",
   year: "年",
   century: "百年",
   millennium: "千年",
@@ -41,7 +44,10 @@ export function scaleToDays(scale: TimeScale, calendar: SimulationCalendar): big
   const year = BigInt(calendar.daysPerMonth) * BigInt(calendar.monthsPerYear);
   switch (scale) {
     case "day": return 1n;
+    case "ten-day": return 10n;
     case "month": return BigInt(calendar.daysPerMonth);
+    case "quarter": return BigInt(calendar.daysPerMonth) * 3n;
+    case "three-month": return BigInt(calendar.daysPerMonth) * 3n;
     case "year": return year;
     case "century": return year * 100n;
     case "millennium": return year * 1_000n;
@@ -98,38 +104,13 @@ export function resolveEventScale(stepDays: bigint, calendar: SimulationCalendar
     "millennium",
     "century",
     "year",
+    "quarter",
+    "three-month",
     "month",
+    "ten-day",
     "day",
   ];
   return ordered.find((scale) => stepDays >= scaleToDays(scale, calendar)) ?? "day";
-}
-
-export function chooseAdaptiveStep(
-  currentSortKey: string,
-  endSortKey: string,
-  remainingSteps: number,
-  calendar: SimulationCalendar,
-): bigint {
-  const remaining = parseWorldTick(endSortKey) - parseWorldTick(currentSortKey);
-  if (remaining <= 0n) return 0n;
-  if (remainingSteps <= 1) return remaining;
-  const safeSteps = BigInt(Math.max(1, remainingSteps));
-  const target = remaining / safeSteps || 1n;
-  const scales: readonly TimeScale[] = [
-    "trillion-years",
-    "hundred-billion-years",
-    "ten-thousand-years",
-    "millennium",
-    "century",
-    "year",
-    "month",
-    "day",
-  ];
-  const boundary = scales
-    .map((scale) => scaleToDays(scale, calendar))
-    .find((days) => days <= target) ?? 1n;
-  const proposed = boundary > remaining ? remaining : boundary;
-  return proposed > 0n ? proposed : 1n;
 }
 
 export function progressRatio(start: string, end: string, current: string): number {

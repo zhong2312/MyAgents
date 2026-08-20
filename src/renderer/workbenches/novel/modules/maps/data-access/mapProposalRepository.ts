@@ -262,6 +262,13 @@ export function createNovelMapProposalRepository(
       if (legacy.proposalId !== proposalId) {
         throw new Error("地图提案目录与 proposalId 不一致");
       }
+      // v1 清单的通用 operation schema 只约束 value 为对象；在返回审阅层
+      // 之前就解析成 MapDocument，避免坏候选直到点击采纳才暴露，或让预览
+      // 组件把任意对象误当成地图事实。
+      const operations = legacy.operations.map((operation) => ({
+        ...operation,
+        value: parseMapValue(operation.value),
+      }));
       const manifest: MapProposalManifest = {
         ...legacy,
         schemaVersion: 2,
@@ -274,7 +281,7 @@ export function createNovelMapProposalRepository(
       };
       return {
         manifest,
-        operations: legacy.operations,
+        operations,
         manifestPath,
         manifestContent,
         legacy: true,

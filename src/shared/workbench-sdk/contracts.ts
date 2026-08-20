@@ -108,6 +108,8 @@ export interface WorkbenchAiRunProgress {
   readonly runId: string;
   readonly kind: WorkbenchAiRunProgressKind;
   readonly message: string;
+  /** Optional generated-text preview for workbench-owned streaming output. */
+  readonly partialOutput?: string;
   /** Monotonically increasing within a single one-shot run. */
   readonly revision: number;
 }
@@ -125,6 +127,8 @@ export interface WorkbenchAiRunRequest {
   readonly timeoutMs?: number;
   /** Host-clamped turn budget for complex one-shot workflows. */
   readonly maxTurns?: number;
+  /** Request a bounded text preview stream; callers pair it with runId polling. */
+  readonly streamOutput?: boolean;
   /** Optional host-owned read-only business tools for this one-shot run. */
   readonly toolset?: WorkbenchAgentToolsetRequest;
   /** Optional project-scoped model override for this AI scene. */

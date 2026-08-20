@@ -47,6 +47,50 @@ describe("inspirationBoard", () => {
     expect(storage.getText("inspiration/boards/board-1.json")).toBeUndefined();
   });
 
+  it("索引写入失败时回滚画布创建和保存", async () => {
+    const storage = new NovelMemoryStorage({});
+    const repository = createInspirationBoardRepository(storage);
+
+    storage.failWritePathOnce = "inspiration/boards/index.json";
+    await expect(repository.createBoard("不会留下孤儿文件")).rejects.toThrow(
+      "Injected write failure",
+    );
+    expect(storage.getText("inspiration/boards/index.json")).toContain(
+      '"boards": []',
+    );
+
+    const created = await repository.createBoard("可回滚保存");
+    const loaded = await repository.loadBoard(created.board.id);
+    const originalContent = loaded.content;
+    storage.failWritePathOnce = "inspiration/boards/index.json";
+    await expect(
+      repository.saveBoard(loaded, {
+        ...loaded.board,
+        name: "不应落盘",
+      }),
+    ).rejects.toThrow("Injected write failure");
+    expect((await repository.loadBoard(created.board.id)).content).toBe(
+      originalContent,
+    );
+  });
+
+  it("删除记录失败时保留索引引用", async () => {
+    const storage = new NovelMemoryStorage({});
+    const repository = createInspirationBoardRepository(storage);
+    const created = await repository.createBoard("删除保护");
+
+    storage.failRemovePathOnce = `inspiration/boards/${created.board.id}.json`;
+    await expect(repository.deleteBoard(created.board.id)).rejects.toThrow(
+      "Injected remove failure",
+    );
+    expect((await repository.loadIndex()).boards).toEqual([
+      expect.objectContaining({ id: created.board.id }),
+    ]);
+    expect(storage.getText(`inspiration/boards/${created.board.id}.json`)).toBe(
+      created.content,
+    );
+  });
+
   it("画布连线引用不存在节点时被 schema 拒绝", () => {
     expect(() =>
       parseInspirationBoard(
@@ -55,8 +99,26 @@ describe("inspirationBoard", () => {
           schemaVersion: 1,
           id: "board-1",
           name: "b",
-          nodes: [{ id: "node-1", kind: "inspiration", entityId: "insp-1", label: "l", x: 0, y: 0, width: 100, height: 100 }],
-          edges: [{ id: "edge-1", source: "node-1", target: "node-missing", label: "" }],
+          nodes: [
+            {
+              id: "node-1",
+              kind: "inspiration",
+              entityId: "insp-1",
+              label: "l",
+              x: 0,
+              y: 0,
+              width: 100,
+              height: 100,
+            },
+          ],
+          edges: [
+            {
+              id: "edge-1",
+              source: "node-1",
+              target: "node-missing",
+              label: "",
+            },
+          ],
           createdAt: "2026-01-01T00:00:00.000Z",
           updatedAt: "2026-01-01T00:00:00.000Z",
         }),

@@ -5,7 +5,7 @@ export interface AzgaarMapPoint {
 
 export interface AzgaarMapFeature {
   readonly id: string;
-  readonly kind: "marker" | "label" | "polygon" | "route";
+  readonly kind: "marker" | "label" | "area" | "route";
   readonly name: string;
   readonly entityRef: null;
   readonly layerId: string;
@@ -91,7 +91,7 @@ function featureImportance(feature: AzgaarMapFeature): number {
         : total;
     }, 0);
   }
-  if (feature.kind === "polygon") {
+  if (feature.kind === "area") {
     return Math.abs(
       feature.points.reduce((area, point, index) => {
         const next = feature.points[(index + 1) % feature.points.length]!;
@@ -505,7 +505,7 @@ function convertPackRegions(
         if (points.length < 3) return;
         regions.push({
           id: id(descriptor.prefix, `${groupId}-${ringIndex}`, ringIndex),
-          kind: "polygon",
+          kind: "area",
           name: ringIndex === 0 ? groupName : `${groupName} ${ringIndex + 1}`,
           entityRef: null,
           layerId,
@@ -551,7 +551,7 @@ function convertPackRegions(
       if (points.length < 3) return;
       regions.push({
         id: id("lake", `${featureId}-${ringIndex}`, ringIndex),
-        kind: "polygon",
+        kind: "area",
         name: ringIndex === 0 ? groupName : `${groupName} ${ringIndex + 1}`,
         entityRef: null,
         layerId,
@@ -748,7 +748,7 @@ export function convertAzgaarExportToFeatures(input: {
           result.push({
             ...base,
             id: id("region", properties?.id, index),
-            kind: "polygon",
+            kind: "area",
             name: itemName,
             points,
             props: {

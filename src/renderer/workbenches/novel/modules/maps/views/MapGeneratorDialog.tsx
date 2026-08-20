@@ -11,9 +11,10 @@ import { useEffect, useMemo, useState } from "react";
 
 import { CustomSelect, type WorkbenchStorage } from "@/workbench-sdk";
 import {
+  MAP_GENERATORS,
   generateRedBlobCandidate,
   importAzgaarCandidate,
-  MAP_GENERATORS,
+  previewGeneratorCandidate,
   type MapGeneratorCandidate,
   type MapGeneratorId,
 } from "../business/mapGenerators";
@@ -23,6 +24,7 @@ import {
   createNovelSettingLibraryRepository,
   type LoadedSettingLibrary,
 } from "../../../settingLibraryRepository";
+import MapProposalPreview from "./MapProposalPreview";
 
 const AZGAAR_URL = "https://azgaar.github.io/Fantasy-Map-Generator/";
 
@@ -109,79 +111,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function candidatePath(
-  feature: MapGeneratorCandidate["features"][number],
-): string {
-  const points = feature.points;
-  if (points.length === 0) return "";
-  const commands = points.map(
-    (point, index) => `${index === 0 ? "M" : "L"}${point.x},${point.y}`,
-  );
-  if (feature.kind === "polygon") commands.push("Z");
-  return commands.join(" ");
-}
-
-function GeneratorCandidatePreview({
-  candidate,
-  document,
-}: {
-  readonly candidate: MapGeneratorCandidate;
-  readonly document: MapDocument;
-}) {
-  return (
-    <div className="mt-4 overflow-hidden rounded-md border border-[var(--line)] bg-[#d8d1c3] p-2">
-      <div
-        className="relative aspect-[8/5] overflow-hidden rounded border border-[#746b6038] bg-[#f3f0e8]"
-        style={
-          candidate.canvas?.backgroundImage
-            ? {
-                backgroundImage: `url(${candidate.canvas.backgroundImage})`,
-                backgroundPosition: "center",
-                backgroundRepeat: "no-repeat",
-                backgroundSize: "contain",
-              }
-            : undefined
-        }
-      >
-        <svg
-          viewBox={`0 0 ${document.canvas.width} ${document.canvas.height}`}
-          className="absolute inset-0 h-full w-full"
-          aria-label="地图候选预览"
-        >
-          {candidate.features.map((feature) =>
-            feature.kind === "marker" ||
-            feature.kind === "label" ||
-            feature.kind === "node" ? (
-              <circle
-                key={feature.id}
-                cx={feature.points[0]?.x}
-                cy={feature.points[0]?.y}
-                r={8}
-                fill={feature.props.color ?? "#7c684f"}
-                stroke="#fffaf1"
-                strokeWidth={3}
-              />
-            ) : (
-              <path
-                key={feature.id}
-                d={candidatePath(feature)}
-                fill={
-                  feature.kind === "polygon"
-                    ? (feature.props.fill ?? "#8ba07a88")
-                    : "none"
-                }
-                stroke={feature.props.color ?? "#7c684f"}
-                strokeWidth={Number(feature.props.lineWidth ?? 2)}
-                vectorEffect="non-scaling-stroke"
-              />
-            ),
-          )}
-        </svg>
-      </div>
-    </div>
-  );
-}
-
 export default function MapGeneratorDialog({
   document,
   activeLayerId,
@@ -230,6 +159,12 @@ export default function MapGeneratorDialog({
   const selectedGenerationLevel = worldLibrary?.meta.levelTypes.find(
     (type) => type.id === generationLevelTypeId,
   );
+  const previewMap = useMemo(() => {
+    if (!candidate) return null;
+    // 预览必须走与“加入当前地图”相同的投影链路，才能看到场景区域、
+    // 地形材质、素材印章、底图以及来源图层，而不是只显示候选折线。
+    return previewGeneratorCandidate(document, candidate);
+  }, [candidate, document]);
 
   useEffect(() => {
     let disposed = false;
@@ -574,10 +509,13 @@ export default function MapGeneratorDialog({
             )}
             {candidate && (
               <>
-                <GeneratorCandidatePreview
-                  candidate={candidate}
-                  document={document}
-                />
+                {previewMap && (
+                  <MapProposalPreview
+                    key={`${previewMap.id}:${previewMap.canvas.width}:${previewMap.canvas.height}`}
+                    map={previewMap}
+                    className="mt-4"
+                  />
+                )}
                 <div className="mt-3 border-t border-[var(--line-subtle)] pt-3">
                   <div className="flex items-center gap-2">
                     <strong className="min-w-0 flex-1 truncate text-sm">

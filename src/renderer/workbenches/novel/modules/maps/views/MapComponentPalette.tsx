@@ -1,5 +1,6 @@
 import {
   Check,
+  Compass,
   Landmark,
   MapPin,
   Mountain,
@@ -8,6 +9,7 @@ import {
   Paintbrush,
   Pencil,
   Pentagon,
+  Route,
   Sparkles,
   Trash2,
   Trees,
@@ -20,9 +22,12 @@ import { useState } from "react";
 import {
   MAP_COMPONENT_CATEGORIES,
   MAP_COMPONENT_DRAG_MIME,
+  MAP_COMPONENT_INTERACTIONS,
+  mapComponentInteraction,
   mapComponentPlacement,
   mapComponentsInCategory,
   type MapComponentCategory,
+  type MapComponentInteraction,
   type MapComponentPreset,
 } from "../business/mapComponents";
 import { getMapArtworkStampAsset } from "../business/mapArtwork";
@@ -39,6 +44,8 @@ type PaletteCategory =
   | "terrain-material"
   | "project-artwork";
 
+type PaletteInteractionFilter = MapComponentInteraction | "all";
+
 const CATEGORY_ICONS = {
   celestial: Sparkles,
   landmass: Pentagon,
@@ -47,13 +54,33 @@ const CATEGORY_ICONS = {
   water: Waves,
   civilization: Landmark,
   landmark: MapPin,
+  cartography: Compass,
   "terrain-material": Palette,
   "project-artwork": Upload,
 } as const;
 
+const INTERACTION_ICONS = {
+  surface: Palette,
+  scatter: Trees,
+  path: Route,
+  stamp: Crosshair,
+} as const;
+
+const INTERACTION_LABELS: Readonly<Record<PaletteInteractionFilter, string>> = {
+  all: "全部",
+  surface: "区域/材质笔刷",
+  scatter: "素材笔刷",
+  path: "路径笔刷",
+  stamp: "独立印章",
+};
+
 interface MapComponentPaletteProps {
   readonly disabled: boolean;
   readonly terrainMaterialDisabled?: boolean;
+  readonly terrainMaterialAvailability?: Readonly<{
+    land: boolean;
+    water: boolean;
+  }>;
   readonly onInsert: (component: MapComponentPreset) => void;
   readonly onPick?: (component: MapComponentPreset) => void;
   readonly onBrush?: (component: MapComponentPreset) => void;
@@ -76,6 +103,7 @@ interface MapComponentPaletteProps {
 export default function MapComponentPalette({
   disabled,
   terrainMaterialDisabled = disabled,
+  terrainMaterialAvailability = { land: true, water: true },
   onInsert,
   onPick,
   onBrush,
@@ -97,6 +125,8 @@ export default function MapComponentPalette({
   const [category, setCategory] = useState<PaletteCategory>(
     onTerrainMaterial ? "terrain-material" : "celestial",
   );
+  const [interactionFilter, setInteractionFilter] =
+    useState<PaletteInteractionFilter>("all");
   const [editingProjectArtworkId, setEditingProjectArtworkId] = useState<
     string | null
   >(null);
@@ -113,10 +143,19 @@ export default function MapComponentPalette({
       ? ([{ id: "project-artwork", name: "项目素材" }] as const)
       : []),
   ];
-  const components =
+  const categoryComponents =
     category === "terrain-material" || category === "project-artwork"
       ? []
       : mapComponentsInCategory(category);
+  const components =
+    interactionFilter === "all"
+      ? categoryComponents
+      : categoryComponents.filter(
+          (component) => component.interaction === interactionFilter,
+        );
+  const showTerrainMaterials =
+    category === "terrain-material" &&
+    (interactionFilter === "all" || interactionFilter === "surface");
   const vertical = orientation === "vertical";
 
   return (
@@ -163,6 +202,36 @@ export default function MapComponentPalette({
       <div
         className={
           vertical
+            ? "shrink-0 border-b border-[var(--line-subtle)] px-3 py-2"
+            : "flex min-h-9 items-center gap-1 overflow-x-auto border-b border-[var(--line-subtle)] px-3 py-1"
+        }
+        role="tablist"
+        aria-label="构件交互类型"
+      >
+        {(
+          ["all", ...MAP_COMPONENT_INTERACTIONS.map((item) => item.id)] as const
+        ).map((interaction) => {
+          const Icon =
+            interaction === "all" ? Compass : INTERACTION_ICONS[interaction];
+          return (
+            <button
+              key={interaction}
+              type="button"
+              role="tab"
+              aria-selected={interactionFilter === interaction}
+              aria-label={`筛选${INTERACTION_LABELS[interaction]}`}
+              onClick={() => setInteractionFilter(interaction)}
+              className={`${vertical ? "h-7 w-full justify-start px-2" : "h-7 shrink-0 px-2"} flex items-center gap-1.5 rounded-md text-xs transition-colors ${interactionFilter === interaction ? "bg-[var(--accent-warm)] text-[#171b1e]" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {INTERACTION_LABELS[interaction]}
+            </button>
+          );
+        })}
+      </div>
+      <div
+        className={
+          vertical
             ? "min-h-0 flex-1 overflow-y-auto px-2.5 py-3"
             : "flex min-h-12 items-stretch gap-1 overflow-x-auto px-3 py-1.5"
         }
@@ -190,13 +259,16 @@ export default function MapComponentPalette({
             </span>
           </div>
         )}
-        {category === "terrain-material" && onTerrainMaterial ? (
+        {showTerrainMaterials && onTerrainMaterial ? (
           <div className={vertical ? "grid grid-cols-2 gap-1.5" : "contents"}>
             {MAP_TERRAIN_MATERIAL_PRESETS.map((material) => (
               <button
                 key={material.id}
                 type="button"
-                disabled={terrainMaterialDisabled}
+                disabled={
+                  terrainMaterialDisabled ||
+                  !terrainMaterialAvailability[material.surface]
+                }
                 onClick={() => onTerrainMaterial(material)}
                 title={material.description}
                 aria-label={`使用${material.name}材质笔刷`}
@@ -367,6 +439,10 @@ export default function MapComponentPalette({
               );
             })}
           </div>
+        ) : components.length === 0 ? (
+          <div className="flex min-h-20 w-full items-center justify-center px-3 text-center text-xs text-[var(--ink-subtle)]">
+            当前交互类型没有可用构件
+          </div>
         ) : (
           <div className={vertical ? "grid grid-cols-2 gap-1.5" : "contents"}>
             {components.map((component) =>
@@ -376,6 +452,13 @@ export default function MapComponentPalette({
                   asset?.brush &&
                     onBrush &&
                     mapComponentPlacement(component) === "stamp",
+                );
+                const hasContinuousBrush = Boolean(
+                  onBrush &&
+                    (mapComponentPlacement(component) !== "terrain-prefab" &&
+                      (mapComponentInteraction(component) === "surface" ||
+                        mapComponentInteraction(component) === "path" ||
+                        startsBrush)),
                 );
                 return (
                   <div
@@ -387,7 +470,7 @@ export default function MapComponentPalette({
                       disabled={disabled}
                       draggable={!disabled}
                       onClick={() => {
-                        if (startsBrush) {
+                        if (hasContinuousBrush) {
                           onBrush?.(component);
                           return;
                         }
@@ -400,9 +483,9 @@ export default function MapComponentPalette({
                           component.id,
                         );
                       }}
-                      title={`${component.name}：${component.description}。${startsBrush ? "点击后沿画布拖动即可连续绘制。" : "点击后在画布放置或拖绘。"}`}
+                      title={`${component.name}：${component.description}。${hasContinuousBrush ? "点击后沿画布拖动即可连续绘制。" : "点击后在画布放置或拖绘。"}`}
                       aria-label={
-                        startsBrush
+                        hasContinuousBrush
                           ? `使用${component.name}笔刷`
                           : `放置${component.name}`
                       }
@@ -436,21 +519,7 @@ export default function MapComponentPalette({
                         </span>
                       )}
                     </button>
-                    {asset?.brush &&
-                      onBrush &&
-                      mapComponentPlacement(component) !== "stamp" && (
-                        <button
-                          type="button"
-                          disabled={disabled}
-                          onClick={() => onBrush(component)}
-                          title={`使用${component.name}笔刷`}
-                          aria-label={`使用${component.name}笔刷`}
-                          className="absolute right-1 top-1 grid h-6 w-6 place-items-center rounded border border-[var(--line-subtle)] bg-[var(--paper-elevated)] text-[var(--ink-subtle)] hover:text-[var(--accent-warm)] disabled:cursor-not-allowed"
-                        >
-                          <Paintbrush className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    {onPick && (
+                    {onPick && mapComponentPlacement(component) === "stamp" && (
                       <button
                         type="button"
                         disabled={disabled}

@@ -3,7 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   expandMapCanvasToContent,
   expandMapCanvasToContentWithTranslation,
+  fitMapCanvasToDefaultContent,
+  fitMapCanvasToGeneratedContent,
+  fitMapCanvasToContentWhenEmpty,
   mapDocumentGainedContent,
+  mapDocumentHasGeneratedContent,
+  mapDocumentHasGeneratorOutput,
   mapDocumentHasContent,
 } from "./mapCanvasBounds";
 import {
@@ -160,10 +165,301 @@ describe("mapCanvasBounds", () => {
     ]);
   });
 
+  it("路线和拓扑节点的视觉外沿也会触发画布延展", () => {
+    const current = document();
+    const next = expandMapCanvasToContent({
+      ...current,
+      features: [
+        {
+          id: "feature-border-route",
+          kind: "route",
+          name: "边境路线",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [
+            { x: current.canvas.width - 40, y: 420 },
+            { x: current.canvas.width - 20, y: 480 },
+          ],
+          timeFrom: null,
+          timeTo: null,
+          props: { lineWidth: "36" },
+          description: "",
+        },
+        {
+          id: "feature-border-node",
+          kind: "node",
+          name: "边境节点",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [{ x: current.canvas.width - 40, y: 620 }],
+          timeFrom: null,
+          timeTo: null,
+          props: {},
+          description: "",
+        },
+      ],
+    });
+
+    expect(next.canvas.width).toBeGreaterThan(current.canvas.width);
+    expect(next.features.map((feature) => feature.points)).toEqual([
+      [
+        { x: current.canvas.width - 40, y: 420 },
+        { x: current.canvas.width - 20, y: 480 },
+      ],
+      [{ x: current.canvas.width - 40, y: 620 }],
+    ]);
+  });
+
   it("内容远离边界时保持画布尺寸稳定", () => {
     const current = document();
     const next = expandMapCanvasToContent(current);
     expect(next).toBe(current);
+  });
+
+  it("空地图首次接收生成结果时按内容包络收紧画布并重定位坐标", () => {
+    const current = document();
+    const generated = {
+      ...current,
+      features: [
+        {
+          id: "generated-land",
+          kind: "polygon" as const,
+          name: "主大陆",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [
+            { x: 420, y: 60 },
+            { x: 860, y: 80 },
+            { x: 780, y: 360 },
+            { x: 460, y: 340 },
+          ],
+          timeFrom: null,
+          timeTo: null,
+          props: { generator: "fantasy-map-tool", terrain: "coast" },
+          description: "生成大陆",
+        },
+      ],
+    };
+
+    expect(mapDocumentHasGeneratedContent(generated)).toBe(true);
+    expect(mapDocumentHasGeneratorOutput(generated)).toBe(true);
+    const fitted = fitMapCanvasToContentWhenEmpty(current, generated);
+
+    expect(fitted.canvas).toMatchObject({ width: 760, height: 620 });
+    expect(fitted.features[0]?.points).toEqual([
+      { x: 160, y: 160 },
+      { x: 600, y: 180 },
+      { x: 520, y: 460 },
+      { x: 200, y: 440 },
+    ]);
+  });
+
+  it("已有事实不收紧；普通底图保留矩形，生成底图按可编辑几何收紧", () => {
+    const current = document();
+    const generated = {
+      ...current,
+      features: [
+        {
+          id: "generated-city",
+          kind: "marker" as const,
+          name: "城",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [{ x: 200, y: 180 }],
+          timeFrom: null,
+          timeTo: null,
+          props: { generator: "fantasy-map-tool" },
+          description: "",
+        },
+      ],
+    };
+
+    const existing = {
+      ...current,
+      features: [
+        {
+          ...generated.features[0]!,
+          id: "author-city",
+          props: {},
+        },
+      ],
+    };
+    expect(fitMapCanvasToContentWhenEmpty(existing, generated)).toBe(generated);
+
+    const withBackground = {
+      ...generated,
+      canvas: {
+        ...generated.canvas,
+        backgroundImage: "data:image/svg+xml;base64,placeholder",
+        backgroundImageWidth: 1600,
+        backgroundImageHeight: 1000,
+      },
+    };
+    const fittedGeneratedBackground = fitMapCanvasToContentWhenEmpty(
+      current,
+      withBackground,
+    );
+    expect(fittedGeneratedBackground.canvas).toMatchObject({
+      width: 332,
+      height: 332,
+    });
+    expect(fittedGeneratedBackground.features[0]?.points).toEqual([
+      // 单点标记的实际外沿为 6px，锚点因此位于 160px 留白以内。
+      { x: 166, y: 166 },
+    ]);
+    expect(expandMapCanvasToContent(fittedGeneratedBackground)).toMatchObject({
+      canvas: { width: 332, height: 332 },
+    });
+
+    const importedBackground = {
+      ...current,
+      canvas: {
+        ...current.canvas,
+        backgroundImage: "data:image/svg+xml;base64,placeholder",
+        backgroundImageWidth: 1600,
+        backgroundImageHeight: 1000,
+      },
+    };
+    expect(fitMapCanvasToContentWhenEmpty(current, importedBackground)).toBe(
+      importedBackground,
+    );
+    expect(
+      mapDocumentHasGeneratedContent({
+        ...withBackground,
+        features: withBackground.features.map((feature) => ({
+          ...feature,
+          props: { generator: "azgaar-runtime" },
+        })),
+      }),
+    ).toBe(true);
+    expect(
+      mapDocumentHasGeneratorOutput({
+        ...withBackground,
+        features: withBackground.features.map((feature) => ({
+          ...feature,
+          props: { generator: "azgaar-runtime" },
+        })),
+      }),
+    ).toBe(true);
+    for (const generator of ["agent-azgaar", "azgaar-runtime"] as const) {
+      expect(
+        mapDocumentHasGeneratedContent({
+          ...current,
+          features: withBackground.features.map((feature) => ({
+            ...feature,
+            props: { generator },
+          })),
+        }),
+      ).toBe(true);
+    }
+    for (const layerId of [
+      "scene-generator-agent-azgaar",
+      "scene-generator-azgaar-runtime",
+    ]) {
+      expect(
+        mapDocumentHasGeneratorOutput({
+          ...current,
+          scene: {
+            ...current.scene!,
+            layers: current.scene!.layers.map((layer) => ({
+              ...layer,
+              id: layer.id === "scene-terrain" ? layerId : layer.id,
+            })),
+          },
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("旧版默认尺寸的生成地图只迁移一次，作者扩展过的地图不收缩", () => {
+    const current = document();
+    const generated = {
+      ...current,
+      features: [
+        {
+          id: "legacy-generated-land",
+          kind: "polygon" as const,
+          name: "旧生成大陆",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [
+            { x: 120, y: 180 },
+            { x: 760, y: 200 },
+            { x: 720, y: 620 },
+            { x: 160, y: 580 },
+          ],
+          timeFrom: null,
+          timeTo: null,
+          props: { generator: "azgaar-runtime", azgaarLayer: "state" },
+          description: "旧生成结果",
+        },
+      ],
+    };
+    const migrated = fitMapCanvasToGeneratedContent(generated);
+    expect(migrated.canvas).toMatchObject({ width: 960, height: 760 });
+    expect(migrated.features[0]?.points[0]).toEqual({ x: 160, y: 160 });
+    expect(fitMapCanvasToGeneratedContent(migrated)).toBe(migrated);
+
+    const manuallyExpanded = {
+      ...generated,
+      canvas: { ...generated.canvas, width: 2_000, height: 1_300 },
+    };
+    expect(fitMapCanvasToGeneratedContent(manuallyExpanded)).toBe(
+      manuallyExpanded,
+    );
+  });
+
+  it("旧版默认尺寸的手工地图也按真实内容收束，后续扩展过的地图保持原尺寸", () => {
+    const current = document();
+    const legacyManualMap = {
+      ...current,
+      scene: {
+        ...current.scene!,
+        layers: current.scene!.layers.map((layer) =>
+          layer.id === "scene-terrain"
+            ? {
+                ...layer,
+                regions: [
+                  {
+                    id: "legacy-island",
+                    layerId: layer.id,
+                    kind: "land" as const,
+                    points: [
+                      { x: 280, y: 180 },
+                      { x: 460, y: 200 },
+                      { x: 390, y: 330 },
+                    ],
+                    fill: "#b8ad7d",
+                    texture: "paper-land" as const,
+                    opacity: 1,
+                    edgeColor: "#655540",
+                    edgeWidth: 4,
+                  },
+                ],
+              }
+            : layer,
+        ),
+      },
+    };
+
+    const fitted = fitMapCanvasToDefaultContent(legacyManualMap);
+    expect(fitted.canvas).toMatchObject({ width: 504, height: 474 });
+    expect(
+      fitted.scene?.layers.find((layer) => layer.id === "scene-terrain")
+        ?.regions[0]?.points,
+    ).toEqual([
+      { x: 162, y: 162 },
+      { x: 342, y: 182 },
+      { x: 272, y: 312 },
+    ]);
+
+    const expandedByAuthor = {
+      ...legacyManualMap,
+      canvas: { ...legacyManualMap.canvas, width: 1_920, height: 1_240 },
+    };
+    expect(fitMapCanvasToDefaultContent(expandedByAuthor)).toBe(
+      expandedByAuthor,
+    );
   });
 
   it("内容贴近左上边界时也会补足成图留白", () => {
@@ -293,6 +589,44 @@ describe("mapCanvasBounds", () => {
 
     expect(next.canvas.width).toBeGreaterThan(2_000);
     expect(next.canvas.height).toBeGreaterThan(1_400);
+  });
+
+  it("宽幅素材笔刷的 profile 外沿也会参与自动延展", () => {
+    const current = document();
+    const next = expandMapCanvasToContent({
+      ...current,
+      scene: {
+        ...current.scene!,
+        layers: current.scene!.layers.map((layer) =>
+          layer.id === "scene-vegetation"
+            ? {
+                ...layer,
+                strokes: [
+                  {
+                    id: "stroke-wetland-edge",
+                    layerId: layer.id,
+                    tool: "paint",
+                    brushAssetId: "wetland",
+                    terrainMaterial: null,
+                    shape: "round",
+                    points: [
+                      { x: current.canvas.width - 40, y: 500 },
+                      { x: current.canvas.width - 20, y: 520 },
+                    ],
+                    color: "#5e8e80",
+                    width: 120,
+                    opacity: 1,
+                    spacing: 48,
+                    scatter: 1,
+                  },
+                ],
+              }
+            : layer,
+        ),
+      },
+    });
+
+    expect(next.canvas.width).toBeGreaterThan(1_800);
   });
 
   it("内容越过左上边缘时平移全部事实并扩展对应方向", () => {
@@ -527,5 +861,76 @@ describe("mapCanvasBounds", () => {
       width: 1_600,
       height: 1_000,
     });
+  });
+
+  it("已有底图世界矩形时，即使缺少原始尺寸也会参与自动延展", () => {
+    const current = document();
+    const next = expandMapCanvasToContent({
+      ...current,
+      canvas: {
+        ...current.canvas,
+        backgroundImage: "data:image/png;base64,legacy",
+        backgroundImagePlacement: {
+          x: -80,
+          y: -40,
+          width: 1_920,
+          height: 1_280,
+        },
+      },
+    });
+
+    expect(next.canvas).toMatchObject({ width: 2_240, height: 1_600 });
+    expect(next.canvas.backgroundImagePlacement).toEqual({
+      x: 160,
+      y: 160,
+      width: 1_920,
+      height: 1_280,
+    });
+  });
+
+  it("生成器底图被作者明确变换后，矩形事实也参与首次构图", () => {
+    const current = document();
+    const generated = {
+      ...current,
+      canvas: {
+        ...current.canvas,
+        backgroundImage: "data:image/svg+xml;base64,generated",
+        backgroundImageWidth: 1_800,
+        backgroundImageHeight: 800,
+        backgroundImagePlacement: {
+          x: -80,
+          y: 100,
+          width: 1_800,
+          height: 800,
+          source: "author" as const,
+        },
+      },
+      features: [
+        {
+          id: "generated-anchor",
+          kind: "marker" as const,
+          name: "生成锚点",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [{ x: 420, y: 360 }],
+          timeFrom: null,
+          timeTo: null,
+          props: { generator: "azgaar-runtime" },
+          description: "",
+        },
+      ],
+    };
+
+    const fitted = fitMapCanvasToContentWhenEmpty(current, generated);
+
+    expect(fitted.canvas).toMatchObject({ width: 2_120, height: 1_120 });
+    expect(fitted.canvas.backgroundImagePlacement).toEqual({
+      x: 160,
+      y: 160,
+      width: 1_800,
+      height: 800,
+      source: "author",
+    });
+    expect(fitted.features[0]?.points).toEqual([{ x: 660, y: 420 }]);
   });
 });

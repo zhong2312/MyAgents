@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createEmptyMapDocument } from "../entities/mapSchema";
+import { createMapSceneStroke } from "./mapScene";
 import {
   canEditMapSelectableItems,
   duplicateMapSelectableItems,
@@ -52,6 +53,39 @@ function document() {
         ],
       })),
     },
+    scene: {
+      ...map.scene!,
+      layers: map.scene!.layers.map((layer) =>
+        layer.id === "scene-terrain"
+          ? {
+              ...layer,
+              strokes: [
+                createMapSceneStroke({
+                  id: "terrain-land",
+                  layerId: layer.id,
+                  points: [
+                    { x: 100, y: 120 },
+                    { x: 380, y: 260 },
+                  ],
+                  color: "#b8ad7d",
+                  width: 180,
+                }),
+                createMapSceneStroke({
+                  id: "terrain-material",
+                  layerId: layer.id,
+                  terrainMaterial: "desert",
+                  points: [
+                    { x: 140, y: 150 },
+                    { x: 340, y: 240 },
+                  ],
+                  color: "#c9a865",
+                  width: 120,
+                }),
+              ],
+            }
+          : layer,
+      ),
+    },
   };
 }
 
@@ -91,6 +125,45 @@ describe("mapSelection", () => {
     const removed = removeMapSelectableItems(moved, ["feature-city"]);
     expect(removed.features).toHaveLength(0);
     expect(removed.artwork.layers[0]?.stamps).toHaveLength(1);
+  });
+
+  it("地形底稿和材质笔触可以进入同一批量移动事务", () => {
+    const current = document();
+    expect(
+      canEditMapSelectableItems(current, ["terrain-land", "terrain-material"]),
+    ).toBe(true);
+
+    const moved = moveMapSelectableItems(
+      current,
+      ["terrain-land", "terrain-material"],
+      { x: 64, y: -28 },
+    );
+    const terrainLayer = moved.scene?.layers.find(
+      (layer) => layer.id === "scene-terrain",
+    );
+    expect(terrainLayer?.strokes).toEqual([
+      expect.objectContaining({
+        id: "terrain-land",
+        points: [
+          { x: 164, y: 92 },
+          { x: 444, y: 232 },
+        ],
+      }),
+      expect.objectContaining({
+        id: "terrain-material",
+        points: [
+          { x: 204, y: 122 },
+          { x: 404, y: 212 },
+        ],
+      }),
+    ]);
+
+    const removed = removeMapSelectableItems(moved, ["terrain-material"]);
+    expect(
+      removed.scene?.layers
+        .find((layer) => layer.id === "scene-terrain")
+        ?.strokes.map((stroke) => stroke.id),
+    ).toEqual(["terrain-land"]);
   });
 
   it("批量复制要素和印章，副本保留图层并成为独立事实", () => {

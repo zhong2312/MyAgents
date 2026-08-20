@@ -26,13 +26,16 @@ import { createNovelLocationLibraryRepository } from "./modules/locations/data-a
 import type { NovelLocation } from "./modules/locations/entities/locationLibrarySchema";
 import {
   createEmptyManuscriptContinuityState,
+  getManuscriptTrackingReferenceIssue,
   parseManuscriptContinuityState,
   type ManuscriptContinuityFact,
   type ManuscriptContinuityState,
   type ManuscriptTrackingBatch,
   type ManuscriptTrackingChange,
   type ManuscriptTrackingMutation,
+  type ManuscriptTrackingReferenceCatalog,
 } from "./manuscriptTrackingSchema";
+import { isManuscriptTrackingEvidenceGrounded } from "./manuscriptTrackingEvidence";
 import { createNovelTimelineLibraryRepository } from "./timelineLibraryRepository";
 import { createStorageTransaction } from "./shared/infrastructure/storageTransaction";
 import {
@@ -244,7 +247,25 @@ function timelineEventForBatch(
     (change) => change.operation?.kind === "timeline-event",
   )?.operation;
   const now = new Date().toISOString();
-  const sortKey = chapter.sequence;
+  const timeAnchor = batch.timeAnchorEventId
+    ? state.timeline.library.events.find(
+        (event) => event.id === batch.timeAnchorEventId,
+      )
+    : null;
+  if (batch.timeAnchorEventId && !timeAnchor) {
+    throw new Error(
+      `正文事实引用的时间锚点不存在：${batch.timeAnchorEventId}`,
+    );
+  }
+  if (timeAnchor && timeAnchor.timePrecision === "unknown") {
+    throw new Error(
+      `正文事实引用的时间锚点“${timeAnchor.title}”尚未确认世界时间`,
+    );
+  }
+  const sortKey = timeAnchor?.sortKey ?? chapter.sequence;
+  const worldSortKey = timeAnchor
+    ? (timeAnchor.worldSortKey ?? String(Math.trunc(timeAnchor.sortKey)))
+    : null;
   const sortOrder =
     state.timeline.library.events
       .filter((event) => event.sortKey === sortKey)
@@ -292,7 +313,8 @@ function timelineEventForBatch(
     sortKey,
     sortOrder,
     endSortKey: null,
-    timePrecision: "unknown",
+    worldSortKey,
+    timePrecision: timeAnchor?.timePrecision ?? "unknown",
     timeExpressions: [],
     periodId: null,
     scope: "story",
@@ -713,12 +735,34 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
       ),
     );
 
-    const itemIds = new Set(state.items.index.items.map((item) => item.id));
+    const referenceCatalog: ManuscriptTrackingReferenceCatalog = {
+      characterIds: new Set(state.characters.records.map((item) => item.id)),
+      itemIds: new Set(state.items.index.items.map((item) => item.id)),
+      locationIds: new Set(
+        state.locations.index.locations.map((item) => item.id),
+      ),
+      factionIds: new Set(
+        state.factions.library.factions.map((item) => item.id),
+      ),
+      foreshadowingIds: new Set(
+        state.timeline.library.events.flatMap((item) =>
+          item.foreshadowings.map((foreshadowing) => foreshadowing.id),
+        ),
+      ),
+    };
+    const itemIds = referenceCatalog.itemIds ?? new Set<string>();
     for (const change of changes) {
       const operation = change.operation;
       if (!operation) throw new Error(`“${change.title}”缺少可执行的状态操作`);
-      if (!chapter.content.includes(change.evidence))
+      if (
+        !isManuscriptTrackingEvidenceGrounded(chapter.content, change.evidence)
+      )
         throw new Error(`“${change.title}”的正文证据已失效，请重新分析章节`);
+      const referenceIssue = getManuscriptTrackingReferenceIssue(
+        change,
+        referenceCatalog,
+      );
+      if (referenceIssue) throw new Error(referenceIssue);
       if (operation.kind === "timeline-event") continue;
       if (operation.kind === "foreshadow") {
         if (operation.status === "planted") continue;

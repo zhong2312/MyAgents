@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { sampleMapTerrainMaterialTexture } from "./mapTerrainMaterialTexture";
+import {
+  getMapTerrainMaterialVisualProfile,
+  sampleMapTerrainMaterialTexture,
+} from "./mapTerrainMaterialTexture";
 
 const SAMPLE_POINTS = [
   { x: 7, y: 11 },
@@ -22,6 +25,7 @@ describe("地貌材质纹理", () => {
       "grassland",
       "forest",
       "desert",
+      "beach",
       "badlands",
       "tundra",
       "snow",
@@ -57,8 +61,33 @@ describe("地貌材质纹理", () => {
         return `${sample.detail.toFixed(3)}:${sample.highlight.toFixed(3)}`;
       }).join(",");
 
-    expect(signature("forest")).not.toBe(signature("desert"));
-    expect(signature("desert")).not.toBe(signature("volcanic"));
-    expect(signature("swamp")).not.toBe(signature("snow"));
+    const materials = [
+      "grassland",
+      "forest",
+      "desert",
+      "beach",
+      "badlands",
+      "tundra",
+      "snow",
+      "swamp",
+      "volcanic",
+    ] as const;
+    const signatures = materials.map(signature);
+
+    expect(new Set(signatures)).toHaveLength(signatures.length);
+  });
+
+  it("材质 profile 为不同地貌提供不同的层次和边缘策略", () => {
+    const forest = getMapTerrainMaterialVisualProfile("forest");
+    const desert = getMapTerrainMaterialVisualProfile("desert");
+    const volcanic = getMapTerrainMaterialVisualProfile("volcanic");
+
+    expect(forest.detailStrength).toBeGreaterThan(desert.detailStrength);
+    expect(desert.highlightStrength).toBeGreaterThan(forest.highlightStrength);
+    expect(volcanic.edgeBlend).toBeGreaterThan(forest.edgeBlend);
+    [forest, desert, volcanic].forEach((profile) => {
+      expect(profile.edgeBlend).toBeGreaterThanOrEqual(0);
+      expect(profile.edgeBlend).toBeLessThanOrEqual(1);
+    });
   });
 });

@@ -66,4 +66,29 @@ describe("mapRoutes", () => {
       getMapRouteStyle(route({ terrain: "river", routeStyle: "wall" })),
     ).toBeNull();
   });
+
+  it("新增水系、道路、奇幻边界和宇宙航线均解析为专用路线样式", () => {
+    const cases = [
+      ["bank", "bank"],
+      ["fjord", "fjord"],
+      ["dirt", "dirt"],
+      ["trade", "trade"],
+      ["magic-rail", "magic-rail"],
+      ["ley-line", "ley-line"],
+      ["magic-rift", "magic-rift"],
+      ["sea-route", "sea-route"],
+      ["stellar-route", "stellar-route"],
+      ["contour", "contour"],
+      ["bathymetric", "bathymetric"],
+      ["barrier", "barrier"],
+    ] as const;
+    for (const [routeStyle, expectedId] of cases) {
+      const style = getMapRouteStyle(route({ routeStyle }));
+      expect(style?.id).toBe(expectedId);
+      expect(isMapStyledRoute(route({ routeStyle }))).toBe(true);
+      expect(mapRouteStrokeLayers(style!)).not.toHaveLength(0);
+    }
+    expect(getMapRouteStyle(route({ terrain: "canyon" }))?.id).toBe("canyon");
+    expect(getMapRouteStyle(route({ terrain: "current" }))?.id).toBe("current");
+  });
 });

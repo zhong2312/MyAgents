@@ -56,6 +56,35 @@ export function mapRegionTextureVariation(
     return clamp(pulp + grain + fibre + fleck, -0.42, 0.42);
   }
 
+  if (texture === "territory-hatch") {
+    const diagonal = Math.sin((x + y) * 0.16);
+    const crossDiagonal = Math.sin((x - y) * 0.11);
+    const hatch = Math.max(
+      Math.abs(diagonal) > 0.9 ? 0.22 : 0,
+      Math.abs(crossDiagonal) > 0.94 ? -0.14 : 0,
+    );
+    return hatch;
+  }
+
+  if (texture === "administrative-grid") {
+    const vertical = Math.abs(Math.sin(x * 0.075));
+    const horizontal = Math.abs(Math.sin(y * 0.075));
+    const intersections = Math.min(vertical, horizontal);
+    return clamp(
+      (vertical > 0.94 ? 0.16 : 0) +
+        (horizontal > 0.94 ? 0.12 : 0) -
+        (intersections > 0.985 ? 0.08 : 0),
+      -0.22,
+      0.28,
+    );
+  }
+
+  if (texture === "stellar-domain") {
+    const nebula = smoothNoise(x, y, 72, 17);
+    const star = noise(x / 5.2 + 31, y / 5.2 - 11) > 0.992 ? 0.3 : 0;
+    return clamp((nebula - 0.48) * 0.45 + star, -0.28, 0.38);
+  }
+
   const wave = Math.sin(y * 0.34 + Math.sin(x * 0.05) * 1.7);
   const crossWave = Math.sin(y * 0.82 - x * 0.037);
   if (wave > 0.89 && crossWave > -0.22) {

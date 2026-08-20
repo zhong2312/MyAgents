@@ -21,6 +21,7 @@ function props(): OpenLayersMapCanvasProps {
     onSelect: vi.fn(),
     onCreate: vi.fn(),
     onComponentDrop: vi.fn(),
+    onComponentSurface: vi.fn(),
     onSceneStroke: vi.fn(),
     onSceneErase: vi.fn(),
     onTerrainStroke: vi.fn(),

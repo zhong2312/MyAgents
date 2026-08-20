@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  MAP_ARTWORK_STAMP_ASSETS,
   addMapArtworkLayer,
   addMapArtworkStamp,
   createMapArtworkLayer,
@@ -19,6 +20,7 @@ import {
   updateMapArtworkLayer,
   updateMapArtworkStamp,
 } from "./mapArtwork";
+import { MAP_COMPONENT_PRESETS } from "./mapComponents";
 import {
   createEmptyMapArtwork,
   createEmptyMapDocument,
@@ -41,9 +43,115 @@ describe("mapArtwork", () => {
     ).toBe(4);
     expect(city?.brush).toBe(false);
     expect(city?.variants).toHaveLength(3);
+    expect(getMapArtworkStampAsset("mountain-range")?.brush).toBe(true);
     expect(getMapArtworkStampAsset("mountain-range")?.brushFollowsPath).toBe(
       true,
     );
+  });
+
+  it("每个构件预设都有真实矢量素材，不能退化为默认占位圆形", () => {
+    expect(MAP_ARTWORK_STAMP_ASSETS.map((asset) => asset.id)).toEqual(
+      MAP_COMPONENT_PRESETS.map((component) => component.id),
+    );
+
+    MAP_ARTWORK_STAMP_ASSETS.forEach((asset) => {
+      const svg = decodeURIComponent(asset.imageSrc.split(",", 2)[1]!);
+      expect(svg).toContain("<svg");
+      expect(svg).not.toContain('<circle cx="64" cy="64" r="28"');
+      expect(asset.variants.length).toBeGreaterThan(0);
+      expect(
+        asset.variants.every((variant) => variant.imageSrc.length > 0),
+      ).toBe(true);
+    });
+  });
+
+  it("世界之门与传送阵生成可解析的 SVG 素材", () => {
+    for (const assetId of ["world-gate", "portal"]) {
+      const asset = getMapArtworkStampAsset(assetId)!;
+      const svg = decodeURIComponent(asset.imageSrc.split(",", 2)[1]!);
+
+      expect(svg).toContain("<svg");
+      expect(svg).not.toMatch(/<ellipse[^>]*\bfill="[^"]*"[^>]*\bfill="/u);
+    }
+  });
+
+  it("扩展地貌、水系、文明和奇幻地标均提供可直接绘制的素材语义", () => {
+    const expected = [
+      ["cliff", true, true],
+      ["dunes", true, false],
+      ["glacier", true, false],
+      ["boulder-field", true, false],
+      ["broadleaf-grove", true, false],
+      ["bamboo-grove", true, false],
+      ["shrubland", true, false],
+      ["reed-bed", true, false],
+      ["mangrove", true, false],
+      ["coral-reef", true, false],
+      ["seaweed-bed", true, false],
+      ["sea-foam", true, true],
+      ["ice-floe", true, false],
+      ["farmland", true, false],
+      ["terraces", true, false],
+      ["village", true, false],
+      ["town-district", false, false],
+      ["fishing-village", false, false],
+      ["lighthouse", false, false],
+      ["graveyard", false, false],
+      ["battlefield", false, false],
+      ["rock-spires", false, false],
+      ["camp", false, false],
+      ["mine", false, false],
+      ["shipyard", false, false],
+      ["floating-island", false, false],
+      ["world-tree", false, false],
+      ["great-tree", false, false],
+      ["underworld-gate", false, false],
+      ["castle-cluster", false, false],
+      ["farmland-field", true, false],
+      ["deadwood-single", true, false],
+      ["boundary-line", false, false],
+      ["ring", false, false],
+      ["coast-foam", true, true],
+    ] as const;
+
+    expected.forEach(([assetId, brush, brushFollowsPath]) => {
+      const asset = getMapArtworkStampAsset(assetId)!;
+      expect(asset).toMatchObject({ id: assetId, brush, brushFollowsPath });
+      expect(asset.imageSrc).toMatch(/^data:image\/svg\+xml/u);
+      expect(asset.variants.length).toBeGreaterThanOrEqual(3);
+      expect(
+        new Set(asset.variants.map((variant) => variant.imageSrc)).size,
+      ).toBeGreaterThanOrEqual(3);
+    });
+
+    expect(getMapArtworkStampAsset("world-gate")?.variants).toHaveLength(3);
+    expect(getMapArtworkStampAsset("portal")?.variants).toHaveLength(3);
+  });
+
+  it("新增文明构件与制图阴影使用独立轮廓，不复用泛用聚落占位图", () => {
+    const signatures = {
+      town: "M9 108V71",
+      "town-district": "M12 20h156",
+      "fishing-village": "M11 102c29-12",
+      lighthouse: "M48 122",
+      graveyard: "M24 103V72",
+      battlefield: "m42 97 52-62",
+      farmstead: "M13 106h144",
+      "ruin-cluster": "M14 106h146",
+      "castle-cluster": "M12 112V55",
+      "farmland-field": "M13 104",
+      "deadwood-single": "M61 124",
+      "boundary-line": "M12 86C39 21",
+      "great-tree": "M69 126V76",
+      ring: '<ellipse cx="64" cy="67" rx="56"',
+      hillshade: "M12 101 48 32",
+    } as const;
+
+    for (const [assetId, signature] of Object.entries(signatures)) {
+      const asset = getMapArtworkStampAsset(assetId)!;
+      const svg = decodeURIComponent(asset.imageSrc.split(",", 2)[1]!);
+      expect(svg, assetId).toContain(signature);
+    }
   });
 
   it("同一素材按稳定种子选择变体，并把越界编号归一化", () => {

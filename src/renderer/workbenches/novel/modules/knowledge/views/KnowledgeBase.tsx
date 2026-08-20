@@ -179,6 +179,7 @@ export default function KnowledgeBase({
   const selectedResult = results.find((result) => result.node.id === selectedId);
   const selectedNode = selectedResult?.node ?? snapshot?.nodes.find((node) => node.id === selectedId);
   const neighbors = selectedNode && snapshot ? getKnowledgeNeighbors(snapshot, selectedNode.id) : [];
+  const diagnosticCount = snapshot?.diagnostics.length ?? 0;
 
   const changeEnabled = async (next: boolean) => {
     setIsToggling(true);
@@ -297,6 +298,30 @@ export default function KnowledgeBase({
             </div>
           )}
 
+          {snapshot && diagnosticCount > 0 && (
+            <section className="shrink-0 border-b border-[var(--line-subtle)] bg-[var(--warning-bg)] px-5 py-3">
+              <div className="flex items-center gap-2 text-xs font-medium text-[var(--warning)]">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                <span>已索引，存在 {diagnosticCount} 个数据问题</span>
+                <span className="ml-auto text-[var(--ink-muted)]">
+                  {snapshot.nodes.length} 节点 · {snapshot.edges.length} 关系 · {snapshot.documents.length} 文档
+                </span>
+              </div>
+              <ul className="mt-2 space-y-1">
+                {snapshot.diagnostics.slice(0, 8).map((diagnostic, index) => (
+                  <li key={`${diagnostic.kind}:${diagnostic.source?.path ?? ""}:${index}`} className="flex items-center gap-2 text-xs text-[var(--ink-muted)]">
+                    <span className="min-w-0 flex-1 truncate">{diagnostic.message}</span>
+                    {diagnostic.source && (
+                      <button type="button" onClick={() => onOpenSource(diagnostic.source!)} className="shrink-0 text-[var(--accent-cool)] hover:underline">
+                        打开来源
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
           {status === "building" && !snapshot ? (
             <div className="flex flex-1 items-center justify-center gap-2 text-sm text-[var(--ink-muted)]">
               <Loader2 className="h-4 w-4 animate-spin" /> 正在构建知识图谱
@@ -324,7 +349,10 @@ export default function KnowledgeBase({
               <section className="min-h-0 overflow-y-auto p-4">
                 <div className="flex items-center justify-between text-xs text-[var(--ink-muted)]">
                   <span>{query ? `${results.length} 条结果` : `${snapshot.nodes.length} 个节点`}</span>
-                  <span className="flex items-center gap-1 text-[var(--success)]"><Check className="h-3 w-3" /> 已同步</span>
+                  <span className={`flex items-center gap-1 ${diagnosticCount ? "text-[var(--warning)]" : "text-[var(--success)]"}`}>
+                    {diagnosticCount ? <AlertTriangle className="h-3 w-3" /> : <Check className="h-3 w-3" />}
+                    {diagnosticCount ? `已索引，${diagnosticCount} 个问题` : "已同步"}
+                  </span>
                 </div>
                 <div className="mt-3 space-y-1.5">
                   {results.map((result) => (

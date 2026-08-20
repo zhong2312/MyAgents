@@ -10,6 +10,8 @@ export interface WorkbenchNavigationItem {
   readonly order?: number;
   /** Optional direct parent. Navigation currently supports one nested level. */
   readonly parentId?: string;
+  /** Keep an internal route addressable without exposing it in the shell menu. */
+  readonly hidden?: boolean;
 }
 
 export interface WorkbenchManifest {
@@ -137,6 +139,11 @@ export function validateWorkbenchManifest(value: unknown): WorkbenchManifestVali
       const parentId = item.parentId === undefined
         ? undefined
         : readNonEmptyString(item.parentId, `${path}.parentId`, issues);
+      const hidden = item.hidden === undefined
+        ? undefined
+        : typeof item.hidden === 'boolean'
+          ? item.hidden
+          : (issues.push({ path: `${path}.hidden`, message: 'must be a boolean' }), undefined);
       if (navId && !SEGMENT_PATTERN.test(navId)) {
         issues.push({ path: `${path}.id`, message: 'must be a lowercase route segment' });
       }
@@ -152,6 +159,7 @@ export function validateWorkbenchManifest(value: unknown): WorkbenchManifestVali
           ...(icon ? { icon } : {}),
           ...(order === undefined ? {} : { order }),
           ...(parentId ? { parentId } : {}),
+          ...(hidden === undefined ? {} : { hidden }),
         });
       }
     });

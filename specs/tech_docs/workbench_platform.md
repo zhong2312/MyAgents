@@ -15,7 +15,7 @@
 - Workbench API 1.1 的工作区根绑定通用存储接口。
 - Workbench API 1.2 的声明式新项目初始化协议。
 - Workbench API 1.3 的完整 MyAgents Agent Session 宿主端口。
-- Workbench API 1.10 的页面导航守卫注册接口。
+- Workbench API 1.11 的页面导航守卫注册接口与一次性 AI Run 取消接口。
 
 本阶段不包含工作台后台进程、动态下载、第三方代码沙箱、工作台自有存储后端或用户可配置的领域 MCP。API 1.1 的通用存储端口与 API 1.2 的项目初始化均委托 MyAgents 已有 Workspace File Service，不引入第二套文件 IO owner；API 1.3 的大型 AI 任务委托现有 Chat Session 生命周期。
 
@@ -79,7 +79,7 @@ interface WorkbenchManifest {
 
 ## API 版本协议
 
-宿主版本由 `WORKBENCH_HOST_API_VERSION` 定义，当前为 `1.10`。
+宿主版本由 `WORKBENCH_HOST_API_VERSION` 定义，当前为 `1.11`。
 
 - `major` 必须完全相同；
 - 宿主 `minor` 必须大于等于 `minMinor`；
@@ -102,7 +102,7 @@ export default defineWorkbench(manifest, () => import("./renderer"));
 
 模块默认导出接收 `WorkbenchRendererProps`。宿主 context 只暴露稳定字段：manifest、workspacePath、workspaceName、route、isActive、`storage`、`agentSessions`、受控运行端口、`navigate()` 和 `registerNavigationGuard()`。
 
-Workbench API 1.10 允许当前页面注册一个导航守卫。具体工作台只声明页面是否允许离开以及保存动作；Shell 统一串行化侧栏导航请求，App 在关闭工作台标签前调用同一守卫，并根据结果决定继续或留在原页。页面卸载时必须注销守卫，宿主不会替工作台推断 dirty 状态。
+Workbench API 1.10 允许当前页面注册一个导航守卫。具体工作台只声明页面是否允许离开以及保存动作；Shell 统一串行化侧栏导航请求，App 在关闭工作台标签前调用同一守卫，并根据结果决定继续或留在原页。页面卸载时必须注销守卫，宿主不会替工作台推断 dirty 状态。Workbench API 1.11 追加按 `runId` 取消一次性 AI Run 的宿主端口；取消必须中断对应 SDK 运行、保持其它 Run 不受影响，并让调用方收到明确的已取消终态。
 
 工作台需要浮层或选择器时使用 Renderer SDK 导出的 `Popover`、`CustomSelect` 与 `OverlayBackdrop`，通过 `useCloseLayer` 接入统一关闭栈。模型选择器使用 `useWorkbenchAvailableProviders` 的去凭证只读投影；独立原型入口通过 `workbench-sdk/i18n` 启动宿主国际化。具体工作台不得直接导入宿主 `components/`、`hooks/`、config 或 i18n 实现。
 
@@ -151,9 +151,11 @@ Workbench API 1.3 在 renderer context 中提供 `agentSessions`。大型领域�
 
 Workbench API 1.9 允许 `aiRuns.run()` 在既有版本化请求中携带可选 `toolset`。它继续使用 MyAgents 的 Provider、模型解析和 Claude Agent SDK 一次性运行路径，不创建、不恢复也不持久化 Chat Session；最终文本直接返回工作台候选界面。
 
-一次性 Run 可选携带调用方生成的 `runId`，宿主只为该 ID 保存短期、内存态的最后一条进度投影，供同一工作台通过既有全局 Sidecar 控制面轮询读取。投影仅允许 `status`、`tool`、`intent` 三类简短业务文案，例如“正在生成正文”“正在读取世界架构”“正在整理已读取的资料”；不得传递模型原始思维链、提示词、工具入参或工具返回内容。进度不属于 Chat Session、不会通过会话 SSE 广播，也不持久化；运行结束后订阅立即清理，服务端快照自动过期。并发 Run 必须以各自 `runId` 隔离，不能以当前工作台或当前 Agent 作为共享进度槽。
+一次性 Run 可选携带调用方生成的 `runId`，宿主只为该 ID 保存短期、内存态的最后一条进度投影，供同一工作台通过既有全局 Sidecar 控制面轮询读取。投影仅允许 `status`、`tool`、`intent` 三类简短业务文案，例如“正在生成正文”“正在读取世界架构”“正在整理已读取的资料”；不得传递模型原始思维链、提示词、工具入参或工具返回内容。调用方显式设置 `streamOutput` 时，投影可以附带有字符上限的候选文本快照，用于同一工作台原位展示生成增量；它只能来自模型可见的最终文本通道，不得包含思维链或工具内容，也不能替代 Run 最终返回值。进度不属于 Chat Session、不会通过会话 SSE 广播，也不持久化；运行结束后订阅立即清理，服务端快照自动过期。并发 Run 必须以各自 `runId` 隔离，不能以当前工作台或当前 Agent 作为共享进度槽。
 
 Workbench API 1.10 为复杂的一次性编排增加受控 `executionProfile`。默认 `standard` 档仍将 `timeoutMs` 限制在 10～180 秒，工具型运行最多 8 轮；`extended` 档默认 300 秒、允许显式申请 10～600 秒和最多 16 轮，只供需要读取多个领域事实并输出长结果的明确工作流使用。工作台可以在受控范围内把超时和轮次作为同一工作流预算提交，宿主负责再次封顶。达到轮次上限时，若本轮已有只读资料返回，宿主应在同一次工作台请求内截取资料快照并切换为无工具的直接输出，不得重新开启资料读取循环；只有该收敛输出仍失败时才向工作台返回错误。Rust 控制面为该端点保留 660 秒传输预算，使业务时限先于代理时限结束。工作台不能直接声明任意 SDK 轮次或无限时限；达到时限必须返回明确的超时错误，不能与“模型成功结束但没有文本”混为一谈。多 Agent 编排必须在工作台侧控制并发数量、输入字符预算与阶段状态，避免把每个方案重复展开为独立请求。一次性 Run 成功但结构化结果无法解析时，工作台应先做确定性的本地兼容解析；仅当本地恢复失败时，才可针对该次原始返回追加一次无工具的格式整理 Run，且不得借格式整理重新读取资料或改写业务内容。正文生成等有确定业务长度的结果不能只依赖提示词：工作台必须清除明显的模型自检说明并执行本地长度校验；需要自动调整时只允许针对已有候选做一次无工具 Run，调整失败或仍不合格时保留人工审阅入口但禁止直接写入事实源。
+
+Workbench API 1.11 允许调用方用 `aiRuns.cancel(runId)` 停止在途一次性 Run。`runId` 必须由调用方先行生成并与其进度订阅保持一一对应；宿主为每个在途 Run 持有独立中断控制器，取消仅影响该 Run，返回已取消终态且不得再把其输出交给工作台。工作台在取消请求送达后必须保持忙碌态直到原请求完成清理，并丢弃任何竞争返回的候选。
 
 一次性 Run 的工具能力是完整 Agent Session 的受限子集。宿主只开放工作台登记的只读上下文工具，显式禁用内置文件工具，并在权限回调中拒绝所有未登记工具；工作台不能通过这个接口执行草稿、校验、提交或其它写入。每次 Run 使用独立异步工具上下文，多个工作区或多个 Agent 并发时不得共享可变领域绑定。需要写入、审批、连续追问或展示完整工具过程的任务仍调用 `agentSessions.open()`。
 

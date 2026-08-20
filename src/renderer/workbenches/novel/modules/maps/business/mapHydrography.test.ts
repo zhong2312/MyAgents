@@ -77,4 +77,29 @@ describe("地图水系几何", () => {
     expect(reversed.points.at(-1)).toEqual(river.points[0]);
     expect(reversed.props).toEqual(river.props);
   });
+
+  it("急流复用河流的渐宽、岸线和高光渲染契约", () => {
+    const rapids: MapFeature = {
+      ...river,
+      id: "rapids-1",
+      props: {
+        terrain: "rapids",
+        color: "#76c3d2",
+        bankColor: "#3f8290",
+        highlightColor: "#edffff",
+        lineWidth: "5",
+        sourceWidth: "3",
+        mouthWidth: "7",
+        bankWidth: "1.8",
+      },
+    };
+
+    expect(isMapRiverFeature(rapids)).toBe(true);
+    expect(getMapRiverStyle(rapids)).toMatchObject({
+      sourceWidth: 3,
+      mouthWidth: 7,
+      bankWidth: 1.8,
+      highlightColor: "#edffff",
+    });
+  });
 });

@@ -1,4 +1,8 @@
-import type { MapDocument, MapScenePoint } from "../entities/mapSchema";
+import type {
+  MapDocument,
+  MapObjectGroup,
+  MapScenePoint,
+} from "../entities/mapSchema";
 
 type EditableLayer = {
   readonly visible: boolean;
@@ -15,9 +19,114 @@ function isEditableLayer(layer: EditableLayer | undefined): boolean {
   return Boolean(layer?.visible && !layer.locked);
 }
 
+/** 返回成员所属的持久组合；组合不允许嵌套，因此每个对象最多命中一个。 */
+export function findMapSelectableGroup(
+  map: MapDocument,
+  itemId: string,
+): MapObjectGroup | undefined {
+  return map.groups?.find((group) => group.itemIds.includes(itemId));
+}
+
 /**
- * 框选对象限定为普通地图要素和独立素材印章。海陆区域与连续笔触属于场景
- * 合成底稿，继续使用其单件编辑协议，避免批量平移破坏地形语义。
+ * 将任意成员选择展开为完整组合。调用方仍只保存对象 id，不把“组合”伪装成
+ * 另一种渲染对象，所有几何继续由原对象持有。
+ */
+export function expandMapSelectableItemIds(
+  map: MapDocument,
+  itemIds: readonly string[],
+): readonly string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  itemIds.forEach((itemId) => {
+    const group = findMapSelectableGroup(map, itemId);
+    (group?.itemIds ?? [itemId]).forEach((candidateId) => {
+      if (seen.has(candidateId)) return;
+      seen.add(candidateId);
+      result.push(candidateId);
+    });
+  });
+  return result;
+}
+
+/** 仅当选区完整等于一个组合时，画布才应隐藏成员级变换手柄。 */
+export function isMapSelectableGroupSelection(
+  map: MapDocument,
+  itemIds: readonly string[],
+): boolean {
+  const selectedIds = new Set(itemIds);
+  return Boolean(
+    selectedIds.size > 1 &&
+      map.groups?.some(
+        (group) =>
+          group.itemIds.length === selectedIds.size &&
+          group.itemIds.every((itemId) => selectedIds.has(itemId)),
+      ),
+  );
+}
+
+/**
+ * 把当前选区固定为一个组合。若选区包含旧组合成员，旧组合会被合并或解散，
+ * 以维持“一个对象只能属于一个组合”的文档契约。
+ */
+export function createMapSelectableGroup(
+  map: MapDocument,
+  input: {
+    readonly id: string;
+    readonly name?: string;
+    readonly itemIds: readonly string[];
+  },
+): MapDocument {
+  const itemIds = expandMapSelectableItemIds(map, input.itemIds);
+  const existingItemIds = new Set<string>([
+    ...map.features.map((feature) => feature.id),
+    ...map.artwork.layers.flatMap((layer) =>
+      layer.stamps.map((stamp) => stamp.id),
+    ),
+    ...(map.scene?.layers.flatMap((layer) => [
+      ...layer.strokes.map((stroke) => stroke.id),
+      ...layer.regions.map((region) => region.id),
+    ]) ?? []),
+  ]);
+  const validItemIds = itemIds.filter((itemId) => existingItemIds.has(itemId));
+  if (validItemIds.length < 2) return map;
+
+  const groupedIds = new Set(validItemIds);
+  const groups = (map.groups ?? [])
+    .filter((group) => group.id !== input.id)
+    .map((group) => ({
+      ...group,
+      itemIds: group.itemIds.filter((itemId) => !groupedIds.has(itemId)),
+    }))
+    .filter((group) => group.itemIds.length >= 2);
+  return {
+    ...map,
+    groups: [
+      ...groups,
+      {
+        id: input.id,
+        name: input.name?.trim() || "组合",
+        itemIds: validItemIds,
+      },
+    ],
+  };
+}
+
+/** 解除组合只移除组合引用，不改写成员的图层、几何和样式。 */
+export function ungroupMapSelectableItems(
+  map: MapDocument,
+  groupId: string,
+): MapDocument {
+  if (!map.groups?.some((group) => group.id === groupId)) return map;
+  return {
+    ...map,
+    groups: map.groups.filter((group) => group.id !== groupId),
+  };
+}
+
+/**
+ * 地理画布的多选包含普通要素、独立素材印章和场景内容。场景笔触/区域
+ * 仍然保持各自的矢量事实，只把一次平移作为同一个事务提交，避免材质
+ * 覆盖层与底层陆地被迫分开移动。
  */
 export function isEditableMapSelectableItem(
   map: MapDocument,
@@ -29,18 +138,26 @@ export function isEditableMapSelectableItem(
       map.layers.find((layer) => layer.id === feature.layerId),
     );
   }
-  return isEditableLayer(
-    map.artwork.layers.find((layer) =>
-      layer.stamps.some((stamp) => stamp.id === id),
-    ),
+  const artworkLayer = map.artwork.layers.find((layer) =>
+    layer.stamps.some((stamp) => stamp.id === id),
   );
+  if (artworkLayer) return isEditableLayer(artworkLayer);
+  for (const layer of map.scene?.layers ?? []) {
+    if (
+      layer.strokes.some((stroke) => stroke.id === id) ||
+      layer.regions.some((region) => region.id === id)
+    ) {
+      return isEditableLayer(layer);
+    }
+  }
+  return false;
 }
 
 export function canEditMapSelectableItems(
   map: MapDocument,
   itemIds: readonly string[],
 ): boolean {
-  const ids = [...new Set(itemIds)];
+  const ids = expandMapSelectableItemIds(map, itemIds);
   return (
     ids.length > 0 && ids.every((id) => isEditableMapSelectableItem(map, id))
   );
@@ -52,7 +169,7 @@ export function moveMapSelectableItems(
   itemIds: readonly string[],
   delta: MapScenePoint,
 ): MapDocument {
-  const ids = new Set(itemIds);
+  const ids = new Set(expandMapSelectableItemIds(map, itemIds));
   if (ids.size === 0 || (delta.x === 0 && delta.y === 0)) return map;
   return {
     ...map,
@@ -82,6 +199,36 @@ export function moveMapSelectableItems(
         ),
       })),
     },
+    scene: map.scene
+      ? {
+          ...map.scene,
+          layers: map.scene.layers.map((layer) => ({
+            ...layer,
+            strokes: layer.strokes.map((stroke) =>
+              ids.has(stroke.id)
+                ? {
+                    ...stroke,
+                    points: stroke.points.map((point) => ({
+                      x: point.x + delta.x,
+                      y: point.y + delta.y,
+                    })),
+                  }
+                : stroke,
+            ),
+            regions: layer.regions.map((region) =>
+              ids.has(region.id)
+                ? {
+                    ...region,
+                    points: region.points.map((point) => ({
+                      x: point.x + delta.x,
+                      y: point.y + delta.y,
+                    })),
+                  }
+                : region,
+            ),
+          })),
+        }
+      : map.scene,
   };
 }
 
@@ -194,7 +341,7 @@ export function removeMapSelectableItems(
   map: MapDocument,
   itemIds: readonly string[],
 ): MapDocument {
-  const ids = new Set(itemIds);
+  const ids = new Set(expandMapSelectableItemIds(map, itemIds));
   if (ids.size === 0) return map;
   return {
     ...map,
@@ -206,5 +353,21 @@ export function removeMapSelectableItems(
         stamps: layer.stamps.filter((stamp) => !ids.has(stamp.id)),
       })),
     },
+    scene: map.scene
+      ? {
+          ...map.scene,
+          layers: map.scene.layers.map((layer) => ({
+            ...layer,
+            strokes: layer.strokes.filter((stroke) => !ids.has(stroke.id)),
+            regions: layer.regions.filter((region) => !ids.has(region.id)),
+          })),
+        }
+      : map.scene,
+    groups: map.groups
+      ?.map((group) => ({
+        ...group,
+        itemIds: group.itemIds.filter((itemId) => !ids.has(itemId)),
+      }))
+      .filter((group) => group.itemIds.length >= 2),
   };
 }

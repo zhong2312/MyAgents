@@ -7,6 +7,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import type { ReactNode } from "react";
 
 import type { WorkbenchStorage } from "@/workbench-sdk";
 
@@ -53,6 +54,67 @@ function groupNodes(nodes: readonly KnowledgeNode[]): ReadonlyMap<string, Knowle
   return groups;
 }
 
+function resolveStableEntityNode(
+  nodes: readonly KnowledgeNode[],
+  kind: string,
+  id: string,
+): KnowledgeNode | undefined {
+  const legacyPaths: Readonly<Record<string, string>> = {
+    character: "characters/index.json",
+    item: "world/items/index.json",
+    location: "world/locations/index.json",
+    faction: "world/factions/index.json",
+    event: "timeline/index.json",
+  };
+  const legacyPath = legacyPaths[kind];
+  const candidates = [
+    `domain:${kind}:${id}`,
+    legacyPath ? `entity:${legacyPath}:${id}` : "",
+    kind === "setting" ? `setting:${id}` : "",
+    kind === "space" ? `space:${id}` : "",
+  ];
+  return nodes.find((node) => candidates.includes(node.id));
+}
+
+function LinkedDescription({
+  text,
+  nodes,
+  onSelect,
+}: {
+  readonly text: string;
+  readonly nodes: readonly KnowledgeNode[];
+  readonly onSelect: (id: string) => void;
+}) {
+  const pattern = /\[\[([a-zA-Z]+):([a-zA-Z0-9-]+)(?:\|([^\]]+))?\]\]/gu;
+  const fragments: ReactNode[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > cursor) fragments.push(text.slice(cursor, match.index));
+    const label = match[3]?.trim() || match[2];
+    const target = resolveStableEntityNode(nodes, match[1], match[2]);
+    fragments.push(
+      target ? (
+        <button
+          key={`${match.index}:${target.id}`}
+          type="button"
+          onClick={() => onSelect(target.id)}
+          className="font-medium text-[var(--accent-cool)] hover:underline"
+        >
+          {label}
+        </button>
+      ) : (
+        <span key={`${match.index}:${match[0]}`} title="未找到对应实体">
+          {label}
+        </span>
+      ),
+    );
+    cursor = pattern.lastIndex;
+  }
+  if (cursor < text.length) fragments.push(text.slice(cursor));
+  return <>{fragments}</>;
+}
+
 export default function WikiView({
   storage,
   projectTitle,
@@ -92,10 +154,30 @@ export default function WikiView({
       const lines: string[] = [`# ${projectTitle} · 世界百科`, ""];
       for (const node of snapshot.nodes) {
         lines.push(`## ${node.label}`, "");
+        lines.push(`- 节点 ID：\`${node.id}\``);
         lines.push(`> 类型：${KIND_LABELS[node.kind]}`, "");
         if (node.description) lines.push(node.description, "");
-        const sources = node.sourceRefs.map((ref) => ref.path).join("、");
-        if (sources) lines.push("", `来源：${sources}`);
+        if (node.sourceRefs.length) {
+          lines.push("来源：");
+          for (const source of node.sourceRefs) {
+            lines.push(
+              `- ${source.path}${source.line ? `:${source.line}` : ""}${source.jsonPointer ? ` ${source.jsonPointer}` : ""}`,
+            );
+          }
+        }
+        const relations = snapshot.edges.filter(
+          (edge) => edge.from === node.id || edge.to === node.id,
+        );
+        if (relations.length) {
+          lines.push("关系：");
+          for (const edge of relations) {
+            const otherId = edge.from === node.id ? edge.to : edge.from;
+            const other = snapshot.nodes.find((candidate) => candidate.id === otherId);
+            lines.push(
+              `- ${edge.from === node.id ? "指向" : "来自"} ${edge.label}：${other?.label ?? otherId}`,
+            );
+          }
+        }
         lines.push("");
       }
       const content = `${lines.join("\n").trim()}\n`;
@@ -154,7 +236,11 @@ export default function WikiView({
             </span>
             {selected.description && (
               <p className="mt-4 whitespace-pre-wrap text-sm leading-6">
-                {selected.description}
+                <LinkedDescription
+                  text={selected.description}
+                  nodes={snapshot.nodes}
+                  onSelect={setSelectedId}
+                />
               </p>
             )}
             <section className="mt-6 border-t border-[var(--line-subtle)] pt-4">

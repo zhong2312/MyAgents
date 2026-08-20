@@ -1,5 +1,17 @@
 import type { MapFeature, MapScenePoint } from "../entities/mapSchema";
 
+export const DEFAULT_MAP_RIVER_PROPS = Object.freeze({
+  terrain: "river",
+  color: "#3b83a5",
+  bankColor: "#315d6c",
+  highlightColor: "#c7edf1",
+  lineWidth: "4",
+  sourceWidth: "2",
+  mouthWidth: "10",
+  bankWidth: "1.7",
+  showLabel: "true",
+});
+
 export interface MapRiverStyle {
   readonly color: string;
   readonly bankColor: string;
@@ -24,7 +36,9 @@ function finiteNumber(
 export function isMapRiverFeature(feature: MapFeature): boolean {
   return (
     feature.kind === "route" &&
-    (feature.props.terrain === "river" || feature.props.terrain === "tributary")
+    (feature.props.terrain === "river" ||
+      feature.props.terrain === "tributary" ||
+      feature.props.terrain === "rapids")
   );
 }
 

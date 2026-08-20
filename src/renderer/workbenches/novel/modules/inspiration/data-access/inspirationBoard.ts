@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import type { WorkbenchStorage } from "@/workbench-sdk";
 
+import { createStorageTransaction } from "../../../shared/infrastructure/storageTransaction";
+
 export const INSPIRATION_BOARDS_SCHEMA_VERSION = 1 as const;
 export const INSPIRATION_BOARDS_PATH = "inspiration/boards/index.json";
 
@@ -11,7 +13,16 @@ const idSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/u);
 export const canvasNodeSchema = z
   .object({
     id: idSchema,
-    kind: z.enum(["inspiration", "character", "location", "faction", "item", "event", "chapter", "group"]),
+    kind: z.enum([
+      "inspiration",
+      "character",
+      "location",
+      "faction",
+      "item",
+      "event",
+      "chapter",
+      "group",
+    ]),
     /** 关联实体 id；group 节点为 null。 */
     entityId: z.string().trim().min(1).nullable(),
     label: z.string().trim().min(1),
@@ -76,12 +87,18 @@ export const inspirationBoardsIndexSchema = z
   .object({
     schemaVersion: z.literal(INSPIRATION_BOARDS_SCHEMA_VERSION),
     boards: z.array(
-      z.object({ id: idSchema, name: z.string().trim().min(1), updatedAt: z.string().datetime() }),
+      z.object({
+        id: idSchema,
+        name: z.string().trim().min(1),
+        updatedAt: z.string().datetime(),
+      }),
     ),
   })
   .strict();
 
-export type InspirationBoardsIndex = z.infer<typeof inspirationBoardsIndexSchema>;
+export type InspirationBoardsIndex = z.infer<
+  typeof inspirationBoardsIndexSchema
+>;
 
 function boardPath(boardId: string): string {
   if (!idSchema.safeParse(boardId).success) {
@@ -90,7 +107,10 @@ function boardPath(boardId: string): string {
   return `inspiration/boards/${boardId}.json`;
 }
 
-export function createEmptyBoard(name: string, createdAt: string): InspirationBoard {
+export function createEmptyBoard(
+  name: string,
+  createdAt: string,
+): InspirationBoard {
   return {
     schemaVersion: 1,
     id: `board-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
@@ -112,7 +132,10 @@ export class InspirationBoardFormatError extends Error {
   }
 }
 
-export function parseInspirationBoard(path: string, content: string): InspirationBoard {
+export function parseInspirationBoard(
+  path: string,
+  content: string,
+): InspirationBoard {
   let value: unknown;
   try {
     value = JSON.parse(content);
@@ -147,8 +170,16 @@ export interface InspirationBoardRepository {
   loadIndex(): Promise<InspirationBoardsIndex>;
   loadBoard(boardId: string): Promise<LoadedBoard>;
   createBoard(name: string): Promise<LoadedBoard>;
-  saveBoard(current: LoadedBoard, board: InspirationBoard): Promise<LoadedBoard>;
+  saveBoard(
+    current: LoadedBoard,
+    board: InspirationBoard,
+  ): Promise<LoadedBoard>;
   deleteBoard(boardId: string): Promise<void>;
+}
+
+interface LoadedBoardIndex {
+  readonly index: InspirationBoardsIndex;
+  readonly content: string;
 }
 
 async function ensureTextFile(
@@ -168,14 +199,18 @@ async function ensureTextFile(
 export function createInspirationBoardRepository(
   storage: WorkbenchStorage,
 ): InspirationBoardRepository {
-  const loadIndex = async (): Promise<InspirationBoardsIndex> => {
+  const loadIndexFile = async (): Promise<LoadedBoardIndex> => {
     const file = await ensureTextFile(
       storage,
       INSPIRATION_BOARDS_PATH,
       `${JSON.stringify({ schemaVersion: 1, boards: [] }, null, 2)}\n`,
     );
-    return inspirationBoardsIndexSchema.parse(JSON.parse(file.content));
+    return {
+      index: inspirationBoardsIndexSchema.parse(JSON.parse(file.content)),
+      content: file.content,
+    };
   };
+  const loadIndex = async () => (await loadIndexFile()).index;
 
   return {
     async loadIndex() {
@@ -193,10 +228,10 @@ export function createInspirationBoardRepository(
     },
 
     async createBoard(name) {
-      const index = await loadIndex();
+      const loadedIndex = await loadIndexFile();
+      const index = loadedIndex.index;
       const board = createEmptyBoard(name, new Date().toISOString());
       const content = serializeBoard(board);
-      await storage.createText(boardPath(board.id), content, { createParents: true });
       const nextIndex = {
         ...index,
         boards: [
@@ -204,9 +239,14 @@ export function createInspirationBoardRepository(
           { id: board.id, name: board.name, updatedAt: board.updatedAt },
         ],
       };
-      await storage.writeText(INSPIRATION_BOARDS_PATH, `${JSON.stringify(nextIndex, null, 2)}\n`, {
-        expectedContent: JSON.stringify(index, null, 2) + "\n",
-      });
+      const transaction = createStorageTransaction(storage);
+      transaction.createText(boardPath(board.id), content);
+      transaction.writeText(
+        INSPIRATION_BOARDS_PATH,
+        `${JSON.stringify(nextIndex, null, 2)}\n`,
+        loadedIndex.content,
+      );
+      await transaction.commit();
       return { board, content };
     },
 
@@ -216,43 +256,53 @@ export function createInspirationBoardRepository(
       }
       const next = { ...board, updatedAt: new Date().toISOString() };
       const content = serializeBoard(next);
-      await storage.writeText(boardPath(board.id), content, {
-        expectedContent: current.content,
-      });
-      const index = await loadIndex();
+      const loadedIndex = await loadIndexFile();
+      const index = loadedIndex.index;
       const nextIndex = {
         ...index,
         boards: index.boards.map((entry) =>
-          entry.id === board.id ? { ...entry, name: next.name, updatedAt: next.updatedAt } : entry,
+          entry.id === board.id
+            ? { ...entry, name: next.name, updatedAt: next.updatedAt }
+            : entry,
         ),
       };
-      await storage.writeText(
+      const transaction = createStorageTransaction(storage);
+      transaction.writeText(boardPath(board.id), content, current.content);
+      transaction.writeText(
         INSPIRATION_BOARDS_PATH,
         `${JSON.stringify(nextIndex, null, 2)}\n`,
-        { expectedContent: `${JSON.stringify(index, null, 2)}\n` },
+        loadedIndex.content,
       );
+      await transaction.commit();
       return { board: next, content };
     },
 
     async deleteBoard(boardId) {
-      const index = await loadIndex();
+      const loadedIndex = await loadIndexFile();
+      const index = loadedIndex.index;
       const nextIndex = {
         ...index,
         boards: index.boards.filter((entry) => entry.id !== boardId),
       };
-      await storage.writeText(
+      const transaction = createStorageTransaction(storage);
+      transaction.writeText(
         INSPIRATION_BOARDS_PATH,
         `${JSON.stringify(nextIndex, null, 2)}\n`,
-        { expectedContent: `${JSON.stringify(index, null, 2)}\n` },
+        loadedIndex.content,
       );
-      await storage.remove(boardPath(boardId), { permanent: true }).catch(() => false);
+      transaction.remove(boardPath(boardId));
+      await transaction.commit();
     },
   };
 }
 
 /** T18：把画布便签投影为灵感记录（新增便签时后台创建灵感，标题/正文同步）。 */
 export function buildStickyFromInspiration(
-  inspiration: { readonly id: string; readonly title: string; readonly body: string },
+  inspiration: {
+    readonly id: string;
+    readonly title: string;
+    readonly body: string;
+  },
   position: { readonly x: number; readonly y: number },
 ): CanvasNode {
   return {

@@ -3,6 +3,11 @@ import { promises as fs } from "fs";
 import { dirname, join, resolve, sep } from "path";
 
 import {
+  isKnowledgeSourcePath,
+  normalizeKnowledgePath,
+} from "../../shared/workbenches/novel/knowledgeScope";
+
+import {
   characterGroupDefinitionSchema,
   characterRecordSchema,
   characterSoulDefinitionSchema,
@@ -75,6 +80,11 @@ import {
   generateFantasyMapCandidate,
   type FantasyFeature,
 } from "../../shared/workbenches/novel/fantasyMapGenerator";
+import {
+  FANTASY_MAP_STYLE_ID,
+  applyFantasyMapSvgStyle,
+  localizeFantasyMapFeatures,
+} from "../../shared/workbenches/novel/fantasyMapStyle";
 import {
   convertAzgaarExportToFeatures,
   selectAzgaarMapDocumentFeatures,
@@ -4329,7 +4339,7 @@ async function generateFantasyMapHandler(
     let generator = "fantasy-map-compatibility-adapter";
     let generatedFeatures: readonly (AzgaarMapFeature | FantasyFeature)[] = [];
     let generatedSummary = "";
-    let generatedTitle = "世界地图候选";
+    let generatedTitle = "玄幻世界地图候选";
     let generatedBackgroundImage: string | null = null;
     let runtimeFailure: string | null = null;
     const useCompatibilityCandidate = (reason: string) => {
@@ -4397,9 +4407,10 @@ async function generateFantasyMapHandler(
           if (!/<svg[\s>]/iu.test(exported.content))
             throw new Error("Azgaar Runtime 返回的 SVG 无效");
           generatedFeatures = [];
-          generatedBackgroundImage = `data:image/svg+xml;base64,${Buffer.from(exported.content, "utf8").toString("base64")}`;
+          const styledSvg = applyFantasyMapSvgStyle(exported.content);
+          generatedBackgroundImage = `data:image/svg+xml;base64,${Buffer.from(styledSvg, "utf8").toString("base64")}`;
           generatedSummary =
-            "已调用独立 Azgaar Runtime，SVG 作为不可破坏底图候选进入草稿。";
+            "已调用独立 Azgaar Runtime，并将其地形 SVG 适配为中文玄幻风格底图候选进入草稿。";
         } else {
           let exportedValue: unknown;
           try {
@@ -4425,14 +4436,18 @@ async function generateFantasyMapHandler(
               ...settingContext.placeNames,
             ],
           });
-          generatedFeatures = editableSelection.features;
+          generatedFeatures = localizeFantasyMapFeatures(
+            editableSelection.features,
+            `${seed}:${settingContext.sourceHash}`,
+          );
           if (exported.previewSvg && /<svg[\s>]/iu.test(exported.previewSvg)) {
-            generatedBackgroundImage = `data:image/svg+xml;base64,${Buffer.from(exported.previewSvg, "utf8").toString("base64")}`;
+            const styledSvg = applyFantasyMapSvgStyle(exported.previewSvg);
+            generatedBackgroundImage = `data:image/svg+xml;base64,${Buffer.from(styledSvg, "utf8").toString("base64")}`;
           }
-          generatedSummary = `已调用独立 Azgaar Runtime，从 Full JSON 转换 ${editableSelection.sourceCount} 个官方要素；保留 ${generatedFeatures.length} 个可编辑对象，${editableSelection.omittedCount} 个细节保留在 SVG 底图中。`;
+          generatedSummary = `已调用独立 Azgaar Runtime，从 Full JSON 转换 ${editableSelection.sourceCount} 个官方要素；已适配 ${FANTASY_MAP_STYLE_ID} 中文玄幻风格，保留 ${generatedFeatures.length} 个可编辑对象，${editableSelection.omittedCount} 个细节保留在 SVG 底图中。`;
         }
         generator = runtime.id;
-        generatedTitle = `${args.mapName?.trim() || "Azgaar 世界地图"}`;
+        generatedTitle = `${args.mapName?.trim() || "玄幻世界地图"}`;
       } catch (error) {
         runtimeFailure = message(error);
         useCompatibilityCandidate(
@@ -4470,7 +4485,7 @@ async function generateFantasyMapHandler(
           },
           {
             id: azgaarOverlayLayerId,
-            name: "Azgaar 可编辑边界",
+            name: "玄幻地图 · 可编辑边界",
             visible: true,
             locked: false,
             opacity: 1,
@@ -4479,7 +4494,7 @@ async function generateFantasyMapHandler(
       : [
           {
             id: requestedLayerId,
-            name: "Fantasy Map 地形",
+            name: "玄幻地图 · 地形与灵脉",
             visible: true,
             locked: false,
             opacity: 1,
@@ -4493,7 +4508,8 @@ async function generateFantasyMapHandler(
       canvas: {
         width,
         height,
-        backgroundColor: "#9bb9c4",
+        backgroundColor: "#d8c49a",
+        backgroundPreset: "parchment",
         backgroundImage: generatedBackgroundImage,
         backgroundOpacity: 1,
         ...(generatedBackgroundImage
@@ -4515,7 +4531,7 @@ async function generateFantasyMapHandler(
       "maps",
       draftSource(context),
       {
-        title: args.title?.trim() || `${value.name} · Fantasy Map 候选`,
+        title: args.title?.trim() || `${value.name} · 中文玄幻地图候选`,
         description: `${args.description?.trim() ?? ""}\n生成范围：${scope.nodePath}${scope.generationLevelName ? `；生成层级：${scope.generationLevelName}` : ""}。已读取世界架构 ${settingContext.fileCount} 个事实文件，sourceHash=${settingContext.sourceHash}。生成方案：高度图 ${generationPlan.heightmapTemplate}，${generationPlan.landmassCount} 个陆块意图、${generationPlan.regionCount} 个区域、${generationPlan.riverCount} 条河流意图；Azgaar 国家 ${generationPlan.states}、文化 ${generationPlan.cultures}、宗教 ${generationPlan.religions}、降水 ${generationPlan.precipitation}。`,
         operations: [
           {
@@ -7915,6 +7931,17 @@ type NovelKnowledgeSearchHit = {
   };
 };
 
+type NovelKnowledgeSearchCache = {
+  readonly sourceHash: string;
+  readonly documents: readonly {
+    readonly path: string;
+    readonly content: string;
+  }[];
+  readonly hits: Map<string, readonly NovelKnowledgeSearchHit[]>;
+};
+
+const novelKnowledgeSearchCaches = new Map<string, NovelKnowledgeSearchCache>();
+
 async function listNovelKnowledgeDocuments(
   workspace: string,
   directory = "",
@@ -7925,24 +7952,33 @@ async function listNovelKnowledgeDocuments(
   for (const entry of entries) {
     const relative = directory ? `${directory}/${entry.name}` : entry.name;
     if (
-      entry.name === ".git" ||
-      relative.startsWith("prompts/") ||
-      relative.startsWith("knowledge/derived/") ||
-      relative.includes("/proposals/")
+      entry.isDirectory() &&
+      !isKnowledgeSourcePath(`${relative}/index.json`)
     ) {
-      continue;
+      const normalizedDirectory = normalizeKnowledgePath(`${relative}/`);
+      if (
+        normalizedDirectory.startsWith(".git/") ||
+        normalizedDirectory.startsWith(".cache/") ||
+        normalizedDirectory.startsWith("prompts/") ||
+        normalizedDirectory.startsWith("knowledge/derived/") ||
+        normalizedDirectory.includes("/proposals/") ||
+        normalizedDirectory.includes("/trash/") ||
+        normalizedDirectory.startsWith("simulation/runs/")
+      ) {
+        continue;
+      }
     }
     if (entry.isDirectory()) {
       result.push(...(await listNovelKnowledgeDocuments(workspace, relative)));
       continue;
     }
-    if (!/\.(?:md|json)$/iu.test(entry.name)) continue;
+    if (!isKnowledgeSourcePath(relative)) continue;
     const content = await fs.readFile(
       workspaceFile(workspace, relative),
       "utf8",
     );
     if (Buffer.byteLength(content, "utf8") > 2 * 1024 * 1024) continue;
-    result.push({ path: relative.replace(/\\/g, "/"), content });
+    result.push({ path: normalizeKnowledgePath(relative), content });
   }
   return result;
 }
@@ -7964,11 +8000,19 @@ async function searchNovelKnowledgeHandler(args: {
     const sourceHash = createHash("sha256")
       .update(source, "utf8")
       .digest("hex");
-    const hits: readonly NovelKnowledgeSearchHit[] = retrieveKnowledgeDocuments(
-      documents,
-      query,
-      Math.min(Math.max(args.limit ?? 8, 1), 30),
-    );
+    const limit = Math.min(Math.max(args.limit ?? 8, 1), 30);
+    const cacheKey = `${query}\u0000${limit}`;
+    const previous = novelKnowledgeSearchCaches.get(workspace);
+    const cache: NovelKnowledgeSearchCache =
+      previous?.sourceHash === sourceHash
+        ? previous
+        : { sourceHash, documents, hits: new Map() };
+    let hits = cache.hits.get(cacheKey);
+    if (!hits) {
+      hits = retrieveKnowledgeDocuments(documents, query, limit);
+      cache.hits.set(cacheKey, hits);
+    }
+    novelKnowledgeSearchCaches.set(workspace, cache);
     return result({
       mode: context.mode,
       retrieverVersion: "hybrid-ngram-rerank-v2",
@@ -8575,7 +8619,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_maps_generate_fantasy_map",
-        "先用 novel_world_get_context 取得 sourceHash，再按 worldNodeId 及其后代读取当前小说世界架构的空间树、设定索引、Markdown、词条、地点聚合和势力聚合。worldSourceHash、陆块/区域/河流意图和所有 Azgaar 原生参数均为必填，缺少任一项会拒绝生成；Agent 必须根据范围内事实自己决定它们，不能让工具补猜。azgaarTemplate 只能使用工具 Schema 列出的内置高度图模板。若已配置独立 Azgaar Runtime，则把 sourceHash 校验后的世界快照交给 Runtime 并转换官方 JSON/GeoJSON，Runtime 调用或导出失败时自动保留诊断并生成设定驱动 compatibility-adapter 候选，否则明确使用 compatibility-adapter 候选。结果只写入地图草稿，不会直接修改正式地图；随后必须校验、提交并由作者审阅。",
+        "先用 novel_world_get_context 取得 sourceHash，再按 worldNodeId 及其后代读取当前小说世界架构的空间树、设定索引、Markdown、词条、地点聚合和势力聚合。worldSourceHash、陆块/区域/河流意图和所有 Azgaar 原生参数均为必填，缺少任一项会拒绝生成；Agent 必须根据范围内事实自己决定它们，不能让工具补猜。输出必须是 xuanhuan-zh 中文奇幻/玄幻地图，不是 Azgaar 默认的西式政治地图；地名、势力、山川、水系、秘境和聚落均使用中文。Azgaar 只负责地形与几何候选，默认英文随机标签会被隐藏，并由 MapDocument 的中文可编辑要素重新绘制。azgaarTemplate 只能使用工具 Schema 列出的内置高度图模板。若已配置独立 Azgaar Runtime，则把 sourceHash 校验后的世界快照交给 Runtime 并转换官方 JSON/GeoJSON，Runtime 调用或导出失败时自动保留诊断并生成设定驱动 compatibility-adapter 候选，否则明确使用 compatibility-adapter 候选。结果只写入地图草稿，不会直接修改正式地图；随后必须校验、提交并由作者审阅。",
         {
           draftId: z.string().regex(ID_PATTERN).optional(),
           title: z.string().min(1).max(160).optional(),

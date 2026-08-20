@@ -4,12 +4,12 @@
  * needs to import renderer modules or own MapDocument persistence.
  */
 
-export type FantasyFeatureKind =
-  | "marker"
-  | "label"
-  | "area"
-  | "polygon"
-  | "route";
+import {
+  FANTASY_MAP_STYLE_ID,
+  localizeFantasyMapFeatures,
+} from "./fantasyMapStyle";
+
+export type FantasyFeatureKind = "marker" | "label" | "area" | "route";
 
 export interface FantasyPoint {
   readonly x: number;
@@ -300,6 +300,105 @@ function firstPathIntersection(
   return null;
 }
 
+function distanceSquared(from: FantasyPoint, to: FantasyPoint): number {
+  const deltaX = from.x - to.x;
+  const deltaY = from.y - to.y;
+  return deltaX * deltaX + deltaY * deltaY;
+}
+
+function nearestPathPointIndex(
+  path: readonly FantasyPoint[],
+  target: FantasyPoint,
+): number {
+  return path.reduce(
+    (best, candidate, index) =>
+      distanceSquared(candidate, target) < distanceSquared(path[best]!, target)
+        ? index
+        : best,
+    0,
+  );
+}
+
+function withoutAdjacentDuplicates(
+  points: readonly FantasyPoint[],
+): FantasyPoint[] {
+  return points.reduce<FantasyPoint[]>((result, candidate) => {
+    const previous = result.at(-1);
+    if (!previous || distanceSquared(previous, candidate) > 0.01) {
+      result.push(candidate);
+    }
+    return result;
+  }, []);
+}
+
+/**
+ * 同一河系中的城镇不会凭空拉一条随机折线，而是沿河谷走向组织商路。
+ * 河道仍是单独的水系事实：道路控制点只以稳定偏移派生，作者可以继续
+ * 拖动任一点改写它。偏移也避免道路与河流在成图上完全重叠。
+ */
+function valleyRoadPath(input: {
+  readonly roadId: string;
+  readonly from: FantasyPoint;
+  readonly to: FantasyPoint;
+  readonly waterway: FantasyFeature;
+  readonly coast: readonly FantasyPoint[];
+  readonly width: number;
+  readonly height: number;
+}): FantasyPoint[] | null {
+  const waterwayPoints = input.waterway.points;
+  if (waterwayPoints.length < 3) return null;
+  const fromIndex = nearestPathPointIndex(waterwayPoints, input.from);
+  const toIndex = nearestPathPointIndex(waterwayPoints, input.to);
+  if (Math.abs(toIndex - fromIndex) < 2) return null;
+
+  const direction = toIndex > fromIndex ? 1 : -1;
+  const lateralOffset = clamp(
+    Math.min(input.width, input.height) * 0.012,
+    10,
+    22,
+  );
+  const startAnchor = waterwayPoints[fromIndex]!;
+  const startBefore = waterwayPoints[Math.max(0, fromIndex - 1)]!;
+  const startAfter =
+    waterwayPoints[Math.min(waterwayPoints.length - 1, fromIndex + 1)]!;
+  const startTangent = {
+    x: startAfter.x - startBefore.x,
+    y: startAfter.y - startBefore.y,
+  };
+  const startBank =
+    startTangent.x * (input.from.y - startAnchor.y) -
+    startTangent.y * (input.from.x - startAnchor.x);
+  // 优先沿起始聚落所在河岸走，避免道路刚离开聚落就横跨河面；聚落恰好
+  // 位于河道锚点时再使用稳定种子决定一侧。终点若在另一岸，下面的交叉
+  // 检测会留下真实桥梁，而不是把跨河关系藏在路线属性中。
+  const side =
+    Math.abs(startBank) > 0.1
+      ? Math.sign(startBank)
+      : hashSeed(`${input.roadId}:valley`) % 2 === 0
+        ? 1
+        : -1;
+  const valleyPoints: FantasyPoint[] = [];
+  for (
+    let index = fromIndex;
+    direction > 0 ? index <= toIndex : index >= toIndex;
+    index += direction
+  ) {
+    const anchor = waterwayPoints[index]!;
+    const before = waterwayPoints[Math.max(0, index - 1)]!;
+    const after =
+      waterwayPoints[Math.min(waterwayPoints.length - 1, index + 1)]!;
+    const deltaX = after.x - before.x;
+    const deltaY = after.y - before.y;
+    const length = Math.max(1, Math.hypot(deltaX, deltaY));
+    const candidate = point(
+      anchor.x + (-deltaY / length) * lateralOffset * side,
+      anchor.y + (deltaX / length) * lateralOffset * side,
+    );
+    valleyPoints.push(projectInsidePolygon(candidate, anchor, input.coast));
+  }
+  return withoutAdjacentDuplicates([input.from, ...valleyPoints, input.to]);
+}
+
 function clipByBisector(
   polygon: readonly FantasyPoint[],
   site: FantasyPoint,
@@ -423,6 +522,75 @@ function biomeMaterialsFor(
   return materials;
 }
 
+type FantasyReliefMarker = {
+  readonly component: "volcano" | "snow-peak" | "foothills" | "mesa";
+  readonly terrain: "volcano" | "mountain" | "hills" | "mesa";
+  readonly fallbackName: string;
+  readonly color: string;
+  readonly count: number;
+  readonly pattern: RegExp;
+  readonly description: string;
+};
+
+/**
+ * 世界架构中的高地词不能只影响一块材质底色。它们还应投影为能被作者选中、
+ * 移动和替换的真实地形构件，使火山、雪峰、丘陵与台地成为地图骨架的一部分。
+ */
+function reliefMarkersFor(
+  terrainKeywords: readonly string[],
+): readonly FantasyReliefMarker[] {
+  const terms = terrainKeywords.join(" ");
+  const descriptors: readonly FantasyReliefMarker[] = [
+    {
+      component: "volcano",
+      terrain: "volcano",
+      fallbackName: "火山",
+      color: "#78483c",
+      count: 1,
+      pattern: /火山|熔岩|岩浆|volcanic|lava/iu,
+      description: "依据世界架构火山地貌生成的可编辑火山构件。",
+    },
+    {
+      component: "snow-peak",
+      terrain: "mountain",
+      fallbackName: "雪峰",
+      color: "#6b7273",
+      count: 1,
+      pattern: /冰峰|雪峰|雪岭|冰川|frost|snow|glacier/iu,
+      description: "依据世界架构高寒地貌生成的可编辑雪峰构件。",
+    },
+    {
+      component: "foothills",
+      terrain: "hills",
+      fallbackName: "丘陵",
+      color: "#807057",
+      count: 2,
+      pattern: /丘陵|山麓|缓坡|hills?|foothills?/iu,
+      description: "依据世界架构丘陵地貌生成的可编辑山麓构件。",
+    },
+    {
+      component: "mesa",
+      terrain: "mesa",
+      fallbackName: "高原台地",
+      color: "#986647",
+      count: 1,
+      pattern: /高原|台地|桌状山|plateau|mesa/iu,
+      description: "依据世界架构高原地貌生成的可编辑台地构件。",
+    },
+  ];
+  return descriptors.filter((descriptor) => descriptor.pattern.test(terms));
+}
+
+function terrainKeywordName(
+  terrainKeywords: readonly string[],
+  marker: FantasyReliefMarker,
+): string {
+  return (
+    terrainKeywords.find((term) => marker.pattern.test(term)) ??
+    marker.fallbackName
+  );
+}
+
 function interiorLake(
   random: () => number,
   input: Pick<FantasyMapGenerationInput, "width" | "height">,
@@ -470,7 +638,7 @@ export function generateFantasyMapCandidate(
   features.push(
     feature(
       input,
-      "polygon",
+      "area",
       safeId("landmass", `${seed}-main`),
       nameAt(names, 0, "主大陆"),
       mainCoast,
@@ -500,7 +668,7 @@ export function generateFantasyMapCandidate(
     features.push(
       feature(
         input,
-        "polygon",
+        "area",
         safeId("island", `${seed}-${index}`),
         `外岛 ${index}`,
         island,
@@ -537,7 +705,7 @@ export function generateFantasyMapCandidate(
     features.push(
       feature(
         input,
-        "polygon",
+        "area",
         safeId("region", `${seed}-${index}`),
         nameAt(input.factionNames, index, `地域 ${index + 1}`),
         containedRegion,
@@ -561,15 +729,86 @@ export function generateFantasyMapCandidate(
     );
   }
 
+  // 先确定高地骨架，再由它决定湖泊与河源。这样山脉不再只是最后叠加的
+  // 装饰线，而是整张地图水文和文明分布的空间起点。
+  const terrainTerms = input.terrainKeywords ?? [];
+  const mountainName =
+    terrainTerms.find((term) => /山|峰|岭|mountain|ridge/iu.test(term)) ??
+    "山脉";
+  const snowMountain = terrainTerms.some((term) =>
+    /冰|雪|frost|snow|glacier/iu.test(term),
+  );
+  const mountainRanges: Array<{
+    readonly feature: FantasyFeature;
+    readonly headwaters: readonly FantasyPoint[];
+  }> = [];
+  for (
+    let index = 0;
+    index < Math.max(2, Math.ceil(regionCount / 3));
+    index += 1
+  ) {
+    const anchor = randomLandPoint(random, mainCoast, mainCenter);
+    const angle = (random() - 0.5) * Math.PI;
+    const direction = { x: Math.cos(angle), y: Math.sin(angle) };
+    const normal = { x: -direction.y, y: direction.x };
+    const points = Array.from({ length: 7 }, (_, step) => {
+      const progress = step / 6 - 0.5;
+      const candidate = point(
+        anchor.x +
+          direction.x * progress * input.width * 0.18 +
+          normal.x * Math.sin(step * 1.7) * input.height * 0.035,
+        anchor.y +
+          direction.y * progress * input.width * 0.18 +
+          normal.y * Math.sin(step * 1.7) * input.height * 0.035,
+      );
+      return projectInsidePolygon(candidate, anchor, mainCoast);
+    });
+    const mountain = feature(
+      input,
+      "route",
+      safeId("mountain", `${seed}-${index}`),
+      `${mountainName} ${index + 1}`,
+      points,
+      {
+        color: "#746657",
+        lineWidth: "3",
+        terrain: "mountain",
+        symbol: snowMountain ? "snow-peaks" : "peaks",
+        mountainStyle: snowMountain ? "snow" : "stone",
+        showLabel: "true",
+      },
+      "依据世界架构地貌关键词生成的山脉候选。",
+    );
+    mountainRanges.push({
+      feature: mountain,
+      // 中段和两侧脊点都可以成为集水高地，确保多条河不会机械地从同一
+      // 山峰出发。点本身复用山脉几何，来源关系可被作者直接追溯和编辑。
+      headwaters: [points[1]!, points[3]!, points[5]!],
+    });
+  }
+
   const lakeCount = clamp(Math.round(riverCount / 4), 1, 3);
   const lakes = Array.from({ length: lakeCount }, (_, index) => {
-    const center = randomLandPoint(random, mainCoast, mainCenter);
+    const mountain = mountainRanges[index % mountainRanges.length]!;
+    const headwater =
+      mountain.headwaters[index % mountain.headwaters.length] ?? mainCenter;
+    // 湖泊靠近山脉高地，但不直接覆盖山脊；由此引出的河流具有可解释的
+    // 集水区，而不是随机落在平原中央。
+    const center = projectInsidePolygon(
+      point(
+        headwater.x + (random() - 0.5) * input.width * 0.065,
+        headwater.y + (random() - 0.5) * input.height * 0.065,
+      ),
+      headwater,
+      mainCoast,
+    );
     const points = interiorLake(random, input, mainCoast, center);
+    const id = safeId("lake", `${seed}-${index}`);
     features.push(
       feature(
         input,
-        "polygon",
-        safeId("lake", `${seed}-${index}`),
+        "area",
+        id,
         `湖泊 ${index + 1}`,
         points,
         {
@@ -579,22 +818,31 @@ export function generateFantasyMapCandidate(
           terrain: "lake",
           symbol: "lake",
           showLabel: "true",
+          sourceMountainId: mountain.feature.id,
         },
-        "由内陆水源形成的可编辑湖泊区域。",
+        "由山地集水区形成的可编辑湖泊区域。",
       ),
     );
-    return { center, points };
+    return { id, center, points, sourceMountainId: mountain.feature.id };
   });
 
   const mainRivers: FantasyFeature[] = [];
   for (let index = 0; index < riverCount; index += 1) {
-    const source =
-      (index < lakes.length ? lakes[index]?.center : undefined) ??
-      randomLandPoint(random, mainCoast, mainCenter);
+    const lake = index < lakes.length ? lakes[index] : undefined;
+    const mountain = mountainRanges[index % mountainRanges.length]!;
+    const mountainSource =
+      mountain.headwaters[
+        Math.floor(index / mountainRanges.length) % mountain.headwaters.length
+      ] ?? mainCenter;
+    const source = lake?.center ?? mountainSource;
+    const sourceAngle = Math.atan2(
+      source.y - mainCenter.y,
+      source.x - mainCenter.x,
+    );
     const mouth = farthestCoastPoint(
       mainCoast,
       mainCenter,
-      random() * Math.PI * 2,
+      sourceAngle + (random() - 0.5) * 0.56,
     );
     const delta = { x: mouth.x - source.x, y: mouth.y - source.y };
     const length = Math.max(1, Math.hypot(delta.x, delta.y));
@@ -629,8 +877,11 @@ export function generateFantasyMapCandidate(
         mouthWidth: "7.4",
         terrain: "river",
         riverRole: "main",
+        sourceType: lake ? "lake" : "mountain",
+        sourceMountainId: lake?.sourceMountainId ?? mountain.feature.id,
+        ...(lake ? { sourceLakeId: lake.id } : {}),
       },
-      "从高地或内陆湖泊向海岸汇流的主河流候选。",
+      "从山地集水区或内陆湖泊向海岸汇流的主河流候选。",
     );
     mainRivers.push(river);
     features.push(river);
@@ -640,7 +891,11 @@ export function generateFantasyMapCandidate(
   for (let index = 0; index < tributaryCount; index += 1) {
     const river = mainRivers[index % mainRivers.length]!;
     const confluence = river.points[3 + ((index * 2) % 3)]!;
-    const source = randomLandPoint(random, mainCoast, mainCenter);
+    const mountain =
+      mountainRanges[(index + lakes.length) % mountainRanges.length]!;
+    const source =
+      mountain.headwaters[(index + 1) % mountain.headwaters.length] ??
+      mainCenter;
     const delta = { x: confluence.x - source.x, y: confluence.y - source.y };
     const length = Math.max(1, Math.hypot(delta.x, delta.y));
     const normal = { x: -delta.y / length, y: delta.x / length };
@@ -676,8 +931,10 @@ export function generateFantasyMapCandidate(
           terrain: "tributary",
           riverRole: "tributary",
           joinsRiverId: river.id,
+          sourceType: "mountain",
+          sourceMountainId: mountain.feature.id,
         },
-        "汇入主河流的可编辑支流候选。",
+        "从山地高处汇入主河流的可编辑支流候选。",
       ),
     );
   }
@@ -689,53 +946,7 @@ export function generateFantasyMapCandidate(
         candidate.props.terrain === "tributary"),
   );
 
-  const terrainTerms = input.terrainKeywords ?? [];
-  const mountainName =
-    terrainTerms.find((term) => /山|峰|岭|mountain|ridge/iu.test(term)) ??
-    "山脉";
-  const snowMountain = terrainTerms.some((term) =>
-    /冰|雪|frost|snow|glacier/iu.test(term),
-  );
-  for (
-    let index = 0;
-    index < Math.max(2, Math.ceil(regionCount / 3));
-    index += 1
-  ) {
-    const anchor = randomLandPoint(random, mainCoast, mainCenter);
-    const angle = (random() - 0.5) * Math.PI;
-    const direction = { x: Math.cos(angle), y: Math.sin(angle) };
-    const normal = { x: -direction.y, y: direction.x };
-    const points = Array.from({ length: 7 }, (_, step) => {
-      const progress = step / 6 - 0.5;
-      const candidate = point(
-        anchor.x +
-          direction.x * progress * input.width * 0.18 +
-          normal.x * Math.sin(step * 1.7) * input.height * 0.035,
-        anchor.y +
-          direction.y * progress * input.width * 0.18 +
-          normal.y * Math.sin(step * 1.7) * input.height * 0.035,
-      );
-      return projectInsidePolygon(candidate, anchor, mainCoast);
-    });
-    features.push(
-      feature(
-        input,
-        "route",
-        safeId("mountain", `${seed}-${index}`),
-        `${mountainName} ${index + 1}`,
-        points,
-        {
-          color: "#746657",
-          lineWidth: "3",
-          terrain: "mountain",
-          symbol: snowMountain ? "snow-peaks" : "peaks",
-          mountainStyle: snowMountain ? "snow" : "stone",
-          showLabel: "true",
-        },
-        "依据世界架构地貌关键词生成的山脉候选。",
-      ),
-    );
-  }
+  mountainRanges.forEach((range) => features.push(range.feature));
 
   const biomeMaterials = biomeMaterialsFor(terrainTerms);
   const biomeCount = Math.max(
@@ -762,7 +973,7 @@ export function generateFantasyMapCandidate(
     features.push(
       feature(
         input,
-        "polygon",
+        "area",
         safeId("biome", `${seed}-${material}-${index}`),
         `${FANTASY_BIOME_LABELS[material]} ${index + 1}`,
         points,
@@ -794,11 +1005,57 @@ export function generateFantasyMapCandidate(
     );
   }
 
+  const lakePolygons = lakes.map((lake) => lake.points);
+  const isLakePoint = (candidate: FantasyPoint) =>
+    lakePolygons.some((lake) => pointInPolygon(candidate, lake));
+  const randomDryLandPoint = () => {
+    for (let attempt = 0; attempt < 48; attempt += 1) {
+      const candidate = randomLandPoint(random, mainCoast, mainCenter);
+      if (!isLakePoint(candidate)) return candidate;
+    }
+    return mainCenter;
+  };
+
+  reliefMarkersFor(terrainTerms).forEach((marker) => {
+    const keywordName = terrainKeywordName(terrainTerms, marker);
+    for (let index = 0; index < marker.count; index += 1) {
+      const suffix = marker.count > 1 ? ` ${index + 1}` : "";
+      features.push(
+        feature(
+          input,
+          "marker",
+          safeId(`relief-${marker.component}`, `${seed}-${index}`),
+          `${keywordName}${suffix}`,
+          [randomDryLandPoint()],
+          {
+            component: marker.component,
+            terrain: marker.terrain,
+            color: marker.color,
+            symbol: marker.component,
+            showLabel: "true",
+          },
+          marker.description,
+        ),
+      );
+    }
+  });
+
   const settlementCount = Math.max(4, Math.min(18, regionCount + 2));
-  const settlementPoints: FantasyPoint[] = [];
+  const settlements: Array<{
+    readonly id: string;
+    readonly point: FantasyPoint;
+    readonly type: "capital" | "city" | "village" | "port";
+    readonly waterwayId: string | null;
+  }> = [];
   for (let index = 0; index < settlementCount; index += 1) {
     const river = riverFeatures[index % riverFeatures.length];
-    const riverPoint = river?.points[2 + ((index * 3) % 5)];
+    const riverLandPoints =
+      river?.points.filter(
+        (candidate, pointIndex) => pointIndex > 0 && !isLakePoint(candidate),
+      ) ?? [];
+    const riverPoint =
+      riverLandPoints[(index * 3) % Math.max(1, riverLandPoints.length)] ??
+      river?.points.at(-1);
     const settlementType =
       index === 0
         ? "capital"
@@ -807,9 +1064,10 @@ export function generateFantasyMapCandidate(
           : index % 3 === 0
             ? "village"
             : "city";
-    const settlementPoint =
+    const preferredSettlementPoint =
       settlementType === "port"
-        ? farthestCoastPoint(
+        ? (river?.points.at(-1) ??
+          farthestCoastPoint(
             mainCoast,
             mainCenter,
             riverPoint
@@ -818,7 +1076,7 @@ export function generateFantasyMapCandidate(
                   riverPoint.x - mainCenter.x,
                 )
               : random() * Math.PI * 2,
-          )
+          ))
         : riverPoint
           ? projectInsidePolygon(
               point(
@@ -829,13 +1087,34 @@ export function generateFantasyMapCandidate(
               mainCoast,
             )
           : randomLandPoint(random, mainCoast, mainCenter);
-    settlementPoints.push(settlementPoint);
+    const settlementPoint = riverPoint
+      ? ([
+          preferredSettlementPoint,
+          riverPoint,
+          projectInsidePolygon(
+            point(
+              riverPoint.x + (random() - 0.5) * input.width * 0.045,
+              riverPoint.y + (random() - 0.5) * input.height * 0.045,
+            ),
+            riverPoint,
+            mainCoast,
+          ),
+        ].find((candidate) => !isLakePoint(candidate)) ?? riverPoint)
+      : preferredSettlementPoint;
     const settlement = nameAt(input.placeNames, index, `聚落 ${index + 1}`);
+    const settlementId = safeId("settlement", `${seed}-${index}`);
+    const waterwayId = river?.id ?? null;
+    settlements.push({
+      id: settlementId,
+      point: settlementPoint,
+      type: settlementType,
+      waterwayId,
+    });
     features.push(
       feature(
         input,
         "marker",
-        safeId("settlement", `${seed}-${index}`),
+        settlementId,
         settlement,
         [settlementPoint],
         {
@@ -848,8 +1127,10 @@ export function generateFantasyMapCandidate(
                   ? "#94663b"
                   : "#9a4e38",
           showLabel: "true",
+          component: settlementType,
           symbol: settlementType,
           settlementType,
+          ...(waterwayId ? { waterwayId } : {}),
         },
         `从地点库或世界架构资料中抽取的${
           settlementType === "capital"
@@ -865,12 +1146,37 @@ export function generateFantasyMapCandidate(
   }
 
   // 聚落之间形成一条可编辑的道路骨架。道路不替代作者手工规划，
-  // 只提供一个贴合河流与聚落分布的第一版交通网络。
-  const lakePolygons = lakes.map((lake) => lake.points);
+  // 只提供一个贴合河流与聚落分布的第一版交通网络。每个新聚落连接到
+  // 已出现聚落中最合适的交通节点，而不是按数组顺序生硬串成一条线。
   let bridgeCount = 0;
-  for (let index = 1; index < settlementPoints.length; index += 1) {
-    const from = settlementPoints[index - 1]!;
-    const to = settlementPoints[index]!;
+  for (let index = 1; index < settlements.length; index += 1) {
+    const destination = settlements[index]!;
+    const origin = settlements.slice(0, index).reduce((best, candidate) => {
+      const score = (entry: (typeof settlements)[number]) => {
+        const distance = Math.hypot(
+          entry.point.x - destination.point.x,
+          entry.point.y - destination.point.y,
+        );
+        // 同一水系的聚落天然共享河谷、渡口与商路；优先连接它们，可让
+        // 交通图呈现多个局部网络再汇入都城，而不是随机折线。
+        const sameWaterway =
+          entry.waterwayId !== null &&
+          entry.waterwayId === destination.waterwayId;
+        const capitalBonus = entry.type === "capital" ? input.width * 0.055 : 0;
+        return distance * (sameWaterway ? 0.74 : 1) - capitalBonus;
+      };
+      return score(candidate) < score(best) ? candidate : best;
+    });
+    const from = origin.point;
+    const to = destination.point;
+    const roadId = safeId("road", `${seed}-${index}`);
+    const sharedWaterwayId =
+      origin.waterwayId !== null && origin.waterwayId === destination.waterwayId
+        ? origin.waterwayId
+        : null;
+    const followedWaterway = sharedWaterwayId
+      ? watercourseFeatures.find((waterway) => waterway.id === sharedWaterwayId)
+      : undefined;
     const delta = { x: to.x - from.x, y: to.y - from.y };
     const length = Math.max(1, Math.hypot(delta.x, delta.y));
     const normal = { x: -delta.y / length, y: delta.x / length };
@@ -908,12 +1214,26 @@ export function generateFantasyMapCandidate(
               pathIntersectsPolygon([from, candidate, to], lake),
             ),
         ) ?? projectInsidePolygon(bendCandidates[0]!, from, mainCoast);
-    const routePoints = [from, bend, to];
+    const valleyRoute = followedWaterway
+      ? valleyRoadPath({
+          roadId,
+          from,
+          to,
+          waterway: followedWaterway,
+          coast: mainCoast,
+          width: input.width,
+          height: input.height,
+        })
+      : null;
+    const routePoints = valleyRoute ?? [from, bend, to];
+    // 只有实际采用河谷控制点的道路才宣称跟随该水系。相邻聚落距离过近
+    // 时回退为普通连接线，不能留下一个会误导 Agent 与作者的关联字段。
+    const followsWaterwayId = valleyRoute ? sharedWaterwayId : null;
     features.push(
       feature(
         input,
         "route",
-        safeId("road", `${seed}-${index}`),
+        roadId,
         `道路 ${index}`,
         routePoints,
         {
@@ -923,8 +1243,18 @@ export function generateFantasyMapCandidate(
           routeWidth: "6",
           routeColor: "#c49a69",
           routeCasingColor: "#654934",
+          fromSettlementId: origin.id,
+          toSettlementId: destination.id,
+          ...(followsWaterwayId
+            ? {
+                followsWaterwayId,
+                routing: routePoints.length > 3 ? "river-valley" : "direct",
+              }
+            : {}),
         },
-        "连接聚落与河谷的道路候选，可继续拖动控制点调整。",
+        routePoints.length > 3
+          ? "沿主河谷偏移生成的道路候选；控制点可继续独立拖动调整。"
+          : "连接聚落、河谷与港口的道路候选，可继续拖动控制点调整。",
       ),
     );
     const bridgePoint = firstPathIntersection(routePoints, watercourseFeatures);
@@ -942,7 +1272,7 @@ export function generateFantasyMapCandidate(
             symbol: "bridge",
             terrain: "bridge",
             showLabel: "true",
-            roadId: safeId("road", `${seed}-${index}`),
+            roadId,
           },
           "道路跨越河流时生成的可编辑桥梁候选。",
         ),
@@ -950,10 +1280,11 @@ export function generateFantasyMapCandidate(
     }
   }
 
+  const styledFeatures = localizeFantasyMapFeatures(features, seed);
   return {
     seed,
-    title: names[0] ?? "世界地图候选",
-    summary: `生成 1 个主大陆、${landmassCount - 1} 个外岛、${regionCount} 个区域、${lakes.length} 个湖泊、${riverCount} 条主河、${tributaryCount} 条支流、${biomeCount} 个地貌区、${settlementCount} 个分级聚落、${Math.max(0, settlementCount - 1)} 条道路和 ${bridgeCount} 座桥梁；已读取世界架构上下文。`,
-    features,
+    title: names[0] ?? "九州玄幻地图候选",
+    summary: `生成中文玄幻地图：1 个主大陆、${landmassCount - 1} 个外岛、${regionCount} 个区域、${lakes.length} 个湖泊、${riverCount} 条主河、${tributaryCount} 条支流、${biomeCount} 个地貌区、${settlementCount} 个分级聚落、${Math.max(0, settlementCount - 1)} 条道路和 ${bridgeCount} 座桥梁；已按${FANTASY_MAP_STYLE_ID}风格读取世界架构上下文，包含山脉、河流、灵脉、秘境、势力与聚落候选。`,
+    features: styledFeatures,
   };
 }

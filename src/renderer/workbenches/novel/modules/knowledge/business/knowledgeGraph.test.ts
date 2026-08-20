@@ -389,15 +389,43 @@ describe("buildKnowledgeGraph（设定页 Markdown 派生）", () => {
     ).toBe(true);
   });
 
-  it("persists and reuses a derived graph cache keyed by fact-source hash", async () => {
+  it("reuses an in-memory graph snapshot keyed by fact-source hash without writing project files", async () => {
     const storage = new NovelMemoryStorage({
       "research/cache-note.md": "# 灵潮\n\n东界的灵气正在复苏。\n",
     });
     const first = await buildKnowledgeGraphFromStorage(storage);
-    const cache = storage.getText("knowledge/derived/graph.json");
-    expect(cache).toContain(first.sourceHash);
+    expect(storage.getText("knowledge/derived/graph.json")).toBeUndefined();
     const second = await buildKnowledgeGraphFromStorage(storage);
     expect(second.sourceHash).toBe(first.sourceHash);
     expect(second.nodes).toEqual(first.nodes);
+    expect(second).toBe(first);
+  });
+
+  it("reports malformed JSON instead of silently dropping the source", () => {
+    const snapshot = buildKnowledgeGraph([
+      { path: "world/items/index.json", content: "{", lineCount: 1 },
+    ]);
+    expect(snapshot.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "invalid-json",
+          source: { path: "world/items/index.json" },
+        }),
+      ]),
+    );
+  });
+
+  it("reports dangling structured references with a JSON pointer", () => {
+    const snapshot = buildKnowledgeGraph([
+      {
+        path: "knowledge/entities/records/hero.json",
+        content: JSON.stringify({ id: "hero", name: "主角", characterId: "missing" }),
+        lineCount: 1,
+      },
+    ]);
+    const diagnostic = snapshot.diagnostics.find(
+      (item) => item.kind === "dangling-reference",
+    );
+    expect(diagnostic?.source?.jsonPointer).toBe("/characterId");
   });
 });

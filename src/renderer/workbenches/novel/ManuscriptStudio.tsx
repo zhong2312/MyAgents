@@ -17,7 +17,9 @@ import {
   ChevronLeft,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   CircleDot,
+  CircleStop,
   ClipboardCheck,
   Download,
   Database,
@@ -27,6 +29,7 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  GitCompareArrows,
   GitBranch,
   History,
   Link2,
@@ -89,11 +92,17 @@ import {
   hashManuscriptContent,
 } from "./manuscriptTrackingRepository";
 import {
+  isManuscriptTrackingEvidenceGrounded,
+  partitionManuscriptTrackingChangesByEvidence,
+} from "./manuscriptTrackingEvidence";
+import {
+  getManuscriptTrackingReferenceIssue,
   manuscriptTrackingOperationSchema,
   manuscriptTrackingDomainSchema,
   type ManuscriptTrackingBatch,
   type ManuscriptTrackingChange,
   type ManuscriptTrackingOperation,
+  type ManuscriptTrackingReferenceCatalog,
 } from "./manuscriptTrackingSchema";
 import {
   createNovelCharacterLibraryRepository,
@@ -171,22 +180,10 @@ export interface ManuscriptAiRunRequest {
   readonly executionProfile?: WorkbenchAiExecutionProfile;
   readonly timeoutMs?: number;
   readonly maxTurns?: number;
+  readonly streamOutput?: boolean;
   readonly usesNovelContextTools?: boolean;
   readonly novelContextToolCallLimit?: number;
   readonly onProgress?: (progress: WorkbenchAiRunProgress) => void;
-}
-
-export interface ManuscriptAiAgentRequest {
-  readonly sceneId: NovelModelSceneId;
-  readonly title: string;
-  readonly initialMessage: string;
-  readonly conversationKey: string;
-  readonly runId: string;
-  readonly chapterId: string;
-  readonly chapterTitle: string;
-  readonly presentation?: "dialog" | "compact-review" | "embedded-review";
-  readonly embeddedSurfaceId?: string;
-  readonly companionContext?: Readonly<Record<string, string>>;
 }
 
 interface ManuscriptStudioProps {
@@ -262,7 +259,7 @@ interface ManuscriptStudioProps {
     }[];
   }) => Promise<void>;
   readonly onAiRun?: (request: ManuscriptAiRunRequest) => Promise<string>;
-  readonly onOpenAiAgent?: (request: ManuscriptAiAgentRequest) => Promise<void>;
+  readonly onCancelAiRun?: (runId: string) => Promise<void>;
   readonly onAdoptSimulation: (input: {
     readonly title: string;
     readonly description: string;
@@ -323,6 +320,7 @@ interface AiCandidate {
 interface SelectionAiLoading {
   readonly mode: WritingAiMode;
   readonly anchor: SelectionToolbarPosition;
+  readonly partialOutput?: string;
 }
 
 interface RoomScheme {
@@ -475,6 +473,7 @@ interface RoomWorkspaceProps {
   readonly manuscriptContent: string;
   readonly enabled: boolean;
   readonly onRun: (request: ManuscriptAiRunRequest) => Promise<string>;
+  readonly onCancelRun?: (runId: string) => Promise<void>;
   readonly onUseBrief: (brief: string) => void;
   readonly onAdoptSimulation: (input: {
     readonly title: string;
@@ -493,6 +492,7 @@ interface RoomWorkspaceProps {
   readonly onShowAgentPrompt?: (agent: number) => void;
   readonly outputFontScale?: BrainstormFontScale;
   readonly onBusyChange?: (busy: boolean) => void;
+  readonly onPendingChange?: (pending: boolean) => void;
 }
 
 type RoomDialogProps = Omit<RoomWorkspaceProps, "kind" | "presentation"> & {
@@ -505,13 +505,13 @@ interface BrainstormRoomDialogProps extends RoomDialogProps {
   readonly generationContext: string;
   readonly targetWordCount?: number;
   readonly persistedManuscriptContent: string;
-  readonly onOpenAiAgent?: (request: ManuscriptAiAgentRequest) => Promise<void>;
   readonly onApplyGeneratedText: (
     content: string,
     expectedContent: string,
     expectedPersistedContent: string,
   ) => Promise<void> | void;
   readonly onOpenModelSettings: () => void;
+  readonly onCancelAiRun?: (runId: string) => Promise<void>;
 }
 
 type FullGenerationStep = 1 | 2 | 3;
@@ -536,9 +536,10 @@ export interface FullGenerationPlan {
 interface FullGenerationWorkflowProps {
   readonly storage: WorkbenchStorage;
   readonly project: LoadedNovelProject;
+  readonly typography: ManuscriptTypography;
   readonly open: boolean;
   readonly embedded?: boolean;
-  readonly agentOnly?: boolean;
+  readonly startAtGeneration?: boolean;
   readonly chapter: LoadedNovelChapter | undefined;
   readonly chapterPlan:
     | LoadedNovelProject["narrative"]["library"]["chapters"][number]
@@ -549,15 +550,16 @@ interface FullGenerationWorkflowProps {
   readonly generationContext: string;
   readonly targetWordCount?: number;
   readonly onRun?: (request: ManuscriptAiRunRequest) => Promise<string>;
+  readonly onCancelRun?: (runId: string) => Promise<void>;
   readonly onApplyGeneratedText: (
     content: string,
     expectedContent: string,
     expectedPersistedContent: string,
   ) => Promise<void> | void;
-  readonly onOpenAiAgent?: (request: ManuscriptAiAgentRequest) => Promise<void>;
   readonly onOpenModelSettings: () => void;
   readonly onClose: () => void;
   readonly onBusyChange?: (busy: boolean) => void;
+  readonly onPendingChange?: (pending: boolean) => void;
 }
 
 type FullGenerationChapterPlan =
@@ -628,6 +630,7 @@ interface QualityReview {
   readonly summary: string;
   readonly issues: readonly QualityIssue[];
   readonly passed: readonly string[];
+  readonly discardedIssueCount: number;
 }
 
 interface NarrativeExtractionDraft {
@@ -1176,6 +1179,168 @@ export function parseRoomSchemes(
       nodes: [],
     },
   ].slice(0, limit);
+}
+
+const SIMULATION_DRAFT_EMPTY_VALUE = "（未填写）";
+const SIMULATION_DRAFT_EMPTY_NODES = "（无章节节点）";
+
+function simulationDraftField(value: string): string {
+  const trimmed = value.trim();
+  return trimmed === SIMULATION_DRAFT_EMPTY_VALUE ? "" : trimmed;
+}
+
+export function buildSimulationCandidateDraft(
+  scheme: Pick<RoomScheme, "title" | "premise" | "content" | "nodes">,
+  simulationStartChapter: number,
+): string {
+  const nodes = scheme.nodes.length
+    ? scheme.nodes
+        .map((node) =>
+          [
+            `### 第 ${simulationStartChapter + node.offset} 章 · ${node.title}`,
+            "#### 内容",
+            node.summary || SIMULATION_DRAFT_EMPTY_VALUE,
+            "#### 验收",
+            node.checkpoint || SIMULATION_DRAFT_EMPTY_VALUE,
+          ].join("\n"),
+        )
+        .join("\n\n")
+    : SIMULATION_DRAFT_EMPTY_NODES;
+  return [
+    `# 候选路径：${scheme.title}`,
+    "## 前提",
+    scheme.premise || SIMULATION_DRAFT_EMPTY_VALUE,
+    "## 方案正文",
+    scheme.content,
+    "## 章节节点",
+    nodes,
+  ].join("\n\n");
+}
+
+export function parseSimulationCandidateDraft(
+  draft: string,
+  simulationStartChapter: number,
+): Pick<RoomScheme, "title" | "premise" | "content" | "nodes"> {
+  const lines = draft.replace(/\r\n?/gu, "\n").split("\n");
+  const firstContentLine = lines.findIndex((line) => line.trim().length > 0);
+  const titleMatch =
+    firstContentLine >= 0
+      ? /^#\s+候选路径[：:]\s*(.+)$/u.exec(lines[firstContentLine].trim())
+      : null;
+  const title = titleMatch?.[1]?.trim() ?? "";
+  if (!title) {
+    throw new Error("编辑后的剧情路径缺少“# 候选路径：标题”");
+  }
+
+  const uniqueHeadingIndex = (heading: string): number => {
+    const indexes = lines.flatMap((line, index) =>
+      line.trim() === heading ? [index] : [],
+    );
+    if (indexes.length !== 1) {
+      throw new Error(`编辑后的剧情路径必须保留唯一的“${heading}”段落`);
+    }
+    return indexes[0];
+  };
+  const premiseIndex = uniqueHeadingIndex("## 前提");
+  const contentIndex = uniqueHeadingIndex("## 方案正文");
+  const nodesIndex = uniqueHeadingIndex("## 章节节点");
+  if (
+    premiseIndex <= firstContentLine ||
+    contentIndex <= premiseIndex ||
+    nodesIndex <= contentIndex
+  ) {
+    throw new Error("编辑后的剧情路径段落顺序无效");
+  }
+
+  const premise = simulationDraftField(
+    lines.slice(premiseIndex + 1, contentIndex).join("\n"),
+  );
+  const content = simulationDraftField(
+    lines.slice(contentIndex + 1, nodesIndex).join("\n"),
+  );
+  if (!content) {
+    throw new Error("编辑后的剧情路径缺少方案正文");
+  }
+
+  const nodeLines = lines.slice(nodesIndex + 1);
+  const nodeHeaderPattern = /^###\s+第\s*(\d+)\s*章\s*[·・]\s*(.+)$/u;
+  const nonEmptyNodeLines = nodeLines.filter((line) => line.trim());
+  if (
+    nonEmptyNodeLines.length === 1 &&
+    nonEmptyNodeLines[0].trim() === SIMULATION_DRAFT_EMPTY_NODES
+  ) {
+    return { title, premise, content, nodes: [] };
+  }
+
+  const nodeHeaderIndexes = nodeLines.flatMap((line, index) =>
+    nodeHeaderPattern.test(line.trim()) ? [index] : [],
+  );
+  if (!nodeHeaderIndexes.length) {
+    throw new Error("编辑后的章节节点格式无效，请保留“### 第 N 章 · 节点标题”");
+  }
+  const leadingNodeText = nodeLines
+    .slice(0, nodeHeaderIndexes[0])
+    .join("\n")
+    .trim();
+  if (leadingNodeText) {
+    throw new Error("“章节节点”标题后存在无法识别的内容");
+  }
+  if (nodeHeaderIndexes.length > 12) {
+    throw new Error("剧情路径最多保留 12 个章节节点");
+  }
+
+  const nodes = nodeHeaderIndexes.map((startIndex, index): RoomPathNode => {
+    const endIndex = nodeHeaderIndexes[index + 1] ?? nodeLines.length;
+    const headerMatch = nodeHeaderPattern.exec(nodeLines[startIndex].trim());
+    const absoluteChapter = Number(headerMatch?.[1]);
+    const nodeTitle = headerMatch?.[2]?.trim() ?? "";
+    if (!Number.isInteger(absoluteChapter) || !nodeTitle) {
+      throw new Error("编辑后的章节节点缺少有效章号或标题");
+    }
+    const offset = absoluteChapter - simulationStartChapter;
+    if (offset < 1) {
+      throw new Error(
+        `章节节点“${nodeTitle}”必须晚于第 ${simulationStartChapter} 章`,
+      );
+    }
+
+    const block = nodeLines.slice(startIndex + 1, endIndex);
+    const contentHeadingIndexes = block.flatMap((line, blockIndex) =>
+      line.trim() === "#### 内容" ? [blockIndex] : [],
+    );
+    const checkpointHeadingIndexes = block.flatMap((line, blockIndex) =>
+      line.trim() === "#### 验收" ? [blockIndex] : [],
+    );
+    if (
+      contentHeadingIndexes.length !== 1 ||
+      checkpointHeadingIndexes.length !== 1 ||
+      checkpointHeadingIndexes[0] <= contentHeadingIndexes[0]
+    ) {
+      throw new Error(
+        `章节节点“${nodeTitle}”必须保留唯一的“#### 内容”和“#### 验收”段落`,
+      );
+    }
+    const unrecognizedPrefix = block
+      .slice(0, contentHeadingIndexes[0])
+      .join("\n")
+      .trim();
+    if (unrecognizedPrefix) {
+      throw new Error(`章节节点“${nodeTitle}”包含无法识别的前置内容`);
+    }
+    return {
+      offset,
+      title: nodeTitle,
+      summary: simulationDraftField(
+        block
+          .slice(contentHeadingIndexes[0] + 1, checkpointHeadingIndexes[0])
+          .join("\n"),
+      ),
+      checkpoint: simulationDraftField(
+        block.slice(checkpointHeadingIndexes[0] + 1).join("\n"),
+      ),
+    };
+  });
+  return { title, premise, content, nodes };
 }
 
 export function buildBrainstormSystemPrompt(agent: number): string {
@@ -1767,6 +1932,7 @@ function isTrackingOperationCompatible(
 
 export function parseTrackingProposal(output: string): {
   readonly summary: string;
+  readonly timeAnchorEventId: string | null;
   readonly changes: readonly Omit<ManuscriptTrackingChange, "id">[];
 } {
   const source = extractJson(output);
@@ -1924,13 +2090,23 @@ export function parseTrackingProposal(output: string): {
     ) {
       return [];
     }
+    const entityId =
+      typeof item.entityId === "string" && item.entityId.trim()
+        ? item.entityId.trim()
+        : null;
+    if (
+      getManuscriptTrackingReferenceIssue({
+        title,
+        entityId,
+        operation: parsedOperation.data,
+      })
+    ) {
+      return [];
+    }
     return [
       {
         domain: domain.data,
-        entityId:
-          typeof item.entityId === "string" && item.entityId.trim()
-            ? item.entityId.trim()
-            : null,
+        entityId,
         title,
         before: typeof item.before === "string" ? item.before : null,
         after,
@@ -1944,6 +2120,11 @@ export function parseTrackingProposal(output: string): {
   }
   return {
     summary: typeof record.summary === "string" ? record.summary : "",
+    timeAnchorEventId:
+      typeof record.timeAnchorEventId === "string" &&
+      /^[a-z0-9][a-z0-9-]*$/u.test(record.timeAnchorEventId)
+        ? record.timeAnchorEventId
+        : null,
     changes,
   };
 }
@@ -2074,7 +2255,39 @@ export function parseQualityReview(output: string): QualityReview {
     summary,
     issues,
     passed,
+    discardedIssueCount: 0,
   };
+}
+
+export function verifyQualityReviewEvidence(
+  review: QualityReview,
+  sourceContent: string,
+): QualityReview {
+  const issues = review.issues.filter(
+    (issue) =>
+      Boolean(issue.evidence) && sourceContent.includes(issue.evidence),
+  );
+  const discardedIssueCount = review.issues.length - issues.length;
+  if (review.issues.length > 0 && issues.length === 0) {
+    throw new Error("质量检查返回的问题均无法在正文中验证，请重新检查");
+  }
+  return { ...review, issues, discardedIssueCount };
+}
+
+export function findUniqueEvidenceRange(
+  content: string,
+  evidence: string,
+): { readonly start: number; readonly end: number } | null {
+  const normalizedEvidence = evidence.trim();
+  if (!normalizedEvidence) return null;
+  const start = content.indexOf(normalizedEvidence);
+  if (start < 0) return null;
+  return content.indexOf(
+    normalizedEvidence,
+    start + normalizedEvidence.length,
+  ) < 0
+    ? { start, end: start + normalizedEvidence.length }
+    : null;
 }
 
 export function isQualityReviewCurrent({
@@ -2908,19 +3121,23 @@ function NarrativeExtractionDialog({
               批量抽取会为每章新建剧情章节，避免覆盖已有规划。
             </p>
           )}
-          <button
-            type="button"
-            className="ns-button is-primary w-full"
-            onClick={onRun}
-            disabled={busy || hasPendingDrafts || !selectedCount || !aiAvailable}
-          >
-            {busy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Sparkles className="h-3.5 w-3.5" />
-            )}
-            {busy ? "正在提炼" : "AI 提炼正文事实"}
-          </button>
+          <div className="ms-extraction-run-action">
+            <button
+              type="button"
+              className="ns-button is-primary w-full"
+              onClick={onRun}
+              disabled={
+                busy || hasPendingDrafts || !selectedCount || !aiAvailable
+              }
+            >
+              {busy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5" />
+              )}
+              {busy ? "正在提炼" : "AI 提炼正文事实"}
+            </button>
+          </div>
           {hasPendingDrafts && (
             <p className="ms-extraction-hint">
               当前提炼结果待确认；写入或放弃后才可修改范围并重新提炼。
@@ -3288,6 +3505,12 @@ function SelectionAiLoadingPopover({
     generate: "快速生成",
     continue: "快速续写",
   }[loading.mode];
+  const action = {
+    revise: "润色",
+    expand: "扩写",
+    generate: "生成",
+    continue: "续写",
+  }[loading.mode];
   const { elementRef, dragHandlers } = useSelectionPopoverLayout(
     loading.anchor,
   );
@@ -3309,11 +3532,20 @@ function SelectionAiLoadingPopover({
         </span>
       </header>
       <div className="ms-selection-ai-loading-content">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        <div>
-          <strong>正在处理选中文字</strong>
-          <small>正在整理上下文并生成候选内容</small>
-        </div>
+        {loading.partialOutput ? (
+          <div className="ms-selection-ai-streaming-output" aria-live="polite">
+            <strong>正在生成{action}内容</strong>
+            <pre>{loading.partialOutput}</pre>
+          </div>
+        ) : (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <div>
+              <strong>正在生成{action}内容</strong>
+              <small>直接生成候选内容</small>
+            </div>
+          </>
+        )}
       </div>
     </section>
   );
@@ -3715,6 +3947,20 @@ function yieldBrainstormProgressFrame(): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
+function createRoomRunId(kind: "brainstorm" | "simulation"): string {
+  const randomId =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  return `room-${kind}-${randomId}`;
+}
+
+function createManuscriptAiRunId(mode: WritingAiMode): string {
+  const randomId =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  return `manuscript-${mode}-${randomId}`;
+}
+
 function RoomWorkspace({
   kind,
   presentation = "page",
@@ -3730,12 +3976,20 @@ function RoomWorkspace({
   onShowAgentPrompt,
   outputFontScale = 100,
   onBusyChange,
+  onPendingChange,
+  onCancelRun,
 }: RoomWorkspaceProps) {
   const isBrainstorm = kind === "brainstorm";
   const isDialog = presentation === "dialog";
   const outputFontScaleStyle = isBrainstorm
     ? buildBrainstormFontScaleStyle(outputFontScale)
     : undefined;
+  const roomDiffFontSize = Number(
+    (14 * (isBrainstorm ? outputFontScale / 100 : 1)).toFixed(2),
+  );
+  const roomDiffLineHeight = Number(
+    (22 * (isBrainstorm ? outputFontScale / 100 : 1)).toFixed(2),
+  );
   const roles = isBrainstorm ? ROOM_ROLES : SIMULATION_ROLES;
   const availableProviders = useWorkbenchAvailableProviders();
   const modelRepository = useMemo(
@@ -3786,6 +4040,12 @@ function RoomWorkspace({
   const [brainstormPlans, setBrainstormPlans] = useState<
     readonly BrainstormCompletePlan[]
   >([]);
+  const [brainstormCandidateDrafts, setBrainstormCandidateDrafts] = useState<
+    Readonly<Record<string, string>>
+  >({});
+  const [simulationCandidateDrafts, setSimulationCandidateDrafts] = useState<
+    Readonly<Record<string, string>>
+  >({});
   const [brainstormAgentProgress, setBrainstormAgentProgress] = useState<
     readonly BrainstormAgentProgress[]
   >([]);
@@ -3798,12 +4058,69 @@ function RoomWorkspace({
   const [expandedSchemes, setExpandedSchemes] = useState<ReadonlySet<string>>(
     new Set(),
   );
+  const [hiddenRoomDiffs, setHiddenRoomDiffs] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  // React Fast Refresh 可能保留旧的单一 Diff 状态；将其归一化为当前的隐藏集合。
+  const normalizedHiddenRoomDiffs =
+    hiddenRoomDiffs instanceof Set ? hiddenRoomDiffs : new Set<string>();
   const runInFlightRef = useRef(false);
+  const pendingRoomResultRef = useRef(false);
+  const activeRoomRunIdsRef = useRef(new Set<string>());
+  const roomCancelRequestedRef = useRef(false);
+  const roomCandidateBaselineRef = useRef("");
+  const [isCancellingRoom, setIsCancellingRoom] = useState(false);
   const activeConfigs = configs.filter((config) => config.enabled);
+  const simulationStartChapter =
+    (chapter?.displayNumber ?? 0) + (simulationStart === "chapter-end" ? 0 : 1);
+  const chapterCheckpointLabel = chapter
+    ? chapter.title.trim() &&
+      chapter.title.trim() !== `第 ${chapter.displayNumber} 章`
+      ? `第 ${chapter.displayNumber} 章 · ${chapter.title.trim()}`
+      : `第 ${chapter.displayNumber} 章`
+    : "未绑定章节";
+  const simulationStartLabel = chapter
+    ? simulationStart === "chapter-end"
+      ? chapterCheckpointLabel
+      : simulationStart === "next-plan"
+        ? `第 ${chapter.displayNumber + 1} 章计划`
+        : `当前单元末 · 第 ${chapter.displayNumber + 1} 章起`
+    : "未绑定章节";
+  const roomCandidateBaseline = [
+    `当前章节：${chapterCheckpointLabel}`,
+    chapterPlan
+      ? `当前章节规划：\n${chapterPlan.description || "（未填写）"}`
+      : "当前章节规划：未关联",
+    `当前正文快照：\n${manuscriptContent.trim() || "（空正文）"}`,
+  ].join("\n\n");
+
+  const reportPendingRoomResult = useCallback(
+    (pending: boolean) => {
+      pendingRoomResultRef.current = pending;
+      onPendingChange?.(pending);
+    },
+    [onPendingChange],
+  );
 
   useEffect(() => {
     onBusyChange?.(running.size > 0);
   }, [onBusyChange, running]);
+  const hasPendingRoomResult = isBrainstorm
+    ? brainstormPlans.length > 0
+    : results.some((result) =>
+        result.schemes.some(
+          (_scheme, index) => !adopted.has(`${result.agent}-${index}`),
+        ),
+      );
+  useEffect(() => {
+    reportPendingRoomResult(hasPendingRoomResult);
+  }, [hasPendingRoomResult, reportPendingRoomResult]);
+  useEffect(
+    () => () => {
+      reportPendingRoomResult(false);
+    },
+    [reportPendingRoomResult],
+  );
   const controllerProgress = isBrainstorm
     ? brainstormAgentProgress.find((item) => item.agent === null)
     : undefined;
@@ -4089,29 +4406,84 @@ function RoomWorkspace({
     return context;
   };
 
+  const cancelRoomRun = async () => {
+    if (!runInFlightRef.current || isCancellingRoom) return;
+    roomCancelRequestedRef.current = true;
+    setIsCancellingRoom(true);
+    const runIds = [...activeRoomRunIdsRef.current];
+    if (!onCancelRun || !runIds.length) return;
+    const failures = await Promise.allSettled(
+      runIds.map((runId) => onCancelRun(runId)),
+    );
+    if (failures.some((result) => result.status === "rejected")) {
+      setError("取消请求未能送达；AI 任务仍在运行，请稍后重试。");
+      roomCancelRequestedRef.current = false;
+      setIsCancellingRoom(false);
+    }
+  };
+
   const run = async () => {
     if (!chapter || runInFlightRef.current || !activeConfigs.length) return;
+    if (pendingRoomResultRef.current) {
+      setError(
+        isBrainstorm
+          ? "当前有尚未处理的脑暴方案，请先采用，或关闭后明确放弃，再开始新一轮会诊。"
+          : "当前有尚未处理的候选剧情路径，请先送入剧情工程，或关闭后明确放弃，再开始新一轮推演。",
+      );
+      return;
+    }
     runInFlightRef.current = true;
     // 在第一个 await 前同步报告，保证外层导航守卫已经开始拦截。
     onBusyChange?.(true);
+    roomCancelRequestedRef.current = false;
+    setIsCancellingRoom(false);
+    setHiddenRoomDiffs(new Set());
+    roomCandidateBaselineRef.current = isBrainstorm
+      ? [
+          roomCandidateBaseline,
+          `作者补充意图：\n${brainstormAuthorIntent.trim() || "（未填写）"}`,
+        ].join("\n\n")
+      : [
+          roomCandidateBaseline,
+          `推演范围：从 ${simulationStartLabel} 开始，向后 ${simulationHorizon} 章。`,
+        ].join("\n\n");
     const roomRunBudget = {
       timeoutMinutes: runTimeoutMinutes,
       maxTurns: runMaxTurns,
     };
-    const runRoomAi = (request: ManuscriptAiRunRequest) =>
-      onRun(
-        applyExtendedAiRunBudget(
-          request,
-          roomRunBudget.timeoutMinutes,
-          roomRunBudget.maxTurns,
-        ),
-      );
+    const runRoomAi = async (
+      request: ManuscriptAiRunRequest,
+    ): Promise<string> => {
+      if (roomCancelRequestedRef.current) {
+        throw new Error("本次 AI 任务已取消");
+      }
+      const runId = createRoomRunId(kind);
+      activeRoomRunIdsRef.current.add(runId);
+      try {
+        const output = await onRun({
+          ...applyExtendedAiRunBudget(
+            request,
+            roomRunBudget.timeoutMinutes,
+            roomRunBudget.maxTurns,
+          ),
+          runId,
+        });
+        if (roomCancelRequestedRef.current) {
+          throw new Error("本次 AI 任务已取消");
+        }
+        return output;
+      } finally {
+        activeRoomRunIdsRef.current.delete(runId);
+      }
+    };
     setError(null);
     setResults([]);
     setAdopted(new Set());
     setExpandedSchemes(new Set());
     setBrainstormRoundtable(null);
     setBrainstormPlans([]);
+    setBrainstormCandidateDrafts({});
+    setSimulationCandidateDrafts({});
     setBrainstormAgentProgress(
       isBrainstorm
         ? [
@@ -4161,6 +4533,21 @@ function RoomWorkspace({
         );
       }
       setError(`上下文模块读取失败：${errorText(cause)}`);
+      return;
+    }
+
+    if (roomCancelRequestedRef.current) {
+      setRunning(new Set());
+      activeRoomRunIdsRef.current.clear();
+      runInFlightRef.current = false;
+      roomCancelRequestedRef.current = false;
+      setIsCancellingRoom(false);
+      onBusyChange?.(false);
+      setError(
+        isBrainstorm
+          ? "本次脑暴已取消，未保留候选方案。"
+          : "本次剧情推演已取消，未保留候选路径。",
+      );
       return;
     }
 
@@ -4249,6 +4636,7 @@ function RoomWorkspace({
               );
               return note;
             } catch (cause) {
+              if (roomCancelRequestedRef.current) throw cause;
               const detail = errorText(cause);
               setBrainstormAgentProgress((current) =>
                 current.map((item) =>
@@ -4480,6 +4868,7 @@ function RoomWorkspace({
               );
               return contributions;
             } catch (cause) {
+              if (roomCancelRequestedRef.current) throw cause;
               const detail = errorText(cause);
               setBrainstormAgentProgress((current) =>
                 current.map((item) =>
@@ -4576,6 +4965,7 @@ function RoomWorkspace({
             ),
           );
         } catch (cause) {
+          if (roomCancelRequestedRef.current) throw cause;
           const detail = errorText(cause);
           setBrainstormAgentProgress((current) =>
             current.map((item) =>
@@ -4616,12 +5006,22 @@ function RoomWorkspace({
           });
         }
         setBrainstormPhase("auditing");
+        reportPendingRoomResult(completePlans.length > 0);
         setBrainstormPlans(completePlans);
         setSelectedBrainstormPlanId(completePlans[0]?.id ?? null);
         setBrainstormPhase("ready");
         setResults([]);
         return;
       } catch (cause) {
+        if (roomCancelRequestedRef.current) {
+          setBrainstormRoundtable(null);
+          setBrainstormPlans([]);
+          setSelectedBrainstormPlanId(null);
+          setBrainstormPhase("idle");
+          reportPendingRoomResult(false);
+          setError("本次脑暴已取消，未保留候选方案。");
+          return;
+        }
         setBrainstormPhase("failed");
         setError(
           currentBrainstormPhase === "council"
@@ -4638,6 +5038,9 @@ function RoomWorkspace({
       } finally {
         setRunning(new Set());
         runInFlightRef.current = false;
+        activeRoomRunIdsRef.current.clear();
+        roomCancelRequestedRef.current = false;
+        setIsCancellingRoom(false);
         onBusyChange?.(false);
       }
     }
@@ -4728,6 +5131,7 @@ function RoomWorkspace({
           schemes,
         } satisfies RoomAgentResult;
       } catch (cause) {
+        if (roomCancelRequestedRef.current) throw cause;
         updateSimulationProgress({
           state: brainstormProgressStateForError(cause),
           task: "请求失败",
@@ -4750,11 +5154,29 @@ function RoomWorkspace({
     });
     try {
       const next = await Promise.all(tasks);
+      if (roomCancelRequestedRef.current) {
+        setResults([]);
+        reportPendingRoomResult(false);
+        setError("本次剧情推演已取消，未保留候选路径。");
+        return;
+      }
+      reportPendingRoomResult(next.some((item) => item.schemes.length > 0));
       setResults(next);
       if (next.every((item) => item.error))
         setError("所有 Agent 都未返回可用方案");
+    } catch (cause) {
+      setResults([]);
+      reportPendingRoomResult(false);
+      setError(
+        roomCancelRequestedRef.current
+          ? "本次剧情推演已取消，未保留候选路径。"
+          : `剧情推演失败：${errorText(cause)}`,
+      );
     } finally {
       runInFlightRef.current = false;
+      activeRoomRunIdsRef.current.clear();
+      roomCancelRequestedRef.current = false;
+      setIsCancellingRoom(false);
       onBusyChange?.(false);
     }
   };
@@ -4763,15 +5185,29 @@ function RoomWorkspace({
     key: string,
     scheme: RoomScheme,
     agentRole: string,
+    candidateDraft: string,
   ): Promise<void> => {
     if (adopting) return;
+    let editedScheme: Pick<
+      RoomScheme,
+      "title" | "premise" | "content" | "nodes"
+    >;
+    try {
+      editedScheme = parseSimulationCandidateDraft(
+        candidateDraft,
+        simulationStartChapter,
+      );
+    } catch (cause) {
+      setError(errorText(cause));
+      return;
+    }
     setAdopting(key);
     setError(null);
     try {
       await onAdoptSimulation({
-        title: scheme.title,
-        description: scheme.content,
-        premise: scheme.premise,
+        title: editedScheme.title,
+        description: editedScheme.content,
+        premise: editedScheme.premise,
         sourceChapterPlanId: chapterPlan?.id ?? null,
         sourceManuscriptChapterId: chapter?.id ?? null,
         agentRole,
@@ -4780,9 +5216,18 @@ function RoomWorkspace({
         risk: scheme.risk,
         riskLevel: scheme.riskLevel,
         tags: scheme.tags,
-        nodes: scheme.nodes,
+        nodes: editedScheme.nodes,
       });
-      setAdopted((current) => new Set([...current, key]));
+      const nextAdopted = new Set(adopted);
+      nextAdopted.add(key);
+      setAdopted(nextAdopted);
+      reportPendingRoomResult(
+        results.some((result) =>
+          result.schemes.some(
+            (_scheme, index) => !nextAdopted.has(`${result.agent}-${index}`),
+          ),
+        ),
+      );
     } catch (cause) {
       setError(errorText(cause));
     } finally {
@@ -4826,27 +5271,33 @@ function RoomWorkspace({
     ]
       .filter(Boolean)
       .join("\n\n");
+  const selectedBrainstormDraft = selectedBrainstormPlan
+    ? (brainstormCandidateDrafts[selectedBrainstormPlan.id] ??
+      buildCompletePlanBrief(selectedBrainstormPlan))
+    : "";
+  const selectedBrainstormDiffKey = selectedBrainstormPlan
+    ? `brainstorm-${selectedBrainstormPlan.id}`
+    : null;
+  const isSelectedBrainstormDiffOpen =
+    selectedBrainstormDiffKey !== null &&
+    !normalizedHiddenRoomDiffs.has(selectedBrainstormDiffKey);
+  const toggleRoomDiff = (key: string) => {
+    setHiddenRoomDiffs((current) => {
+      const next = new Set(current ?? []);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+  const hideRoomDiff = (key: string) => {
+    setHiddenRoomDiffs((current) => new Set(current ?? []).add(key));
+  };
   const visibleSimulationSchemes = simulationSchemes.filter(
     (item) => simulationFilter === "all" || item.kind === simulationFilter,
   );
   const requestedSchemeCount = isBrainstorm
     ? brainstormPlanCount
     : activeConfigs.reduce((sum, item) => sum + item.schemeCount, 0);
-  const simulationStartChapter =
-    (chapter?.displayNumber ?? 0) + (simulationStart === "chapter-end" ? 0 : 1);
-  const chapterCheckpointLabel = chapter
-    ? chapter.title.trim() &&
-      chapter.title.trim() !== `第 ${chapter.displayNumber} 章`
-      ? `第 ${chapter.displayNumber} 章 · ${chapter.title.trim()}`
-      : `第 ${chapter.displayNumber} 章`
-    : "未绑定章节";
-  const simulationStartLabel = chapter
-    ? simulationStart === "chapter-end"
-      ? chapterCheckpointLabel
-      : simulationStart === "next-plan"
-        ? `第 ${chapter.displayNumber + 1} 章计划`
-        : `当前单元末 · 第 ${chapter.displayNumber + 1} 章起`
-    : "未绑定章节";
   const runDisabled =
     !enabled || !chapter || running.size > 0 || activeConfigs.length === 0;
   const renderRoomControls = (className: string) => (
@@ -4872,875 +5323,1059 @@ function RoomWorkspace({
               : `开始会诊 · ${requestedSchemeCount} 套完整方案`
             : `开始推演 · ${requestedSchemeCount} 条路径`}
       </button>
+      {running.size > 0 && (
+        <button
+          type="button"
+          className="ns-button is-danger"
+          onClick={() => void cancelRoomRun()}
+          disabled={isCancellingRoom || !onCancelRun}
+          title={
+            onCancelRun
+              ? "停止当前所有在途 AI 请求"
+              : "当前环境不支持取消 AI 请求"
+          }
+        >
+          {isCancellingRoom ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <CircleStop className="h-3.5 w-3.5" />
+          )}
+          {isCancellingRoom
+            ? "正在取消"
+            : isBrainstorm
+              ? "取消脑暴"
+              : "取消推演"}
+        </button>
+      )}
     </div>
   );
 
   return (
-    <div className={`ms-room ${isDialog ? "is-dialog" : ""}`}>
-      {!isDialog && (
-        <header className="ms-room-header">
-          <div>
-            <span className="ms-eyebrow">
-              {isBrainstorm ? "Divergent writing" : "Causal simulation"}
-            </span>
-            <h2>{isBrainstorm ? "AI 脑暴室" : "AI 剧情推演室"}</h2>
-            <p>
-              {isBrainstorm
-                ? "从不同创作立场同时寻找正文写法。"
-                : "让不同立场独立推演行动、规则碰撞和剧情分支。"}
-            </p>
-          </div>
-          {renderRoomControls("ms-room-controls")}
-        </header>
-      )}
-      {(error || modelSettingsError) && (
-        <div className="ms-inline-error">{error ?? modelSettingsError}</div>
-      )}
-      <div className="ms-room-layout">
-        <aside className="ms-agent-config">
-          <section
-            className="ms-room-run-budget"
-            title={`应用于本次${isBrainstorm ? "脑暴" : "推演"}中的每个 AI 请求`}
-          >
-            <header>
-              <strong>运行预算</strong>
-              <span>每次请求</span>
-            </header>
+    <>
+      <div className={`ms-room ${isDialog ? "is-dialog" : ""}`}>
+        {!isDialog && (
+          <header className="ms-room-header">
             <div>
-              <label>
-                <span>超时</span>
-                <CustomSelect
-                  value={String(runTimeoutMinutes)}
-                  options={EXTENDED_AI_TIMEOUT_OPTIONS}
-                  onChange={(value) => setRunTimeoutMinutes(Number(value))}
-                  ariaLabel={`${isBrainstorm ? "脑暴" : "剧情推演"}单次请求超时`}
-                  triggerIcon={<Timer className="h-3.5 w-3.5" />}
-                  className="ms-room-run-budget-select"
-                  popoverMinWidth={112}
-                  compact
-                  disabled={running.size > 0}
-                />
-              </label>
-              <label>
-                <span>轮次</span>
-                <CustomSelect
-                  value={String(runMaxTurns)}
-                  options={EXTENDED_AI_MAX_TURNS_OPTIONS}
-                  onChange={(value) => setRunMaxTurns(Number(value))}
-                  ariaLabel={`${isBrainstorm ? "脑暴" : "剧情推演"}最大轮次`}
-                  triggerIcon={<RefreshCw className="h-3.5 w-3.5" />}
-                  className="ms-room-run-budget-select"
-                  popoverMinWidth={112}
-                  compact
-                  disabled={running.size > 0}
-                />
-              </label>
+              <span className="ms-eyebrow">
+                {isBrainstorm ? "Divergent writing" : "Causal simulation"}
+              </span>
+              <h2>{isBrainstorm ? "AI 脑暴室" : "AI 剧情推演室"}</h2>
+              <p>
+                {isBrainstorm
+                  ? "从不同创作立场同时寻找正文写法。"
+                  : "让不同立场独立推演行动、规则碰撞和剧情分支。"}
+              </p>
             </div>
-          </section>
-          {!isBrainstorm && (
-            <section className="ms-simulation-boundary">
+            {renderRoomControls("ms-room-controls")}
+          </header>
+        )}
+        {(error || modelSettingsError) && (
+          <div className="ms-inline-error">{error ?? modelSettingsError}</div>
+        )}
+        <div className="ms-room-layout">
+          <aside className="ms-agent-config">
+            <section
+              className="ms-room-run-budget"
+              title={`应用于本次${isBrainstorm ? "脑暴" : "推演"}中的每个 AI 请求`}
+            >
+              <header>
+                <strong>运行预算</strong>
+                <span>每次请求</span>
+              </header>
               <div>
-                <strong>推演边界</strong>
-                <span>
-                  {isDialog
-                    ? `启用 ${activeConfigs.length} / 6`
-                    : "同一检查点独立演算"}
-                </span>
-              </div>
-              <label>
-                <span>从哪里开始</span>
-                <CustomSelect
-                  value={simulationStart}
-                  options={[
-                    { value: "chapter-end", label: "当前章结尾" },
-                    { value: "next-plan", label: "下一章计划" },
-                    { value: "unit-end", label: "当前单元末" },
-                  ]}
-                  onChange={setSimulationStart}
-                  ariaLabel="推演起点"
-                  compact
-                />
-              </label>
-              <label>
-                <span>向后推演</span>
-                <CustomSelect
-                  value={String(simulationHorizon)}
-                  options={SIMULATION_HORIZON_OPTIONS.map((count) => ({
-                    value: String(count),
-                    label: `未来 ${count} 章`,
-                  }))}
-                  onChange={(value) => setSimulationHorizon(Number(value))}
-                  ariaLabel="推演章数"
-                  compact
-                />
-              </label>
-              <div className="ms-guardrails">
-                {[
-                  "主线目标",
-                  "卷级验收",
-                  "人物状态",
-                  "规则边界",
-                  "伏笔账本",
-                ].map((item) => (
-                  <label key={item}>
-                    <input
-                      type="checkbox"
-                      checked={guardrails.has(item)}
-                      onChange={(event) =>
-                        setGuardrails((current) => {
-                          const next = new Set(current);
-                          if (event.target.checked) next.add(item);
-                          else next.delete(item);
-                          return next;
-                        })
-                      }
-                    />
-                    <span>{item}</span>
-                  </label>
-                ))}
+                <label>
+                  <span>超时</span>
+                  <CustomSelect
+                    value={String(runTimeoutMinutes)}
+                    options={EXTENDED_AI_TIMEOUT_OPTIONS}
+                    onChange={(value) => setRunTimeoutMinutes(Number(value))}
+                    ariaLabel={`${isBrainstorm ? "脑暴" : "剧情推演"}单次请求超时`}
+                    triggerIcon={<Timer className="h-3.5 w-3.5" />}
+                    className="ms-room-run-budget-select"
+                    popoverMinWidth={112}
+                    compact
+                    disabled={running.size > 0}
+                  />
+                </label>
+                <label>
+                  <span>轮次</span>
+                  <CustomSelect
+                    value={String(runMaxTurns)}
+                    options={EXTENDED_AI_MAX_TURNS_OPTIONS}
+                    onChange={(value) => setRunMaxTurns(Number(value))}
+                    ariaLabel={`${isBrainstorm ? "脑暴" : "剧情推演"}最大轮次`}
+                    triggerIcon={<RefreshCw className="h-3.5 w-3.5" />}
+                    className="ms-room-run-budget-select"
+                    popoverMinWidth={112}
+                    compact
+                    disabled={running.size > 0}
+                  />
+                </label>
               </div>
             </section>
-          )}
-          <div className="ms-agent-config-heading">
-            <strong>
-              {isBrainstorm
-                ? isDialog
-                  ? "Agent 阵容"
-                  : "Agent 配置"
-                : "推演 Agent"}
-            </strong>
-            <span>
-              {isBrainstorm
-                ? `启用 ${activeConfigs.length} / 6`
-                : "每个产出 1～5 条路径"}
-            </span>
-          </div>
-          <div className="ms-agent-config-list">
-            {isBrainstorm && (
-              <div className="ms-agent-config-row is-brainstorm is-controller">
-                <input
-                  type="checkbox"
-                  checked
-                  disabled
-                  aria-label="总控 Agent 始终启用"
-                  title="总控 Agent 始终启用"
-                />
-                <div className="ms-agent-identity">
-                  <div className="ms-agent-identity-heading">
-                    <strong>总控</strong>
-                    <div className="ms-agent-identity-actions">
-                      {onShowAgentPrompt && (
-                        <button
-                          type="button"
-                          className="ms-agent-prompt-button"
-                          onClick={() => onShowAgentPrompt(0)}
-                          aria-label="查看总控完整提示词"
-                          title="查看总控使用的完整提示词"
-                        >
-                          <FileText className="h-3 w-3" />
-                          <span>提示词</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  {controllerEffectiveModel && (
-                    <small>
-                      {roomModelSelectionLabel(
-                        controllerEffectiveModel,
-                        runModelProviders,
-                      )}
-                    </small>
-                  )}
+            {!isBrainstorm && (
+              <section className="ms-simulation-boundary">
+                <div>
+                  <strong>推演边界</strong>
+                  <span>
+                    {isDialog
+                      ? `启用 ${activeConfigs.length} / 6`
+                      : "同一检查点独立演算"}
+                  </span>
                 </div>
-                <RoomModelCascadeSelect
-                  binding={controllerModelBinding}
-                  providers={runModelProviders}
-                  defaultModel={loadedModelSettings?.settings.defaultModel}
-                  disabled={!loadedModelSettings || savingModelSceneId !== null}
-                  onChange={(selection) =>
-                    void saveRoomModel(controllerSceneId, selection)
-                  }
-                  ariaLabel="总控供应商和模型"
-                  className="ms-agent-model-cascade-select"
-                />
-                <div className="ms-agent-runtime-info">
-                  <div className="ms-agent-runtime-copy">
-                    <span>{controllerProgress?.task ?? "等待开始"}</span>
-                    <div className="ms-agent-runtime-timing">
-                      <span
-                        className={`ms-agent-runtime-state is-${controllerProgress?.state ?? "queued"}`}
-                        aria-label={brainstormProgressLabel(
-                          controllerProgress?.state ?? "queued",
-                        )}
-                        title={brainstormProgressLabel(
-                          controllerProgress?.state ?? "queued",
-                        )}
-                      >
-                        {renderBrainstormProgressIcon(
-                          controllerProgress?.state ?? "queued",
-                        )}
-                      </span>
-                      <time>
-                        {controllerProgress
-                          ? formatBrainstormElapsed(
-                              controllerProgress,
-                              brainstormProgressNow,
-                            ) || "未开始"
-                          : "未开始"}
-                      </time>
-                    </div>
-                  </div>
-                  <p
-                    className="ms-agent-runtime-detail"
-                    title={
-                      controllerProgress?.detail ??
-                      "总控将在设计师会诊后生成方案契约并完成整合审计。"
-                    }
-                  >
-                    {controllerProgress?.detail ??
-                      "总控将在设计师会诊后生成方案契约并完成整合审计。"}
-                  </p>
+                <label>
+                  <span>从哪里开始</span>
+                  <CustomSelect
+                    value={simulationStart}
+                    options={[
+                      { value: "chapter-end", label: "当前章结尾" },
+                      { value: "next-plan", label: "下一章计划" },
+                      { value: "unit-end", label: "当前单元末" },
+                    ]}
+                    onChange={setSimulationStart}
+                    ariaLabel="推演起点"
+                    compact
+                  />
+                </label>
+                <label>
+                  <span>向后推演</span>
+                  <CustomSelect
+                    value={String(simulationHorizon)}
+                    options={SIMULATION_HORIZON_OPTIONS.map((count) => ({
+                      value: String(count),
+                      label: `未来 ${count} 章`,
+                    }))}
+                    onChange={(value) => setSimulationHorizon(Number(value))}
+                    ariaLabel="推演章数"
+                    compact
+                  />
+                </label>
+                <div className="ms-guardrails">
+                  {[
+                    "主线目标",
+                    "卷级验收",
+                    "人物状态",
+                    "规则边界",
+                    "伏笔账本",
+                  ].map((item) => (
+                    <label key={item}>
+                      <input
+                        type="checkbox"
+                        checked={guardrails.has(item)}
+                        onChange={(event) =>
+                          setGuardrails((current) => {
+                            const next = new Set(current);
+                            if (event.target.checked) next.add(item);
+                            else next.delete(item);
+                            return next;
+                          })
+                        }
+                      />
+                      <span>{item}</span>
+                    </label>
+                  ))}
                 </div>
-              </div>
+              </section>
             )}
-            {configs.map((config) => {
-              const sceneId =
-                `manuscript.${kind}.agent${config.agent}` as NovelModelSceneId;
-              const modelBinding = loadedModelSettings
-                ? getModelSceneBinding(loadedModelSettings.settings, sceneId)
-                : undefined;
-              const effectiveModel = loadedModelSettings
-                ? getEffectiveModelSceneSelection(
-                    loadedModelSettings.settings,
-                    sceneId,
-                  )
-                : undefined;
-              const agentProgress = brainstormAgentProgress.find(
-                (item) => item.agent === config.agent,
-              );
-              const progressState = agentProgress?.state ?? "queued";
-              return (
-                <div
-                  className={`ms-agent-config-row ${isBrainstorm ? "is-brainstorm" : ""} ${config.enabled ? "" : "is-disabled"}`}
-                  key={config.agent}
-                >
+            <div className="ms-agent-config-heading">
+              <strong>
+                {isBrainstorm
+                  ? isDialog
+                    ? "Agent 阵容"
+                    : "Agent 配置"
+                  : "推演 Agent"}
+              </strong>
+              <span>
+                {isBrainstorm
+                  ? `启用 ${activeConfigs.length} / 6`
+                  : "每个产出 1～5 条路径"}
+              </span>
+            </div>
+            <div className="ms-agent-config-list">
+              {isBrainstorm && (
+                <div className="ms-agent-config-row is-brainstorm is-controller">
                   <input
                     type="checkbox"
-                    checked={config.enabled}
-                    onChange={(event) =>
-                      updateConfig(config.agent, {
-                        enabled: event.target.checked,
-                      })
-                    }
-                    aria-label={`启用 Agent ${config.agent}`}
+                    checked
+                    disabled
+                    aria-label="总控 Agent 始终启用"
+                    title="总控 Agent 始终启用"
                   />
-                  {!isBrainstorm && (
-                    <span className="ms-agent-index">
-                      {String(config.agent).padStart(2, "0")}
-                    </span>
-                  )}
                   <div className="ms-agent-identity">
                     <div className="ms-agent-identity-heading">
-                      <strong>{roles[config.agent - 1]}</strong>
-                      {isBrainstorm && (
-                        <div className="ms-agent-identity-actions">
-                          {onShowAgentPrompt && (
-                            <button
-                              type="button"
-                              className="ms-agent-prompt-button"
-                              onClick={() => onShowAgentPrompt(config.agent)}
-                              aria-label={`查看 Agent ${config.agent} 完整提示词`}
-                              title="查看该 Agent 使用的完整提示词"
-                            >
-                              <FileText className="h-3 w-3" />
-                              <span>提示词</span>
-                            </button>
-                          )}
-                        </div>
-                      )}
+                      <strong>总控</strong>
+                      <div className="ms-agent-identity-actions">
+                        {onShowAgentPrompt && (
+                          <button
+                            type="button"
+                            className="ms-agent-prompt-button"
+                            onClick={() => onShowAgentPrompt(0)}
+                            aria-label="查看总控完整提示词"
+                            title="查看总控使用的完整提示词"
+                          >
+                            <FileText className="h-3 w-3" />
+                            <span>提示词</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    {effectiveModel && (
+                    {controllerEffectiveModel && (
                       <small>
                         {roomModelSelectionLabel(
-                          effectiveModel,
+                          controllerEffectiveModel,
                           runModelProviders,
                         )}
                       </small>
                     )}
                   </div>
                   <RoomModelCascadeSelect
-                    binding={modelBinding}
+                    binding={controllerModelBinding}
                     providers={runModelProviders}
                     defaultModel={loadedModelSettings?.settings.defaultModel}
                     disabled={
-                      !config.enabled ||
-                      !loadedModelSettings ||
-                      savingModelSceneId !== null
+                      !loadedModelSettings || savingModelSceneId !== null
                     }
                     onChange={(selection) =>
-                      void saveRoomModel(sceneId, selection)
+                      void saveRoomModel(controllerSceneId, selection)
                     }
-                    ariaLabel={`Agent ${config.agent} 供应商和模型`}
+                    ariaLabel="总控供应商和模型"
                     className="ms-agent-model-cascade-select"
                   />
-                  {config.enabled && (
-                    <div className="ms-agent-runtime-info">
-                      <div className="ms-agent-runtime-copy">
-                        <span>{agentProgress?.task ?? "等待开始"}</span>
-                        <div className="ms-agent-runtime-timing">
-                          <span
-                            className={`ms-agent-runtime-state is-${progressState}`}
-                            aria-label={brainstormProgressLabel(progressState)}
-                            title={brainstormProgressLabel(progressState)}
-                          >
-                            {renderBrainstormProgressIcon(progressState)}
-                          </span>
-                          <time>
-                            {agentProgress
-                              ? formatBrainstormElapsed(
-                                  agentProgress,
-                                  brainstormProgressNow,
-                                ) || "未开始"
-                              : "未开始"}
-                          </time>
-                        </div>
+                  <div className="ms-agent-runtime-info">
+                    <div className="ms-agent-runtime-copy">
+                      <span>{controllerProgress?.task ?? "等待开始"}</span>
+                      <div className="ms-agent-runtime-timing">
+                        <span
+                          className={`ms-agent-runtime-state is-${controllerProgress?.state ?? "queued"}`}
+                          aria-label={brainstormProgressLabel(
+                            controllerProgress?.state ?? "queued",
+                          )}
+                          title={brainstormProgressLabel(
+                            controllerProgress?.state ?? "queued",
+                          )}
+                        >
+                          {renderBrainstormProgressIcon(
+                            controllerProgress?.state ?? "queued",
+                          )}
+                        </span>
+                        <time>
+                          {controllerProgress
+                            ? formatBrainstormElapsed(
+                                controllerProgress,
+                                brainstormProgressNow,
+                              ) || "未开始"
+                            : "未开始"}
+                        </time>
                       </div>
-                      <p
-                        className="ms-agent-runtime-detail"
-                        title={
-                          agentProgress?.detail ??
-                          (isBrainstorm
-                            ? "等待开始本轮会诊。"
-                            : "等待开始本轮推演。")
-                        }
-                      >
-                        {agentProgress?.detail ??
-                          (isBrainstorm
-                            ? "等待开始本轮会诊。"
-                            : "等待开始本轮推演。")}
-                      </p>
                     </div>
-                  )}
-                  {!isBrainstorm && (
-                    <CustomSelect
-                      value={String(config.schemeCount)}
-                      options={[1, 2, 3, 4, 5].map((count) => ({
-                        value: String(count),
-                        label: `${count} 个方案`,
-                      }))}
-                      onChange={(value) =>
+                    <p
+                      className="ms-agent-runtime-detail"
+                      title={
+                        controllerProgress?.detail ??
+                        "总控将在设计师会诊后生成方案契约并完成整合审计。"
+                      }
+                    >
+                      {controllerProgress?.detail ??
+                        "总控将在设计师会诊后生成方案契约并完成整合审计。"}
+                    </p>
+                  </div>
+                </div>
+              )}
+              {configs.map((config) => {
+                const sceneId =
+                  `manuscript.${kind}.agent${config.agent}` as NovelModelSceneId;
+                const modelBinding = loadedModelSettings
+                  ? getModelSceneBinding(loadedModelSettings.settings, sceneId)
+                  : undefined;
+                const effectiveModel = loadedModelSettings
+                  ? getEffectiveModelSceneSelection(
+                      loadedModelSettings.settings,
+                      sceneId,
+                    )
+                  : undefined;
+                const agentProgress = brainstormAgentProgress.find(
+                  (item) => item.agent === config.agent,
+                );
+                const progressState = agentProgress?.state ?? "queued";
+                return (
+                  <div
+                    className={`ms-agent-config-row ${isBrainstorm ? "is-brainstorm" : ""} ${config.enabled ? "" : "is-disabled"}`}
+                    key={config.agent}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={config.enabled}
+                      onChange={(event) =>
                         updateConfig(config.agent, {
-                          schemeCount: Number(value),
+                          enabled: event.target.checked,
                         })
                       }
-                      disabled={!config.enabled}
-                      ariaLabel={`Agent ${config.agent} 方案数`}
-                      className="ms-agent-scheme-select"
-                      compact
+                      aria-label={`启用 Agent ${config.agent}`}
                     />
-                  )}
-                  {!isBrainstorm && (
-                    <button
-                      type="button"
-                      className="ms-agent-module-button"
-                      disabled={!config.enabled}
-                      onClick={() =>
-                        setModuleEditorAgent((current) =>
-                          current === config.agent ? null : config.agent,
-                        )
-                      }
-                      aria-expanded={moduleEditorAgent === config.agent}
-                      title="配置该 Agent 使用的上下文模块"
-                    >
-                      {moduleEditorAgent === config.agent
-                        ? "收起模块"
-                        : `${config.modules.length} 个模块`}
-                      {moduleEditorAgent === config.agent ? (
-                        <ChevronDown className="h-3 w-3" />
-                      ) : (
-                        <ChevronRight className="h-3 w-3" />
-                      )}
-                    </button>
-                  )}
-                  {!isBrainstorm && moduleEditorAgent === config.agent && (
-                    <div className="ms-agent-module-panel">
-                      {ROOM_CONTEXT_MODULES.map((module) => (
-                        <label key={module.id}>
-                          <input
-                            type="checkbox"
-                            checked={config.modules.includes(module.id)}
-                            disabled={!config.enabled}
-                            onChange={() =>
-                              toggleAgentModule(config.agent, module.id)
-                            }
-                          />
-                          <span>{module.label}</span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          {isBrainstorm && (
-            <section className="ms-brainstorm-intent">
-              <label htmlFor="ms-brainstorm-author-intent">作者本轮意图</label>
-              <textarea
-                id="ms-brainstorm-author-intent"
-                value={brainstormAuthorIntent}
-                onChange={(event) =>
-                  setBrainstormAuthorIntent(event.target.value)
-                }
-                placeholder="例如：希望主角主动做选择，结尾留下不可逆的关系代价。"
-                aria-label="作者本轮意图"
-              />
-              {isDialog && (
-                <label className="ms-brainstorm-count-control">
-                  <span>完整方案数</span>
-                  <CustomSelect
-                    value={String(brainstormPlanCount)}
-                    options={[2, 3, 4].map((count) => ({
-                      value: String(count),
-                      label: `${count} 套`,
-                    }))}
-                    onChange={(value) => setBrainstormPlanCount(Number(value))}
-                    disabled={
-                      brainstormPhase !== "idle" && brainstormPhase !== "ready"
-                    }
-                    ariaLabel="完整方案数"
-                    compact
-                  />
-                </label>
-              )}
-            </section>
-          )}
-          {isDialog && (
-            <footer className="ms-room-dialog-actions">
-              {renderRoomControls("ms-room-dialog-controls")}
-              <small>
-                模型和上下文锁定在本次
-                {isBrainstorm ? "脑暴" : "推演"}快照中。
-              </small>
-            </footer>
-          )}
-        </aside>
-
-        <main className="ms-room-results">
-          {isBrainstorm && brainstormRoundtable && (
-            <section
-              className="ms-brainstorm-roundtable"
-              aria-label="总控会诊摘要"
-            >
-              <header>
-                <div>
-                  <strong>总控会诊摘要</strong>
-                  <span>
-                    {brainstormRoundtable.summary || "已建立本轮共同创作前提"}
-                  </span>
-                </div>
-                <span className={`ms-roundtable-phase is-${brainstormPhase}`}>
-                  {brainstormPhase === "ready"
-                    ? "已完成"
-                    : brainstormPhase === "failed"
-                      ? "失败"
-                      : brainstormPhase === "council"
-                        ? "设计师会诊"
-                        : brainstormPhase === "contracting"
-                          ? "总控定契约"
-                          : brainstormPhase === "designing"
-                            ? "并行设计"
-                            : brainstormPhase === "synthesizing" ||
-                                brainstormPhase === "auditing"
-                              ? "总控整合"
-                              : "处理中"}
-                </span>
-              </header>
-              <div className="ms-roundtable-columns">
-                <div>
-                  <small>共同事实</small>
-                  {brainstormRoundtable.sharedFacts.slice(0, 5).map((item) => (
-                    <p key={item}>{item}</p>
-                  ))}
-                </div>
-                <div>
-                  <small>团队共识</small>
-                  {brainstormRoundtable.agreements.slice(0, 5).map((item) => (
-                    <p key={item}>{item}</p>
-                  ))}
-                </div>
-                <div>
-                  <small>待解决分歧</small>
-                  {brainstormRoundtable.disagreements
-                    .slice(0, 5)
-                    .map((item) => (
-                      <p key={item}>{item}</p>
-                    ))}
-                </div>
-              </div>
-            </section>
-          )}
-          {!isBrainstorm && (
-            <>
-              <div className="ms-simulation-toolbar">
-                <div>
-                  <strong>候选剧情路径</strong>
-                  <span>
-                    {simulationSchemes.length
-                      ? `${simulationSchemes.length} 条路径`
-                      : `等待 ${activeConfigs.length} 路 Agent`}{" "}
-                    · 覆盖未来 {simulationHorizon} 章
-                  </span>
-                </div>
-                <div className="ms-segmented">
-                  {(
-                    [
-                      ["all", "全部"],
-                      ["stable", "稳健"],
-                      ["bold", "高变"],
-                    ] as const
-                  ).map(([value, label]) => (
-                    <button
-                      type="button"
-                      className={simulationFilter === value ? "is-active" : ""}
-                      onClick={() => setSimulationFilter(value)}
-                      key={value}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="ms-simulation-origin">
-                <span>
-                  <small>推演起点</small>
-                  <strong>{simulationStartLabel}</strong>
-                </span>
-                <i>
-                  <GitBranch className="h-3.5 w-3.5" />
-                </i>
-                <span>
-                  <small>推演边界</small>
-                  <strong>
-                    第 {simulationStartChapter + simulationHorizon} 章
-                  </strong>
-                </span>
-                <b>当前正文快照已冻结</b>
-              </div>
-            </>
-          )}
-          {!results.length &&
-          !running.size &&
-          (!isBrainstorm || !brainstormPlans.length) ? (
-            <div className="ms-room-empty">
-              {isBrainstorm ? (
-                <BrainCircuit className="h-8 w-8" />
-              ) : (
-                <GitBranch className="h-8 w-8" />
-              )}
-              <p>
-                {isBrainstorm
-                  ? "总控会先主持会诊，再生成彼此可比较的完整方案。"
-                  : "每个 Agent 可单独启用并配置 1～5 个方案，模型在独立场景中设置。"}
-              </p>
-            </div>
-          ) : isBrainstorm ? (
-            <div className="ms-complete-plan-layout">
-              <nav className="ms-complete-plan-list" aria-label="完整方案列表">
-                {brainstormPlans.map((plan, index) => (
-                  <button
-                    type="button"
-                    key={plan.id}
-                    className={
-                      selectedBrainstormPlanId === plan.id ? "is-active" : ""
-                    }
-                    onClick={() => setSelectedBrainstormPlanId(plan.id)}
-                  >
-                    <span>方案 {String(index + 1).padStart(2, "0")}</span>
-                    <strong>{plan.title}</strong>
-                    <small>
-                      {plan.audit.score ? `${plan.audit.score} 分 · ` : ""}
-                      {
-                        plan.contributions.filter(
-                          (item) => item.status === "available",
-                        ).length
-                      }
-                      /{plan.contributions.length} 位贡献可用
-                    </small>
-                  </button>
-                ))}
-              </nav>
-              {selectedBrainstormPlan && (
-                <article
-                  className="ms-complete-plan"
-                  style={outputFontScaleStyle}
-                >
-                  <header>
-                    <div>
-                      <span className="ms-eyebrow">完整创作方案</span>
-                      <h3>{selectedBrainstormPlan.title}</h3>
-                      <p>{selectedBrainstormPlan.premise}</p>
-                    </div>
-                    <div className="ms-complete-plan-actions">
-                      <span className="ms-plan-score">
-                        {selectedBrainstormPlan.audit.score || "-"}
-                        <small>审计分</small>
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onUseBrief(
-                            buildCompletePlanBrief(selectedBrainstormPlan),
-                          )
-                        }
-                      >
-                        <WandSparkles className="h-3.5 w-3.5" />
-                        采用此完整方案并进入正文
-                      </button>
-                    </div>
-                  </header>
-                  <section className="ms-plan-content">
-                    <div className="ms-plan-narrative">
-                      {formatBrainstormPlanContent(
-                        selectedBrainstormPlan.content,
-                      ).map((block, index) =>
-                        block.kind === "heading" ? (
-                          <h4 key={`${index}-${block.text}`}>{block.text}</h4>
-                        ) : block.kind === "step" ? (
-                          <p
-                            className="ms-plan-narrative-step"
-                            key={`${index}-${block.marker}-${block.text}`}
-                          >
-                            <b>{block.marker}</b>
-                            <span>{block.text}</span>
-                          </p>
-                        ) : (
-                          <p
-                            className="ms-plan-narrative-paragraph"
-                            key={`${index}-${block.text}`}
-                          >
-                            {block.text}
-                          </p>
-                        ),
-                      )}
-                    </div>
-                    {selectedBrainstormPlan.beats.length > 0 && (
-                      <div className="ms-plan-beats">
-                        <strong>关键节拍</strong>
-                        {selectedBrainstormPlan.beats.map((beat, index) => (
-                          <p key={`${index}-${beat}`}>
-                            <b>{index + 1}</b>
-                            {beat}
-                          </p>
-                        ))}
-                      </div>
-                    )}
-                  </section>
-                  <div className="ms-plan-evidence-grid">
-                    <section>
-                      <strong>事实依据</strong>
-                      {selectedBrainstormPlan.evidence.map((item) => (
-                        <p key={item}>{item}</p>
-                      ))}
-                    </section>
-                    <section>
-                      <strong>创作假设</strong>
-                      {selectedBrainstormPlan.assumptions.map((item) => (
-                        <p key={item}>{item}</p>
-                      ))}
-                    </section>
-                    <section>
-                      <strong>审计风险</strong>
-                      {(selectedBrainstormPlan.conflicts.length
-                        ? selectedBrainstormPlan.conflicts
-                        : selectedBrainstormPlan.audit.risks
-                      ).map((item) => (
-                        <p key={item}>{item}</p>
-                      ))}
-                    </section>
-                  </div>
-                  <details className="ms-plan-contributions" open>
-                    <summary>
-                      查看设计师贡献 ·{" "}
-                      {
-                        selectedBrainstormPlan.contributions.filter(
-                          (item) => item.status === "available",
-                        ).length
-                      }
-                      /{selectedBrainstormPlan.contributions.length} 位可用
-                    </summary>
-                    <div>
-                      {selectedBrainstormPlan.contributions.map((item) => (
-                        <section
-                          key={`${item.planId}-${item.agent}`}
-                          className={`is-${item.status}`}
-                        >
-                          <header>
-                            <div>
-                              <strong>{item.role}</strong>
-                              <span>Agent {item.agent}</span>
-                            </div>
-                            <b>{brainstormContributionStatusLabel(item)}</b>
-                          </header>
-                          <p>
-                            {item.contribution ||
-                              item.diagnostic ||
-                              "该角色未返回该方案的可用贡献。"}
-                          </p>
-                          {item.evidence.length > 0 && (
-                            <small>依据：{item.evidence.join("；")}</small>
-                          )}
-                          {item.diagnostic && item.contribution && (
-                            <small>对齐说明：{item.diagnostic}</small>
-                          )}
-                        </section>
-                      ))}
-                    </div>
-                  </details>
-                </article>
-              )}
-            </div>
-          ) : (
-            <div className="ms-simulation-paths">
-              {visibleSimulationSchemes.map((item) => {
-                const nodes = item.scheme.nodes;
-                const schemeKey = `simulation-${item.key}`;
-                const expanded = expandedSchemes.has(schemeKey);
-                return (
-                  <article className="ms-simulation-path" key={item.key}>
-                    <header>
+                    {!isBrainstorm && (
                       <span className="ms-agent-index">
-                        {String(item.agent).padStart(2, "0")}
+                        {String(config.agent).padStart(2, "0")}
                       </span>
-                      <div>
-                        <h3>{item.scheme.title}</h3>
-                        <p>
-                          {item.role} · Agent {item.agent}
+                    )}
+                    <div className="ms-agent-identity">
+                      <div className="ms-agent-identity-heading">
+                        <strong>{roles[config.agent - 1]}</strong>
+                        {isBrainstorm && (
+                          <div className="ms-agent-identity-actions">
+                            {onShowAgentPrompt && (
+                              <button
+                                type="button"
+                                className="ms-agent-prompt-button"
+                                onClick={() => onShowAgentPrompt(config.agent)}
+                                aria-label={`查看 Agent ${config.agent} 完整提示词`}
+                                title="查看该 Agent 使用的完整提示词"
+                              >
+                                <FileText className="h-3 w-3" />
+                                <span>提示词</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      {effectiveModel && (
+                        <small>
+                          {roomModelSelectionLabel(
+                            effectiveModel,
+                            runModelProviders,
+                          )}
+                        </small>
+                      )}
+                    </div>
+                    <RoomModelCascadeSelect
+                      binding={modelBinding}
+                      providers={runModelProviders}
+                      defaultModel={loadedModelSettings?.settings.defaultModel}
+                      disabled={
+                        !config.enabled ||
+                        !loadedModelSettings ||
+                        savingModelSceneId !== null
+                      }
+                      onChange={(selection) =>
+                        void saveRoomModel(sceneId, selection)
+                      }
+                      ariaLabel={`Agent ${config.agent} 供应商和模型`}
+                      className="ms-agent-model-cascade-select"
+                    />
+                    {config.enabled && (
+                      <div className="ms-agent-runtime-info">
+                        <div className="ms-agent-runtime-copy">
+                          <span>{agentProgress?.task ?? "等待开始"}</span>
+                          <div className="ms-agent-runtime-timing">
+                            <span
+                              className={`ms-agent-runtime-state is-${progressState}`}
+                              aria-label={brainstormProgressLabel(
+                                progressState,
+                              )}
+                              title={brainstormProgressLabel(progressState)}
+                            >
+                              {renderBrainstormProgressIcon(progressState)}
+                            </span>
+                            <time>
+                              {agentProgress
+                                ? formatBrainstormElapsed(
+                                    agentProgress,
+                                    brainstormProgressNow,
+                                  ) || "未开始"
+                                : "未开始"}
+                            </time>
+                          </div>
+                        </div>
+                        <p
+                          className="ms-agent-runtime-detail"
+                          title={
+                            agentProgress?.detail ??
+                            (isBrainstorm
+                              ? "等待开始本轮会诊。"
+                              : "等待开始本轮推演。")
+                          }
+                        >
+                          {agentProgress?.detail ??
+                            (isBrainstorm
+                              ? "等待开始本轮会诊。"
+                              : "等待开始本轮推演。")}
                         </p>
                       </div>
-                      <span className={`ms-risk is-${item.scheme.riskLevel}`}>
-                        {item.scheme.riskLevel === "high"
-                          ? "高风险"
-                          : item.scheme.riskLevel === "low"
-                            ? "低风险"
-                            : "中风险"}
-                      </span>
-                    </header>
-                    <div className="ms-simulation-metrics">
-                      <span>
-                        <small>连贯度</small>
-                        <b>{item.scheme.coherence || "-"}</b>
-                      </span>
-                      <span>
-                        <small>新颖度</small>
-                        <b>{item.scheme.novelty || "-"}</b>
-                      </span>
-                      <span>
-                        <small>风险分</small>
-                        <b>{item.scheme.risk || "-"}</b>
-                      </span>
-                      {item.scheme.tags.length > 0 && (
-                        <div className="ms-scheme-tags">
-                          {item.scheme.tags.map((tag) => (
-                            <i key={tag}>{tag}</i>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <div className="ms-path-timeline">
-                      {nodes.length ? (
-                        nodes.map((node) => (
-                          <span key={`${node.offset}-${node.title}`}>
-                            <b>{simulationStartChapter + node.offset}</b>
-                            <small>{node.title}</small>
-                          </span>
-                        ))
-                      ) : (
-                        <span>
-                          <b>-</b>
-                          <small>未返回章节节点</small>
-                        </span>
-                      )}
-                    </div>
-                    <p>{item.scheme.premise || item.scheme.content}</p>
-                    {nodes.length > 0 && (
-                      <button
-                        type="button"
-                        className="ms-simulation-detail-toggle"
-                        onClick={() =>
-                          setExpandedSchemes((current) => {
-                            const next = new Set(current);
-                            if (next.has(schemeKey)) next.delete(schemeKey);
-                            else next.add(schemeKey);
-                            return next;
+                    )}
+                    {!isBrainstorm && (
+                      <CustomSelect
+                        value={String(config.schemeCount)}
+                        options={[1, 2, 3, 4, 5].map((count) => ({
+                          value: String(count),
+                          label: `${count} 个方案`,
+                        }))}
+                        onChange={(value) =>
+                          updateConfig(config.agent, {
+                            schemeCount: Number(value),
                           })
                         }
+                        disabled={!config.enabled}
+                        ariaLabel={`Agent ${config.agent} 方案数`}
+                        className="ms-agent-scheme-select"
+                        compact
+                      />
+                    )}
+                    {!isBrainstorm && (
+                      <button
+                        type="button"
+                        className="ms-agent-module-button"
+                        disabled={!config.enabled}
+                        onClick={() =>
+                          setModuleEditorAgent((current) =>
+                            current === config.agent ? null : config.agent,
+                          )
+                        }
+                        aria-expanded={moduleEditorAgent === config.agent}
+                        title="配置该 Agent 使用的上下文模块"
                       >
-                        {expanded ? "收起节点详情" : "展开节点详情"}
-                        {expanded ? (
+                        {moduleEditorAgent === config.agent
+                          ? "收起模块"
+                          : `${config.modules.length} 个模块`}
+                        {moduleEditorAgent === config.agent ? (
                           <ChevronDown className="h-3 w-3" />
                         ) : (
                           <ChevronRight className="h-3 w-3" />
                         )}
                       </button>
                     )}
-                    {expanded && nodes.length > 0 && (
-                      <div className="ms-simulation-node-details">
-                        {nodes.map((node) => (
-                          <div key={`${node.offset}-${node.title}`}>
-                            <b>
-                              第 {simulationStartChapter + node.offset} 章 ·{" "}
-                              {node.title}
-                            </b>
-                            {node.summary && <p>{node.summary}</p>}
-                            {node.checkpoint && (
-                              <small>验收：{node.checkpoint}</small>
-                            )}
-                          </div>
+                    {!isBrainstorm && moduleEditorAgent === config.agent && (
+                      <div className="ms-agent-module-panel">
+                        {ROOM_CONTEXT_MODULES.map((module) => (
+                          <label key={module.id}>
+                            <input
+                              type="checkbox"
+                              checked={config.modules.includes(module.id)}
+                              disabled={!config.enabled}
+                              onChange={() =>
+                                toggleAgentModule(config.agent, module.id)
+                              }
+                            />
+                            <span>{module.label}</span>
+                          </label>
                         ))}
                       </div>
                     )}
-                    <footer>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onUseBrief(
-                            `${item.scheme.title}\n${item.scheme.content}`,
-                          )
-                        }
-                      >
-                        作为正文指令
-                      </button>
-                      <button
-                        type="button"
-                        className="is-primary"
-                        onClick={() =>
-                          void adoptSimulation(item.key, item.scheme, item.role)
-                        }
-                        disabled={
-                          adopting === item.key || adopted.has(item.key)
-                        }
-                      >
-                        {adopting === item.key ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : adopted.has(item.key) ? (
-                          <Check className="h-3.5 w-3.5" />
-                        ) : (
-                          <ArrowRight className="h-3.5 w-3.5" />
-                        )}
-                        {adopted.has(item.key)
-                          ? "已送入剧情工程"
-                          : "送入剧情工程"}
-                      </button>
-                    </footer>
-                  </article>
+                  </div>
                 );
               })}
             </div>
-          )}
-        </main>
+            {isBrainstorm && (
+              <section className="ms-brainstorm-intent">
+                <label htmlFor="ms-brainstorm-author-intent">
+                  作者本轮意图
+                </label>
+                <textarea
+                  id="ms-brainstorm-author-intent"
+                  value={brainstormAuthorIntent}
+                  onChange={(event) =>
+                    setBrainstormAuthorIntent(event.target.value)
+                  }
+                  placeholder="例如：希望主角主动做选择，结尾留下不可逆的关系代价。"
+                  aria-label="作者本轮意图"
+                />
+                {isDialog && (
+                  <label className="ms-brainstorm-count-control">
+                    <span>完整方案数</span>
+                    <CustomSelect
+                      value={String(brainstormPlanCount)}
+                      options={[2, 3, 4].map((count) => ({
+                        value: String(count),
+                        label: `${count} 套`,
+                      }))}
+                      onChange={(value) =>
+                        setBrainstormPlanCount(Number(value))
+                      }
+                      disabled={
+                        brainstormPhase !== "idle" &&
+                        brainstormPhase !== "ready"
+                      }
+                      ariaLabel="完整方案数"
+                      compact
+                    />
+                  </label>
+                )}
+              </section>
+            )}
+            {isDialog && (
+              <footer className="ms-room-dialog-actions">
+                {renderRoomControls("ms-room-dialog-controls")}
+                <small>
+                  模型和上下文锁定在本次
+                  {isBrainstorm ? "脑暴" : "推演"}快照中。
+                </small>
+              </footer>
+            )}
+          </aside>
+
+          <main className="ms-room-results">
+            {isBrainstorm && brainstormRoundtable && (
+              <section
+                className="ms-brainstorm-roundtable"
+                aria-label="总控会诊摘要"
+              >
+                <header>
+                  <div>
+                    <strong>总控会诊摘要</strong>
+                    <span>
+                      {brainstormRoundtable.summary || "已建立本轮共同创作前提"}
+                    </span>
+                  </div>
+                  <span className={`ms-roundtable-phase is-${brainstormPhase}`}>
+                    {brainstormPhase === "ready"
+                      ? "已完成"
+                      : brainstormPhase === "failed"
+                        ? "失败"
+                        : brainstormPhase === "council"
+                          ? "设计师会诊"
+                          : brainstormPhase === "contracting"
+                            ? "总控定契约"
+                            : brainstormPhase === "designing"
+                              ? "并行设计"
+                              : brainstormPhase === "synthesizing" ||
+                                  brainstormPhase === "auditing"
+                                ? "总控整合"
+                                : "处理中"}
+                  </span>
+                </header>
+                <div className="ms-roundtable-columns">
+                  <div>
+                    <small>共同事实</small>
+                    {brainstormRoundtable.sharedFacts
+                      .slice(0, 5)
+                      .map((item) => (
+                        <p key={item}>{item}</p>
+                      ))}
+                  </div>
+                  <div>
+                    <small>团队共识</small>
+                    {brainstormRoundtable.agreements.slice(0, 5).map((item) => (
+                      <p key={item}>{item}</p>
+                    ))}
+                  </div>
+                  <div>
+                    <small>待解决分歧</small>
+                    {brainstormRoundtable.disagreements
+                      .slice(0, 5)
+                      .map((item) => (
+                        <p key={item}>{item}</p>
+                      ))}
+                  </div>
+                </div>
+              </section>
+            )}
+            {!isBrainstorm && (
+              <>
+                <div className="ms-simulation-toolbar">
+                  <div>
+                    <strong>候选剧情路径</strong>
+                    <span>
+                      {simulationSchemes.length
+                        ? `${simulationSchemes.length} 条路径`
+                        : `等待 ${activeConfigs.length} 路 Agent`}{" "}
+                      · 覆盖未来 {simulationHorizon} 章
+                    </span>
+                  </div>
+                  <div className="ms-segmented">
+                    {(
+                      [
+                        ["all", "全部"],
+                        ["stable", "稳健"],
+                        ["bold", "高变"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <button
+                        type="button"
+                        className={
+                          simulationFilter === value ? "is-active" : ""
+                        }
+                        onClick={() => setSimulationFilter(value)}
+                        key={value}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="ms-simulation-origin">
+                  <span>
+                    <small>推演起点</small>
+                    <strong>{simulationStartLabel}</strong>
+                  </span>
+                  <i>
+                    <GitBranch className="h-3.5 w-3.5" />
+                  </i>
+                  <span>
+                    <small>推演边界</small>
+                    <strong>
+                      第 {simulationStartChapter + simulationHorizon} 章
+                    </strong>
+                  </span>
+                  <b>当前正文快照已冻结</b>
+                </div>
+              </>
+            )}
+            {!results.length &&
+            !running.size &&
+            (!isBrainstorm || !brainstormPlans.length) ? (
+              <div className="ms-room-empty">
+                {isBrainstorm ? (
+                  <BrainCircuit className="h-8 w-8" />
+                ) : (
+                  <GitBranch className="h-8 w-8" />
+                )}
+                <p>
+                  {isBrainstorm
+                    ? "总控会先主持会诊，再生成彼此可比较的完整方案。"
+                    : "每个 Agent 可单独启用并配置 1～5 个方案，模型在独立场景中设置。"}
+                </p>
+              </div>
+            ) : isBrainstorm ? (
+              <div className="ms-complete-plan-layout">
+                <nav
+                  className="ms-complete-plan-list"
+                  aria-label="完整方案列表"
+                >
+                  {brainstormPlans.map((plan, index) => (
+                    <button
+                      type="button"
+                      key={plan.id}
+                      className={
+                        selectedBrainstormPlanId === plan.id ? "is-active" : ""
+                      }
+                      onClick={() => {
+                        setSelectedBrainstormPlanId(plan.id);
+                        setHiddenRoomDiffs((current) => {
+                          const next = new Set(current ?? []);
+                          next.delete(`brainstorm-${plan.id}`);
+                          return next;
+                        });
+                      }}
+                    >
+                      <span>方案 {String(index + 1).padStart(2, "0")}</span>
+                      <strong>{plan.title}</strong>
+                      <small>
+                        {plan.audit.score ? `${plan.audit.score} 分 · ` : ""}
+                        {
+                          plan.contributions.filter(
+                            (item) => item.status === "available",
+                          ).length
+                        }
+                        /{plan.contributions.length} 位贡献可用
+                      </small>
+                    </button>
+                  ))}
+                </nav>
+                {selectedBrainstormPlan && (
+                  <article
+                    className="ms-complete-plan"
+                    style={outputFontScaleStyle}
+                  >
+                    <header>
+                      <div>
+                        <span className="ms-eyebrow">完整创作方案</span>
+                        <h3>{selectedBrainstormPlan.title}</h3>
+                        <p>{selectedBrainstormPlan.premise}</p>
+                      </div>
+                      <div className="ms-complete-plan-actions">
+                        <span className="ms-plan-score">
+                          {selectedBrainstormPlan.audit.score || "-"}
+                          <small>审计分</small>
+                        </span>
+                        <button
+                          type="button"
+                          className="is-diff"
+                          onClick={() =>
+                            selectedBrainstormDiffKey &&
+                            toggleRoomDiff(selectedBrainstormDiffKey)
+                          }
+                          aria-expanded={isSelectedBrainstormDiffOpen}
+                        >
+                          <GitCompareArrows className="h-3.5 w-3.5" />
+                          {isSelectedBrainstormDiffOpen
+                            ? "收起差异"
+                            : "显示差异"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onUseBrief(selectedBrainstormDraft)}
+                          disabled={!selectedBrainstormDraft.trim()}
+                        >
+                          <WandSparkles className="h-3.5 w-3.5" />
+                          采用此完整方案并进入正文
+                        </button>
+                      </div>
+                    </header>
+                    {isSelectedBrainstormDiffOpen && (
+                      <RoomCandidateInlineDiff
+                        title="脑暴方案差异"
+                        original={roomCandidateBaselineRef.current}
+                        modified={selectedBrainstormDraft}
+                        onModifiedChange={(value) =>
+                          setBrainstormCandidateDrafts((current) => ({
+                            ...current,
+                            [selectedBrainstormPlan.id]: value,
+                          }))
+                        }
+                        fontSize={roomDiffFontSize}
+                        lineHeight={roomDiffLineHeight}
+                        onClose={() =>
+                          selectedBrainstormDiffKey &&
+                          hideRoomDiff(selectedBrainstormDiffKey)
+                        }
+                      />
+                    )}
+                    <section className="ms-plan-content">
+                      <div className="ms-plan-narrative">
+                        {formatBrainstormPlanContent(
+                          selectedBrainstormPlan.content,
+                        ).map((block, index) =>
+                          block.kind === "heading" ? (
+                            <h4 key={`${index}-${block.text}`}>{block.text}</h4>
+                          ) : block.kind === "step" ? (
+                            <p
+                              className="ms-plan-narrative-step"
+                              key={`${index}-${block.marker}-${block.text}`}
+                            >
+                              <b>{block.marker}</b>
+                              <span>{block.text}</span>
+                            </p>
+                          ) : (
+                            <p
+                              className="ms-plan-narrative-paragraph"
+                              key={`${index}-${block.text}`}
+                            >
+                              {block.text}
+                            </p>
+                          ),
+                        )}
+                      </div>
+                      {selectedBrainstormPlan.beats.length > 0 && (
+                        <div className="ms-plan-beats">
+                          <strong>关键节拍</strong>
+                          {selectedBrainstormPlan.beats.map((beat, index) => (
+                            <p key={`${index}-${beat}`}>
+                              <b>{index + 1}</b>
+                              {beat}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                    <div className="ms-plan-evidence-grid">
+                      <section>
+                        <strong>事实依据</strong>
+                        {selectedBrainstormPlan.evidence.map((item) => (
+                          <p key={item}>{item}</p>
+                        ))}
+                      </section>
+                      <section>
+                        <strong>创作假设</strong>
+                        {selectedBrainstormPlan.assumptions.map((item) => (
+                          <p key={item}>{item}</p>
+                        ))}
+                      </section>
+                      <section>
+                        <strong>审计风险</strong>
+                        {(selectedBrainstormPlan.conflicts.length
+                          ? selectedBrainstormPlan.conflicts
+                          : selectedBrainstormPlan.audit.risks
+                        ).map((item) => (
+                          <p key={item}>{item}</p>
+                        ))}
+                      </section>
+                    </div>
+                    <details className="ms-plan-contributions" open>
+                      <summary>
+                        查看设计师贡献 ·{" "}
+                        {
+                          selectedBrainstormPlan.contributions.filter(
+                            (item) => item.status === "available",
+                          ).length
+                        }
+                        /{selectedBrainstormPlan.contributions.length} 位可用
+                      </summary>
+                      <div>
+                        {selectedBrainstormPlan.contributions.map((item) => (
+                          <section
+                            key={`${item.planId}-${item.agent}`}
+                            className={`is-${item.status}`}
+                          >
+                            <header>
+                              <div>
+                                <strong>{item.role}</strong>
+                                <span>Agent {item.agent}</span>
+                              </div>
+                              <b>{brainstormContributionStatusLabel(item)}</b>
+                            </header>
+                            <p>
+                              {item.contribution ||
+                                item.diagnostic ||
+                                "该角色未返回该方案的可用贡献。"}
+                            </p>
+                            {item.evidence.length > 0 && (
+                              <small>依据：{item.evidence.join("；")}</small>
+                            )}
+                            {item.diagnostic && item.contribution && (
+                              <small>对齐说明：{item.diagnostic}</small>
+                            )}
+                          </section>
+                        ))}
+                      </div>
+                    </details>
+                  </article>
+                )}
+              </div>
+            ) : (
+              <div className="ms-simulation-paths">
+                {visibleSimulationSchemes.map((item) => {
+                  const nodes = item.scheme.nodes;
+                  const candidateDraft =
+                    simulationCandidateDrafts[item.key] ??
+                    buildSimulationCandidateDraft(
+                      item.scheme,
+                      simulationStartChapter,
+                    );
+                  const schemeKey = `simulation-${item.key}`;
+                  const expanded = expandedSchemes.has(schemeKey);
+                  const diffKey = `diff-${schemeKey}`;
+                  const diffOpen = !normalizedHiddenRoomDiffs.has(diffKey);
+                  return (
+                    <article className="ms-simulation-path" key={item.key}>
+                      <header>
+                        <span className="ms-agent-index">
+                          {String(item.agent).padStart(2, "0")}
+                        </span>
+                        <div>
+                          <h3>{item.scheme.title}</h3>
+                          <p>
+                            {item.role} · Agent {item.agent}
+                          </p>
+                        </div>
+                        <span className={`ms-risk is-${item.scheme.riskLevel}`}>
+                          {item.scheme.riskLevel === "high"
+                            ? "高风险"
+                            : item.scheme.riskLevel === "low"
+                              ? "低风险"
+                              : "中风险"}
+                        </span>
+                      </header>
+                      <div className="ms-simulation-metrics">
+                        <span>
+                          <small>连贯度</small>
+                          <b>{item.scheme.coherence || "-"}</b>
+                        </span>
+                        <span>
+                          <small>新颖度</small>
+                          <b>{item.scheme.novelty || "-"}</b>
+                        </span>
+                        <span>
+                          <small>风险分</small>
+                          <b>{item.scheme.risk || "-"}</b>
+                        </span>
+                        {item.scheme.tags.length > 0 && (
+                          <div className="ms-scheme-tags">
+                            {item.scheme.tags.map((tag) => (
+                              <i key={tag}>{tag}</i>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="ms-path-timeline">
+                        {nodes.length ? (
+                          nodes.map((node) => (
+                            <span key={`${node.offset}-${node.title}`}>
+                              <b>{simulationStartChapter + node.offset}</b>
+                              <small>{node.title}</small>
+                            </span>
+                          ))
+                        ) : (
+                          <span>
+                            <b>-</b>
+                            <small>未返回章节节点</small>
+                          </span>
+                        )}
+                      </div>
+                      <p>{item.scheme.premise || item.scheme.content}</p>
+                      {nodes.length > 0 && (
+                        <button
+                          type="button"
+                          className="ms-simulation-detail-toggle"
+                          onClick={() =>
+                            setExpandedSchemes((current) => {
+                              const next = new Set(current);
+                              if (next.has(schemeKey)) next.delete(schemeKey);
+                              else next.add(schemeKey);
+                              return next;
+                            })
+                          }
+                        >
+                          {expanded ? "收起节点详情" : "展开节点详情"}
+                          {expanded ? (
+                            <ChevronDown className="h-3 w-3" />
+                          ) : (
+                            <ChevronRight className="h-3 w-3" />
+                          )}
+                        </button>
+                      )}
+                      {expanded && nodes.length > 0 && (
+                        <div className="ms-simulation-node-details">
+                          {nodes.map((node) => (
+                            <div key={`${node.offset}-${node.title}`}>
+                              <b>
+                                第 {simulationStartChapter + node.offset} 章 ·{" "}
+                                {node.title}
+                              </b>
+                              {node.summary && <p>{node.summary}</p>}
+                              {node.checkpoint && (
+                                <small>验收：{node.checkpoint}</small>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {diffOpen && (
+                        <RoomCandidateInlineDiff
+                          title="剧情路径差异"
+                          original={roomCandidateBaselineRef.current}
+                          modified={candidateDraft}
+                          onModifiedChange={(value) =>
+                            setSimulationCandidateDrafts((current) => ({
+                              ...current,
+                              [item.key]: value,
+                            }))
+                          }
+                          fontSize={roomDiffFontSize}
+                          lineHeight={roomDiffLineHeight}
+                          onClose={() => hideRoomDiff(diffKey)}
+                        />
+                      )}
+                      <footer>
+                        <button
+                          type="button"
+                          onClick={() => toggleRoomDiff(diffKey)}
+                          aria-expanded={diffOpen}
+                        >
+                          <GitCompareArrows className="h-3.5 w-3.5" />
+                          {diffOpen ? "收起差异" : "显示差异"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onUseBrief(candidateDraft)}
+                          disabled={!candidateDraft.trim()}
+                        >
+                          作为正文指令
+                        </button>
+                        <button
+                          type="button"
+                          className="is-primary"
+                          onClick={() =>
+                            void adoptSimulation(
+                              item.key,
+                              item.scheme,
+                              item.role,
+                              candidateDraft,
+                            )
+                          }
+                          disabled={
+                            adopting === item.key || adopted.has(item.key)
+                          }
+                        >
+                          {adopting === item.key ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : adopted.has(item.key) ? (
+                            <Check className="h-3.5 w-3.5" />
+                          ) : (
+                            <ArrowRight className="h-3.5 w-3.5" />
+                          )}
+                          {adopted.has(item.key)
+                            ? "已送入剧情工程"
+                            : "送入剧情工程"}
+                        </button>
+                      </footer>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </main>
+        </div>
       </div>
-    </div>
+    </>
+  );
+}
+
+function RoomCandidateInlineDiff({
+  title,
+  subtitle = "生成基线 / 当前候选",
+  original,
+  modified,
+  onModifiedChange,
+  onClose,
+  hideHeader = false,
+  fontSize,
+  lineHeight,
+  className,
+}: {
+  readonly title: string;
+  readonly subtitle?: string;
+  readonly original: string;
+  readonly modified: string;
+  readonly onModifiedChange?: (value: string) => void;
+  readonly onClose?: () => void;
+  readonly hideHeader?: boolean;
+  readonly fontSize?: number;
+  readonly lineHeight?: number;
+  readonly className?: string;
+}) {
+  return (
+    <section
+      className={`ms-room-inline-diff${className ? ` ${className}` : ""}`}
+      aria-label={title}
+    >
+      {!hideHeader && (
+        <header>
+          <div>
+            <strong>{title}</strong>
+            <span>{subtitle}</span>
+          </div>
+          {onClose && (
+            <button
+              type="button"
+              className="ns-icon-button"
+              onClick={onClose}
+              aria-label={`收起${title}`}
+              title="收起差异"
+            >
+              <ChevronUp className="h-4 w-4" />
+            </button>
+          )}
+        </header>
+      )}
+      <div className="ms-room-inline-diff-viewer">
+        <Suspense
+          fallback={
+            <div className="flex h-full items-center justify-center gap-2 text-sm text-[var(--ink-muted)]">
+              <Loader2 className="h-4 w-4 animate-spin" /> 正在载入差异
+            </div>
+          }
+        >
+          <DiffViewer
+            original={original}
+            modified={modified}
+            language="markdown"
+            renderSideBySide
+            {...(fontSize ? { fontSize } : {})}
+            {...(lineHeight ? { lineHeight } : {})}
+            {...(onModifiedChange ? { onModifiedChange } : {})}
+            className="h-full"
+          />
+        </Suspense>
+      </div>
+    </section>
   );
 }
 
@@ -5811,9 +6446,9 @@ function BrainstormRoomDialog({
   generationContext,
   targetWordCount,
   persistedManuscriptContent,
-  onOpenAiAgent,
   onApplyGeneratedText,
   onOpenModelSettings,
+  onCancelAiRun,
   storage,
   chapter,
   chapterPlan,
@@ -5825,16 +6460,22 @@ function BrainstormRoomDialog({
   onAdoptSimulation,
   onClose,
   onBusyChange,
+  onPendingChange,
 }: BrainstormRoomDialogProps) {
   const [roomStep, setRoomStep] = useState<"brainstorm" | "generation">(
     "brainstorm",
   );
   const [isBrainstormBusy, setIsBrainstormBusy] = useState(false);
   const [isFullGenerationBusy, setIsFullGenerationBusy] = useState(false);
+  const [discardNestedPendingOpen, setDiscardNestedPendingOpen] =
+    useState(false);
   const nestedBusyRef = useRef({
     brainstorm: false,
     fullGeneration: false,
   });
+  const nestedPendingKindsRef = useRef<
+    ReadonlySet<"brainstorm" | "fullGeneration">
+  >(new Set());
   const [generationNotes, setGenerationNotes] = useState(initialNotes);
   const [contextOpen, setContextOpen] = useState(false);
   const [promptAgent, setPromptAgent] = useState<number | null>(null);
@@ -5852,14 +6493,31 @@ function BrainstormRoomDialog({
     },
     [onBusyChange],
   );
+  const reportNestedPending = useCallback(
+    (kind: "brainstorm" | "fullGeneration", pending: boolean) => {
+      const next = new Set(nestedPendingKindsRef.current);
+      if (pending) next.add(kind);
+      else next.delete(kind);
+      nestedPendingKindsRef.current = next;
+      onPendingChange?.(next.size > 0);
+    },
+    [onPendingChange],
+  );
   useEffect(
     () => () => {
       onBusyChange?.(false);
+      nestedPendingKindsRef.current = new Set();
+      onPendingChange?.(false);
     },
-    [onBusyChange],
+    [onBusyChange, onPendingChange],
   );
   const closeDialog = useCallback(() => {
-    if (!roomBusy) onClose();
+    if (roomBusy) return;
+    if (nestedPendingKindsRef.current.size > 0) {
+      setDiscardNestedPendingOpen(true);
+      return;
+    }
+    onClose();
   }, [onClose, roomBusy]);
 
   useCloseLayer(() => {
@@ -5876,7 +6534,7 @@ function BrainstormRoomDialog({
       setRoomStep("brainstorm");
       return true;
     }
-    onClose();
+    closeDialog();
     return true;
   }, 222);
 
@@ -5887,11 +6545,11 @@ function BrainstormRoomDialog({
       if (contextOpen) setContextOpen(false);
       else if (promptAgent !== null) setPromptAgent(null);
       else if (roomStep === "generation") setRoomStep("brainstorm");
-      else onClose();
+      else closeDialog();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [contextOpen, onClose, promptAgent, roomBusy, roomStep]);
+  }, [closeDialog, contextOpen, promptAgent, roomBusy, roomStep]);
 
   const switchToGeneration = useCallback(() => {
     if (roomBusy) return;
@@ -6037,6 +6695,7 @@ function BrainstormRoomDialog({
             manuscriptContent={manuscriptContent}
             enabled={enabled}
             onRun={onRun}
+            onCancelRun={onCancelAiRun}
             onUseBrief={(brief) => {
               setGenerationNotes(brief);
               onUseBrief(brief);
@@ -6046,14 +6705,18 @@ function BrainstormRoomDialog({
             onShowAgentPrompt={setPromptAgent}
             outputFontScale={fontScale}
             onBusyChange={(busy) => reportNestedBusy("brainstorm", busy)}
+            onPendingChange={(pending) =>
+              reportNestedPending("brainstorm", pending)
+            }
           />
         </div>
         <FullGenerationWorkflow
           storage={storage}
           project={project}
+          typography={project.chapterIndex.typography}
           open={roomStep === "generation"}
           embedded
-          agentOnly
+          startAtGeneration
           chapter={chapter}
           chapterPlan={chapterPlan}
           manuscriptContent={manuscriptContent}
@@ -6062,17 +6725,34 @@ function BrainstormRoomDialog({
           generationContext={generationContext}
           targetWordCount={targetWordCount}
           onRun={onRun}
-          onOpenAiAgent={onOpenAiAgent}
+          onCancelRun={onCancelAiRun}
           onApplyGeneratedText={onApplyGeneratedText}
           onOpenModelSettings={onOpenModelSettings}
           onClose={switchToBrainstorm}
           onBusyChange={(busy) => reportNestedBusy("fullGeneration", busy)}
+          onPendingChange={(pending) =>
+            reportNestedPending("fullGeneration", pending)
+          }
         />
       </DraggableDialogFrame>
       {promptAgent !== null && (
         <AgentPromptDialog
           agent={promptAgent}
           onClose={() => setPromptAgent(null)}
+        />
+      )}
+      {discardNestedPendingOpen && (
+        <ConfirmDialog
+          title="放弃 AI 候选结果"
+          message="当前脑暴室中有尚未采用的脑暴方案或正文生成候选。放弃后不会写入正文，且无法恢复，是否继续？"
+          confirmText="放弃候选"
+          cancelText="继续编辑"
+          confirmVariant="danger"
+          onConfirm={() => {
+            setDiscardNestedPendingOpen(false);
+            onClose();
+          }}
+          onCancel={() => setDiscardNestedPendingOpen(false)}
         />
       )}
     </>
@@ -6087,12 +6767,18 @@ function SimulationRoomDialog({
   manuscriptContent,
   enabled,
   onRun,
+  onCancelRun,
   onUseBrief,
   onAdoptSimulation,
   onClose,
   onBusyChange,
+  onPendingChange,
 }: RoomDialogProps) {
   const [isSimulationBusy, setIsSimulationBusy] = useState(false);
+  const [hasSimulationPending, setHasSimulationPending] = useState(false);
+  const [discardSimulationPendingOpen, setDiscardSimulationPendingOpen] =
+    useState(false);
+  const simulationPendingRef = useRef(false);
   const reportSimulationBusy = useCallback(
     (busy: boolean) => {
       setIsSimulationBusy(busy);
@@ -6100,75 +6786,120 @@ function SimulationRoomDialog({
     },
     [onBusyChange],
   );
+  const reportSimulationPending = useCallback(
+    (pending: boolean) => {
+      simulationPendingRef.current = pending;
+      setHasSimulationPending(pending);
+      onPendingChange?.(pending);
+    },
+    [onPendingChange],
+  );
   useEffect(
     () => () => {
       onBusyChange?.(false);
+      simulationPendingRef.current = false;
+      onPendingChange?.(false);
     },
-    [onBusyChange],
+    [onBusyChange, onPendingChange],
   );
+  const closeDialog = useCallback(() => {
+    if (isSimulationBusy) return;
+    if (simulationPendingRef.current) {
+      setDiscardSimulationPendingOpen(true);
+      return;
+    }
+    onClose();
+  }, [isSimulationBusy, onClose]);
   useCloseLayer(() => {
-    if (!isSimulationBusy) onClose();
+    closeDialog();
     return true;
   }, 223);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !isSimulationBusy) onClose();
+      if (event.key === "Escape") closeDialog();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isSimulationBusy, onClose]);
+  }, [closeDialog]);
 
   return (
-    <DraggableDialogFrame
-      ariaLabel="AI 剧情推演室"
-      className="ms-room-dialog ms-simulation-dialog h-[min(820px,calc(100vh-3rem))] w-[min(1480px,calc(100vw-3rem))] max-sm:h-[calc(100vh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]"
-      overlayClassName="bg-black/35 backdrop-blur-sm"
-      headerClassName="ms-room-dialog-header"
-      header={
-        <div className="ms-room-dialog-titlebar">
-          <div className="min-w-0 flex-1">
-            <span className="ms-eyebrow">Plot simulation lab</span>
-            <h2>
-              {chapter ? `第 ${chapter.displayNumber} 章之后` : "当前章节之后"}{" "}
-              · AI 剧情推演室
-            </h2>
-            <p>
-              每个 Agent
-              从同一剧情检查点独立演算后续因果链，只创建候选分支，不修改正式大纲。
-            </p>
+    <>
+      <DraggableDialogFrame
+        ariaLabel="AI 剧情推演室"
+        className="ms-room-dialog ms-simulation-dialog h-[min(820px,calc(100vh-3rem))] w-[min(1480px,calc(100vw-3rem))] max-sm:h-[calc(100vh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]"
+        overlayClassName="bg-black/35 backdrop-blur-sm"
+        headerClassName="ms-room-dialog-header"
+        header={
+          <div className="ms-room-dialog-titlebar">
+            <div className="min-w-0 flex-1">
+              <span className="ms-eyebrow">Plot simulation lab</span>
+              <h2>
+                {chapter
+                  ? `第 ${chapter.displayNumber} 章之后`
+                  : "当前章节之后"}{" "}
+                · AI 剧情推演室
+              </h2>
+              <p>
+                每个 Agent
+                从同一剧情检查点独立演算后续因果链，只创建候选分支，不修改正式大纲。
+              </p>
+            </div>
+            <span className="ms-context-snapshot">
+              剧情检查点 ·{" "}
+              {chapter ? `PLOT-${chapter.displayNumber}` : "未绑定"}
+            </span>
+            <button
+              type="button"
+              className="ns-icon-button border-0"
+              onClick={closeDialog}
+              disabled={isSimulationBusy}
+              aria-label="关闭 AI 剧情推演室"
+              title={
+                isSimulationBusy
+                  ? "AI 任务正在运行，完成后可关闭"
+                  : hasSimulationPending
+                    ? "存在待处理候选，关闭前需要确认放弃"
+                    : "关闭"
+              }
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
-          <span className="ms-context-snapshot">
-            剧情检查点 · {chapter ? `PLOT-${chapter.displayNumber}` : "未绑定"}
-          </span>
-          <button
-            type="button"
-            className="ns-icon-button border-0"
-            onClick={onClose}
-            disabled={isSimulationBusy}
-            aria-label="关闭 AI 剧情推演室"
-            title={isSimulationBusy ? "AI 任务正在运行，完成后可关闭" : "关闭"}
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      }
-    >
-      <RoomWorkspace
-        kind="simulation"
-        presentation="dialog"
-        storage={storage}
-        chapter={chapter}
-        chapterPlan={chapterPlan}
-        planningMode={planningMode}
-        manuscriptContent={manuscriptContent}
-        enabled={enabled}
-        onRun={onRun}
-        onUseBrief={onUseBrief}
-        onAdoptSimulation={onAdoptSimulation}
-        onBusyChange={reportSimulationBusy}
-      />
-    </DraggableDialogFrame>
+        }
+      >
+        <RoomWorkspace
+          kind="simulation"
+          presentation="dialog"
+          storage={storage}
+          chapter={chapter}
+          chapterPlan={chapterPlan}
+          planningMode={planningMode}
+          manuscriptContent={manuscriptContent}
+          enabled={enabled}
+          onRun={onRun}
+          onCancelRun={onCancelRun}
+          onUseBrief={onUseBrief}
+          onAdoptSimulation={onAdoptSimulation}
+          onBusyChange={reportSimulationBusy}
+          onPendingChange={reportSimulationPending}
+        />
+      </DraggableDialogFrame>
+      {discardSimulationPendingOpen && (
+        <ConfirmDialog
+          title="放弃 AI 候选结果"
+          message="当前推演室中有尚未处理的候选剧情路径。放弃后不会写入剧情工程，且无法恢复，是否继续？"
+          confirmText="放弃候选"
+          cancelText="继续编辑"
+          confirmVariant="danger"
+          onConfirm={() => {
+            setDiscardSimulationPendingOpen(false);
+            onClose();
+          }}
+          onCancel={() => setDiscardSimulationPendingOpen(false)}
+        />
+      )}
+    </>
   );
 }
 
@@ -6477,88 +7208,6 @@ export function buildFullGenerationTextRunRequest(input: {
       : {}),
     prompt: input.prompt,
   };
-}
-
-export function buildFullGenerationTextAgentInitialMessage(input: {
-  readonly runId: string;
-  readonly chapterId: string;
-  readonly chapterNumber: number;
-  readonly chapterTitle: string;
-  readonly chapterPlan: string;
-  readonly targetWordCount: number;
-  readonly readMode: FullGenerationContextReadMode;
-  readonly selectedFragments: readonly FullGenerationFragment[];
-  readonly writerNotes: string;
-  readonly suggestionReason: string;
-  readonly quickContext: string;
-}): string {
-  const minimum = Math.ceil(input.targetWordCount * 0.9);
-  const maximum = Math.floor(input.targetWordCount * 1.1);
-  const selectedPlan = input.selectedFragments.length
-    ? [
-        "按以下顺序整合作者确认的方案片段。它们是必须满足的写作约束，不是要求逐字照抄的正文：",
-        ...input.selectedFragments.map(
-          (fragment, index) =>
-            String(index + 1) + ". " + fragment.title + "\n" + fragment.content,
-        ),
-      ].join("\n\n")
-    : "作者跳过了方案选择，请直接依据已保存事实和章节计划完成本章。";
-  const readRule =
-    input.readMode === "quick"
-      ? [
-          "资料读取方式：快速模式。",
-          "作者选择的资料快照已经完整附在本消息中。除第 1 步为取得 sourceHash 而调用 novel_manuscript_get_context 外，不得调用任何 novel_*_get_context 读取工具，也不得用未选择的资料补造事实。",
-          input.quickContext
-            ? "【作者选择的资料快照】\n" + input.quickContext
-            : "【作者选择的资料快照】作者未选择额外资料。",
-        ].join("\n\n")
-      : [
-          "资料读取方式：智能体自主读取。",
-          "先读取当前章节，然后仅在确有必要时调用人物、时间线、剧情工程、世界架构、物品、势力、修行体系、连续性或灵感的小说工作台读取工具。不得为遍历资料而机械调用全部工具；已读取的资料不得重复读取。",
-        ].join("\n\n");
-
-  return [
-    "你是 MyAgents 小说工作台的正文写作 Agent。当前任务是生成一份可审阅、可应用的完整章节正文。",
-    "任务标识：runId=" + input.runId,
-    "目标章节：第 " +
-      input.chapterNumber +
-      " 章 · " +
-      input.chapterTitle +
-      "（chapterId=" +
-      input.chapterId +
-      "）",
-    "字数硬约束：本章目标 " +
-      input.targetWordCount.toLocaleString() +
-      " 字，完整候选必须控制在 " +
-      minimum.toLocaleString() +
-      "～" +
-      maximum.toLocaleString() +
-      " 个非空字符。不要通过重复、梗概或无关支线凑字数。",
-    input.chapterPlan,
-    selectedPlan,
-    input.writerNotes ? "作者附加建议：\n" + input.writerNotes : "",
-    input.suggestionReason
-      ? "AI 选片参考理由：\n" + input.suggestionReason
-      : "",
-    readRule,
-    [
-      "执行协议：",
-      "1. 必须先调用 novel_manuscript_get_context，并传 chapterId=" +
-        input.chapterId +
-        "，取得当前章节全文、sourceHash 与长度；不得猜测或复述不存在的正文。",
-      "2. 遵守上述资料读取方式后再开始写作。已写正文、总览约束、作者确认片段和作者建议优先于任何推测。",
-      "3. 调用 novel_manuscript_create_draft 创建草稿：runId 必须为 " +
-        input.runId +
-        "，chapterId 必须为 " +
-        input.chapterId +
-        "，mode 必须为 generate，rangeStart=0，rangeEnd 必须等于第 1 步返回的当前章节全文长度，baseSourceHash 必须使用第 1 步返回值。",
-      "4. 使用 novel_manuscript_upsert_candidate 分块写入完整章节候选。首块替换 candidate，后续块使用同一 candidateId 并传 append=true；每块不得超过工具限制。候选只写正文，不写标题、解释、字数统计、Markdown 围栏或自检过程。",
-      "5. 完成后依次调用 novel_manuscript_validate_draft、novel_manuscript_submit_draft 和 novel_manuscript_get_proposal_status。只允许提交候选草稿，不得直接改写正式正文；sourceHash 冲突时停止并说明正文已变化。",
-      "6. 正文必须有完整场景、具体行动、自然对话、明确因果、人物声口、情绪变化和章末牵引，避免模板腔与机械工整感。",
-    ].join("\n"),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
 }
 
 export function buildFullGenerationTextCorrectionRunRequest(input: {
@@ -7720,9 +8369,10 @@ function FullGenerationQuickContextDialog({
 function FullGenerationWorkflow({
   storage,
   project,
+  typography,
   open,
   embedded = false,
-  agentOnly = false,
+  startAtGeneration = false,
   chapter,
   chapterPlan,
   manuscriptContent,
@@ -7731,11 +8381,12 @@ function FullGenerationWorkflow({
   generationContext,
   targetWordCount,
   onRun,
+  onCancelRun,
   onApplyGeneratedText,
-  onOpenAiAgent,
   onOpenModelSettings,
   onClose,
   onBusyChange,
+  onPendingChange,
 }: FullGenerationWorkflowProps) {
   const availableProviders = useWorkbenchAvailableProviders();
   const runModelProviders = useMemo(
@@ -7763,7 +8414,7 @@ function FullGenerationWorkflow({
   const [writerNotes, setWriterNotes] = useState("");
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [isStartingGeneration, setIsStartingGeneration] = useState(false);
-  const [hasStartedGeneration, setHasStartedGeneration] = useState(false);
+  const [isCancellingGeneration, setIsCancellingGeneration] = useState(false);
   const [isFinalGenerationRetrying, setIsFinalGenerationRetrying] =
     useState(false);
   const [isAdjustingTextLength, setIsAdjustingTextLength] = useState(false);
@@ -7774,7 +8425,9 @@ function FullGenerationWorkflow({
   const [generatedSourceContent, setGeneratedSourceContent] = useState("");
   const [generatedPersistedSourceContent, setGeneratedPersistedSourceContent] =
     useState("");
-  const [discardGeneratedTextOpen, setDiscardGeneratedTextOpen] =
+  const generatedTextRef = useRef("");
+  const [generatedInputDirty, setGeneratedInputDirty] = useState(false);
+  const [discardWorkflowResultsOpen, setDiscardWorkflowResultsOpen] =
     useState(false);
   const [suggestionReason, setSuggestionReason] = useState("");
   const [workflowError, setWorkflowError] = useState<string | null>(null);
@@ -7811,23 +8464,18 @@ function FullGenerationWorkflow({
   );
   const agentResultRefs = useRef(new Map<number, HTMLElement>());
   const basePromptTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const embeddedAgentLaunchStateRef = useRef<
-    "idle" | "starting" | "started" | "failed"
-  >("idle");
   const activeWorkflowOperationsRef = useRef(0);
-  const [isEmbeddedConversationMounted, setIsEmbeddedConversationMounted] =
-    useState(false);
-  const [embeddedLaunchRevision, setEmbeddedLaunchRevision] = useState(0);
-  const embeddedConversationTargetRef = useCallback(
-    (element: HTMLDivElement | null) => {
-      setIsEmbeddedConversationMounted(Boolean(element));
-    },
-    [],
-  );
+  const workflowResetActionRef = useRef<(() => void) | null>(null);
+  const activeGenerationRunIdsRef = useRef(new Set<string>());
+  const generationCancelRequestedRef = useRef(false);
   const chapterTargetWordCount = parseChapterWordCount(
     chapterTargetWordCountInput,
   );
   const activeChapterId = chapter?.id;
+  const generatedDiffLineHeight = Math.round(
+    typography.fontSize * typography.lineHeight,
+  );
+  generatedTextRef.current = generatedText;
 
   const selectedAgents = useMemo(
     () => agentConfigs.filter((config) => config.enabled),
@@ -7875,6 +8523,21 @@ function FullGenerationWorkflow({
     isApplyingGeneratedText ||
     workflowOperationCount > 0;
 
+  const hasPendingWorkflowResults =
+    plans.length > 0 || Boolean(generatedText.trim());
+
+  const clearWorkflowResults = useCallback(() => {
+    setAgentResults(createFullGenerationAgentResults());
+    setSelectedFragments(new Set());
+    setSelectedFragmentOrder([]);
+    setSuggestionReason("");
+    setGeneratedText("");
+    setGeneratedSourceContent("");
+    setGeneratedPersistedSourceContent("");
+    setGeneratedInputDirty(false);
+    setWorkflowError(null);
+  }, []);
+
   const beginWorkflowOperation = () => {
     activeWorkflowOperationsRef.current += 1;
     setWorkflowOperationCount((count) => count + 1);
@@ -7895,14 +8558,26 @@ function FullGenerationWorkflow({
     onBusyChange?.(workflowBusy || activeWorkflowOperationsRef.current > 0);
   }, [onBusyChange, workflowBusy]);
 
+  useEffect(() => {
+    onPendingChange?.(hasPendingWorkflowResults);
+  }, [hasPendingWorkflowResults, onPendingChange]);
+
+  useEffect(
+    () => () => {
+      onPendingChange?.(false);
+    },
+    [onPendingChange],
+  );
+
   const requestClose = useCallback(() => {
     if (workflowBusy) return;
-    if (generatedText.trim()) {
-      setDiscardGeneratedTextOpen(true);
+    if (hasPendingWorkflowResults) {
+      workflowResetActionRef.current = onClose;
+      setDiscardWorkflowResultsOpen(true);
       return;
     }
     onClose();
-  }, [generatedText, onClose, workflowBusy]);
+  }, [hasPendingWorkflowResults, onClose, workflowBusy]);
 
   useCloseLayer(() => {
     if (!open) return false;
@@ -7912,9 +8587,7 @@ function FullGenerationWorkflow({
 
   useEffect(() => {
     if (!open) return;
-    embeddedAgentLaunchStateRef.current = "idle";
-    setEmbeddedLaunchRevision(0);
-    setStep(agentOnly ? 3 : 1);
+    setStep(startAtGeneration ? 3 : 1);
     setWriterNotes(initialNotes);
     setSuggestionReason("");
     setWorkflowError(null);
@@ -7925,12 +8598,16 @@ function FullGenerationWorkflow({
     setSelectedFragmentOrder([]);
     setExpandedAgentSettings(1);
     setIsBasePromptOpen(false);
-    setHasStartedGeneration(false);
     setGeneratedText("");
     setGeneratedSourceContent("");
     setGeneratedPersistedSourceContent("");
-    setDiscardGeneratedTextOpen(false);
+    setGeneratedInputDirty(false);
+    setDiscardWorkflowResultsOpen(false);
+    workflowResetActionRef.current = null;
+    activeGenerationRunIdsRef.current.clear();
+    generationCancelRequestedRef.current = false;
     setIsFinalGenerationRetrying(false);
+    setIsCancellingGeneration(false);
     setIsAdjustingTextLength(false);
     setIsApplyingGeneratedText(false);
     setFinalGenerationLiveStatus(null);
@@ -7946,7 +8623,7 @@ function FullGenerationWorkflow({
     setChapterTargetWordCountInput(
       targetWordCount ? String(targetWordCount) : "",
     );
-  }, [agentOnly, open, chapter?.id, initialNotes, targetWordCount]);
+  }, [startAtGeneration, open, chapter?.id, initialNotes, targetWordCount]);
 
   useEffect(() => {
     if (!open || contextReadMode !== "quick" || !activeChapterId) return;
@@ -7981,14 +8658,13 @@ function FullGenerationWorkflow({
   }, [activeChapterId, contextReadMode, open, project, storage]);
 
   useEffect(() => {
-    setGeneratedText("");
-    setGeneratedSourceContent("");
-    setGeneratedPersistedSourceContent("");
-    setIsFinalGenerationRetrying(false);
-    setIsAdjustingTextLength(false);
-    setFinalGenerationLiveStatus(null);
+    if (!generatedTextRef.current.trim()) return;
+    setGeneratedInputDirty(true);
   }, [
+    agentConfigs,
     chapterTargetWordCountInput,
+    contextReadMode,
+    generationContext,
     selectedFragmentOrder,
     selectedFragments,
     suggestionReason,
@@ -8016,120 +8692,8 @@ function FullGenerationWorkflow({
     };
   }, [modelRepository, open]);
 
-  useEffect(() => {
-    if (
-      !open ||
-      !chapter ||
-      !agentConfigs.length ||
-      step !== 3 ||
-      !isEmbeddedConversationMounted ||
-      embeddedAgentLaunchStateRef.current !== "idle"
-    ) {
-      return;
-    }
-    if (!onOpenAiAgent) {
-      embeddedAgentLaunchStateRef.current = "failed";
-      setWorkflowError("MyAgents Agent Session 当前不可用");
-      return;
-    }
-    if (!chapterTargetWordCount) {
-      embeddedAgentLaunchStateRef.current = "failed";
-      setWorkflowError(
-        `本章目标字数必须是 ${MIN_CHAPTER_WORD_COUNT.toLocaleString()}～${MAX_CHAPTER_WORD_COUNT.toLocaleString()} 的整数。`,
-      );
-      return;
-    }
-
-    embeddedAgentLaunchStateRef.current = "starting";
-    setIsStartingGeneration(true);
-    setHasStartedGeneration(false);
-    setWorkflowError(null);
-
-    void (async () => {
-      try {
-        let quickContext = "";
-        if (contextReadMode === "quick") {
-          setIsPreparingQuickContext(true);
-          if (!quickContextCatalog) {
-            throw new Error(
-              quickContextError ??
-                (isLoadingQuickContext
-                  ? "快速模式资料目录仍在读取，请稍后再试"
-                  : "快速模式资料目录尚未就绪"),
-            );
-          }
-          quickContext = await buildFullGenerationQuickContext({
-            storage,
-            catalog: quickContextCatalog,
-            selection: quickContextSelection,
-          });
-        }
-        const runId =
-          "full-generation-" +
-          Date.now().toString(36) +
-          "-" +
-          Math.random().toString(36).slice(2, 8);
-        await onOpenAiAgent({
-          sceneId: "manuscript.generate",
-          title: chapter.title + " · 完整生成",
-          conversationKey: chapter.id + ".full-generation." + runId,
-          runId,
-          chapterId: chapter.id,
-          chapterTitle: chapter.title,
-          presentation: "embedded-review",
-          embeddedSurfaceId: "novel-full-generation-" + chapter.id,
-          companionContext: {
-            targetWordCount: String(chapterTargetWordCount),
-            chapterNumber: String(chapter.displayNumber),
-          },
-          initialMessage: buildFullGenerationTextAgentInitialMessage({
-            runId,
-            chapterId: chapter.id,
-            chapterNumber: chapter.displayNumber,
-            chapterTitle: chapter.title,
-            chapterPlan: formatFullGenerationChapterPlan(chapterPlan),
-            targetWordCount: chapterTargetWordCount,
-            readMode: contextReadMode,
-            selectedFragments: selectedPlanFragments,
-            writerNotes,
-            suggestionReason,
-            quickContext,
-          }),
-        });
-        setHasStartedGeneration(true);
-        embeddedAgentLaunchStateRef.current = "started";
-      } catch (cause) {
-        embeddedAgentLaunchStateRef.current = "failed";
-        setWorkflowError(errorText(cause));
-      } finally {
-        setIsStartingGeneration(false);
-        setIsPreparingQuickContext(false);
-      }
-    })();
-  }, [
-    agentConfigs.length,
-    chapter,
-    chapterPlan,
-    chapterTargetWordCount,
-    contextReadMode,
-    embeddedLaunchRevision,
-    isEmbeddedConversationMounted,
-    isLoadingQuickContext,
-    onOpenAiAgent,
-    open,
-    quickContextCatalog,
-    quickContextError,
-    quickContextSelection,
-    selectedPlanFragments,
-    step,
-    storage,
-    suggestionReason,
-    writerNotes,
-  ]);
-
   if (!open || !chapter || !agentConfigs.length) return null;
 
-  const embeddedSurfaceId = "novel-full-generation-" + chapter.id;
   const generatedTextBudget = evaluateFullGenerationTextBudget(
     generatedText,
     chapterTargetWordCount,
@@ -8138,6 +8702,7 @@ function FullGenerationWorkflow({
   const runWithWorkflowTimeout = (
     request: ManuscriptAiRunRequest,
     onProgress?: (progress: WorkbenchAiRunProgress) => void,
+    trackTextGenerationRun = false,
   ) => {
     if (!onRun) return Promise.reject(new Error("AI 当前不可用"));
     const runId = createFullGenerationRunId();
@@ -8147,11 +8712,37 @@ function FullGenerationWorkflow({
       message: "正在提交生成任务",
       revision: 0,
     });
+    if (trackTextGenerationRun) activeGenerationRunIdsRef.current.add(runId);
     return onRun({
       ...applyFullGenerationRunTimeout(request, timeoutMinutes, maxTurns),
       runId,
       onProgress,
+    }).finally(() => {
+      if (trackTextGenerationRun)
+        activeGenerationRunIdsRef.current.delete(runId);
     });
+  };
+
+  const throwIfTextGenerationCancelled = () => {
+    if (generationCancelRequestedRef.current) {
+      throw new Error("本次 AI 生成已取消");
+    }
+  };
+
+  const cancelTextGeneration = async () => {
+    if (!isStartingGeneration || isCancellingGeneration) return;
+    generationCancelRequestedRef.current = true;
+    setIsCancellingGeneration(true);
+    const runIds = [...activeGenerationRunIdsRef.current];
+    if (!onCancelRun || !runIds.length) return;
+    const failures = await Promise.allSettled(
+      runIds.map((runId) => onCancelRun(runId)),
+    );
+    if (failures.some((result) => result.status === "rejected")) {
+      setWorkflowError("取消请求未能送达；生成仍在运行，请稍后重试。");
+      generationCancelRequestedRef.current = false;
+      setIsCancellingGeneration(false);
+    }
   };
 
   const updateAgentConfig = (
@@ -8165,25 +8756,24 @@ function FullGenerationWorkflow({
     );
   };
 
+  const requestWorkflowReset = (action: () => void) => {
+    if (!hasPendingWorkflowResults) {
+      action();
+      return;
+    }
+    workflowResetActionRef.current = action;
+    setDiscardWorkflowResultsOpen(true);
+  };
+
   const updateChapterTargetWordCount = (value: string) => {
-    setChapterTargetWordCountInput(value);
-    setAgentResults(createFullGenerationAgentResults());
-    setSelectedFragments(new Set());
-    setSelectedFragmentOrder([]);
-    setSuggestionReason("");
-    setWorkflowError(null);
+    requestWorkflowReset(() => {
+      setChapterTargetWordCountInput(value);
+      clearWorkflowResults();
+    });
   };
 
   const clearFullGenerationContextResults = () => {
-    setAgentResults(createFullGenerationAgentResults());
-    setSelectedFragments(new Set());
-    setSelectedFragmentOrder([]);
-    setSuggestionReason("");
-    setHasStartedGeneration(false);
-    setGeneratedText("");
-    setGeneratedSourceContent("");
-    setGeneratedPersistedSourceContent("");
-    setWorkflowError(null);
+    clearWorkflowResults();
   };
 
   const updateContextReadMode = (mode: FullGenerationContextReadMode) => {
@@ -8191,18 +8781,22 @@ function FullGenerationWorkflow({
       if (mode === "quick") setQuickContextOpen(true);
       return;
     }
-    setContextReadMode(mode);
-    setQuickContextCatalog(null);
-    setQuickContextError(null);
-    setQuickContextOpen(mode === "quick");
-    clearFullGenerationContextResults();
+    requestWorkflowReset(() => {
+      setContextReadMode(mode);
+      setQuickContextCatalog(null);
+      setQuickContextError(null);
+      setQuickContextOpen(mode === "quick");
+      clearFullGenerationContextResults();
+    });
   };
 
   const updateQuickContextSelection = (
     selection: FullGenerationQuickContextSelection,
   ) => {
-    setQuickContextSelection(selection);
-    clearFullGenerationContextResults();
+    requestWorkflowReset(() => {
+      setQuickContextSelection(selection);
+      clearFullGenerationContextResults();
+    });
   };
 
   const resolveQuickContextSnapshot = async (): Promise<string> => {
@@ -8292,8 +8886,19 @@ function FullGenerationWorkflow({
     });
   };
 
-  const generatePlans = async (requestedAgents = selectedAgents) => {
+  const generatePlans = async (
+    requestedAgents = selectedAgents,
+    allowDiscardPending = false,
+  ) => {
     if (!onRun || !requestedAgents.length) return;
+    if (!allowDiscardPending && hasPendingWorkflowResults) {
+      workflowResetActionRef.current = () => {
+        clearWorkflowResults();
+        void generatePlans(requestedAgents, true);
+      };
+      setDiscardWorkflowResultsOpen(true);
+      return;
+    }
     if (!chapterTargetWordCount) {
       setWorkflowError(
         `本章目标字数必须是 ${MIN_CHAPTER_WORD_COUNT.toLocaleString()}～${MAX_CHAPTER_WORD_COUNT.toLocaleString()} 的整数。`,
@@ -8502,15 +9107,16 @@ function FullGenerationWorkflow({
     }
   };
 
-  const retryEmbeddedTextGeneration = () => {
-    if (embeddedAgentLaunchStateRef.current === "starting") return;
-    embeddedAgentLaunchStateRef.current = "idle";
-    setWorkflowError(null);
-    setEmbeddedLaunchRevision((current) => current + 1);
-  };
-
-  const startTextGeneration = async () => {
+  const startTextGeneration = async (allowDiscardPending = false) => {
     if (!onRun || isStartingGeneration || isApplyingGeneratedText) return;
+    if (!allowDiscardPending && generatedText.trim()) {
+      workflowResetActionRef.current = () => {
+        clearWorkflowResults();
+        void startTextGeneration(true);
+      };
+      setDiscardWorkflowResultsOpen(true);
+      return;
+    }
     if (!chapterTargetWordCount) {
       setWorkflowError(
         `本章目标字数必须是 ${MIN_CHAPTER_WORD_COUNT.toLocaleString()}～${MAX_CHAPTER_WORD_COUNT.toLocaleString()} 的整数。`,
@@ -8519,11 +9125,14 @@ function FullGenerationWorkflow({
     }
     beginWorkflowOperation();
     setIsStartingGeneration(true);
+    generationCancelRequestedRef.current = false;
+    setIsCancellingGeneration(false);
     setIsFinalGenerationRetrying(false);
     setIsAdjustingTextLength(false);
     setGeneratedText("");
     setGeneratedSourceContent("");
     setGeneratedPersistedSourceContent("");
+    setGeneratedInputDirty(false);
     setWorkflowError(null);
     const reportFinalGenerationProgress = (progress: WorkbenchAiRunProgress) =>
       setFinalGenerationLiveStatus(progress);
@@ -8531,6 +9140,7 @@ function FullGenerationWorkflow({
       const sourceContent = manuscriptContent;
       const persistedSourceContent = persistedManuscriptContent;
       const sharedGenerationContext = await resolveFullGenerationContext();
+      throwIfTextGenerationCancelled();
       const prompt = [
         "作者已在完整生成工作流中确认本章写作方向。",
         `章节：第 ${chapter.displayNumber} 章 · ${chapter.title}`,
@@ -8568,7 +9178,11 @@ function FullGenerationWorkflow({
       const output = await runFullGenerationAgentWithRecovery({
         request,
         onRun: (nextRequest) =>
-          runWithWorkflowTimeout(nextRequest, reportFinalGenerationProgress),
+          runWithWorkflowTimeout(
+            nextRequest,
+            reportFinalGenerationProgress,
+            true,
+          ),
         onRecovery: () => {
           setIsFinalGenerationRetrying(true);
           setFinalGenerationLiveStatus({
@@ -8579,6 +9193,7 @@ function FullGenerationWorkflow({
           });
         },
       });
+      throwIfTextGenerationCancelled();
       let content = sanitizeFullGenerationTextOutput(output);
       if (!content) throw new Error("正文生成没有返回可用内容");
       let budget = evaluateFullGenerationTextBudget(
@@ -8595,7 +9210,9 @@ function FullGenerationWorkflow({
               targetWordCount: budget.target,
             }),
             reportFinalGenerationProgress,
+            true,
           );
+          throwIfTextGenerationCancelled();
           const correctedContent =
             sanitizeFullGenerationTextOutput(correctedOutput);
           if (correctedContent) content = correctedContent;
@@ -8616,13 +9233,27 @@ function FullGenerationWorkflow({
           setIsAdjustingTextLength(false);
         }
       }
+      if (chapter.id !== activeChapterId) {
+        throw new Error("当前章节已切换，生成结果已丢弃");
+      }
+      const latestPersistedContent = (await storage.readText(chapter.path))
+        .content;
+      if (latestPersistedContent !== persistedSourceContent) {
+        throw new Error("正文在生成期间发生变化，旧候选已丢弃，请重新生成");
+      }
+      throwIfTextGenerationCancelled();
       setGeneratedSourceContent(sourceContent);
       setGeneratedPersistedSourceContent(persistedSourceContent);
       setGeneratedText(content);
     } catch (cause) {
-      setWorkflowError(errorText(cause));
+      setWorkflowError(
+        generationCancelRequestedRef.current
+          ? "正文生成已取消，未写入草稿。"
+          : errorText(cause),
+      );
     } finally {
       setIsStartingGeneration(false);
+      setIsCancellingGeneration(false);
       setIsFinalGenerationRetrying(false);
       setIsAdjustingTextLength(false);
       setFinalGenerationLiveStatus(null);
@@ -8633,6 +9264,10 @@ function FullGenerationWorkflow({
   const applyGeneratedText = async () => {
     const content = generatedText.trim();
     if (!content || isApplyingGeneratedText || isStartingGeneration) return;
+    if (generatedInputDirty) {
+      setWorkflowError("生成依据已变化，请重新生成正文候选后再采用");
+      return;
+    }
     const budget = evaluateFullGenerationTextBudget(
       content,
       chapterTargetWordCount,
@@ -8666,8 +9301,6 @@ function FullGenerationWorkflow({
 
   if (!open) return null;
 
-  const agentSessionStarted = Boolean(onOpenAiAgent) && hasStartedGeneration;
-
   const workflowStepNavigation = (
     <div className="ms-full-generation-steps" aria-label="生成步骤">
       {([1, 2, 3] as const).map((value) => (
@@ -8678,7 +9311,7 @@ function FullGenerationWorkflow({
             step === value ? "is-active" : step > value ? "is-done" : ""
           }
           onClick={() => setStep(value)}
-          disabled={workflowBusy || agentSessionStarted}
+          disabled={workflowBusy}
           aria-current={step === value ? "step" : undefined}
         >
           <span>
@@ -9619,143 +10252,18 @@ function FullGenerationWorkflow({
 
       {step === 3 && (
         <div className="ms-full-generation-final">
-          <section className="ms-full-generation-agent-pane">
-            <div
-              ref={embeddedConversationTargetRef}
-              id={embeddedSurfaceId + "-conversation"}
-              className="ms-full-generation-embedded-target"
-            >
-              {!hasStartedGeneration && (
-                <div className="ms-full-generation-embedded-empty">
-                  {isStartingGeneration ? (
-                    <Loader2 className="h-6 w-6 animate-spin" />
-                  ) : (
-                    <Bot className="h-6 w-6" />
-                  )}
-                  <div>
-                    <span className="ms-eyebrow">MyAgents 正文 Agent</span>
-                    <strong>
-                      {isStartingGeneration
-                        ? "正在打开正文会话"
-                        : "正在载入正文 Agent"}
-                    </strong>
-                    <p>
-                      {isStartingGeneration
-                        ? "正在连接当前项目的 Agent、模型和小说工作台工具。"
-                        : contextReadMode === "quick"
-                          ? "将作者选择的资料快照一次性带入 Agent 上下文。"
-                          : "Agent 会按需读取正文、设定、人物、剧情工程和时间线。"}
-                    </p>
-                  </div>
-                  {workflowError && !isStartingGeneration && (
-                    <button
-                      type="button"
-                      className="ns-button"
-                      onClick={retryEmbeddedTextGeneration}
-                      disabled={!onOpenAiAgent || !chapterTargetWordCount}
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                      重新连接 Agent
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          </section>
           <section className="ms-full-generation-output">
-            <div
-              id={embeddedSurfaceId + "-companion"}
-              className="ms-full-generation-embedded-output"
-            >
-              {!hasStartedGeneration && (
-                <div className="ms-full-generation-embedded-empty">
-                  {isStartingGeneration ? (
-                    <Loader2 className="h-6 w-6 animate-spin" />
-                  ) : (
-                    <FileText className="h-6 w-6" />
-                  )}
-                  <div>
-                    <span className="ms-eyebrow">正文候选</span>
-                    <strong>
-                      {isStartingGeneration
-                        ? "等待 Agent 建立正文草稿"
-                        : "候选将显示在这里"}
-                    </strong>
-                    <p>
-                      Agent 会先读取必要资料，再通过正文草稿协议提交完整候选。
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
             {generatedText ? (
-              <>
-                <div className="ms-full-generation-output-head">
-                  <div>
-                    <span className="ms-eyebrow">正文候选</span>
-                    <strong>
-                      {generatedTextBudget.withinRange
-                        ? "已在当前工作流中生成，可直接编辑"
-                        : "字数超出总览范围，请编辑后再采用"}
-                    </strong>
-                  </div>
-                  <span
-                    className={`ms-full-generation-status ${generatedTextBudget.withinRange ? "is-ready" : "is-error"}`}
-                  >
-                    {generatedTextBudget.withinRange ? (
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                    ) : (
-                      <AlertTriangle className="h-3.5 w-3.5" />
-                    )}
-                    {generatedTextBudget.count.toLocaleString()} 字
-                    {generatedTextBudget.target
-                      ? ` / 目标 ${generatedTextBudget.target.toLocaleString()}`
-                      : ""}
-                  </span>
-                </div>
-                <textarea
-                  className="ms-full-generation-output-text"
-                  value={generatedText}
-                  onChange={(event) => setGeneratedText(event.target.value)}
-                  aria-label="生成的正文候选"
-                />
-                <footer>
-                  <span>
-                    {generatedTextBudget.withinRange
-                      ? "采用后写入当前正文草稿，不会自动保存。"
-                      : `请编辑到 ${generatedTextBudget.minimum?.toLocaleString()}～${generatedTextBudget.maximum?.toLocaleString()} 字，达到总览范围后才可采用。`}
-                  </span>
-                  <div className="ms-full-generation-output-actions">
-                    <button
-                      type="button"
-                      className="ns-button"
-                      onClick={() => void startTextGeneration()}
-                      disabled={isStartingGeneration || isApplyingGeneratedText}
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                      重新生成
-                    </button>
-                    <button
-                      type="button"
-                      className="ns-button is-primary"
-                      onClick={() => void applyGeneratedText()}
-                      disabled={
-                        !generatedText.trim() ||
-                        !generatedTextBudget.withinRange ||
-                        isStartingGeneration ||
-                        isApplyingGeneratedText
-                      }
-                    >
-                      {isApplyingGeneratedText ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Check className="h-3.5 w-3.5" />
-                      )}
-                      {isApplyingGeneratedText ? "正在写入" : "采用到正文"}
-                    </button>
-                  </div>
-                </footer>
-              </>
+              <RoomCandidateInlineDiff
+                title="生成正文差异"
+                original={generatedSourceContent}
+                modified={generatedText}
+                onModifiedChange={setGeneratedText}
+                hideHeader
+                fontSize={typography.fontSize}
+                lineHeight={generatedDiffLineHeight}
+                className="ms-full-generation-inline-diff"
+              />
             ) : (
               <div
                 className={`ms-full-generation-empty ${isStartingGeneration ? "is-waiting" : ""}`}
@@ -9772,9 +10280,7 @@ function FullGenerationWorkflow({
                       ? "上一轮未完成，正在收敛重试 1/1"
                       : isStartingGeneration
                         ? "正在生成完整正文"
-                        : agentSessionStarted
-                          ? "正文 Agent 已建立审阅会话"
-                          : "在当前窗口生成完整正文"}
+                        : "在当前窗口生成完整正文"}
                 </h3>
                 {isStartingGeneration && finalGenerationLiveStatus && (
                   <FullGenerationLiveStatus
@@ -9790,12 +10296,25 @@ function FullGenerationWorkflow({
                         ? contextReadMode === "quick"
                           ? `已一次性注入 ${countFullGenerationQuickContextItems(quickContextSelection)} 项人工资料，正在直接生成正文。`
                           : "正在自主读取必要的设定、人物、剧情工程、时间线与前文，生成结果会直接显示在这里。"
-                        : agentSessionStarted
-                          ? "Agent 的执行过程与待审候选已保留在左右面板；只能通过提案审阅写回正文。"
-                          : contextReadMode === "quick"
+                        : contextReadMode === "quick"
                           ? "使用作者选择的同一份资料快照直接生成，结果留在本窗口审阅。"
                           : "复用 MyAgents 当前项目模型和小说只读工具，结果留在本窗口审阅，不再打开新的 Agent 对话。"}
                 </p>
+                {isStartingGeneration && (
+                  <button
+                    type="button"
+                    className="ns-button is-danger"
+                    onClick={() => void cancelTextGeneration()}
+                    disabled={isCancellingGeneration}
+                  >
+                    {isCancellingGeneration ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <CircleStop className="h-3.5 w-3.5" />
+                    )}
+                    {isCancellingGeneration ? "正在取消生成" : "取消生成"}
+                  </button>
+                )}
                 {!isStartingGeneration && (
                   <div className="ms-full-generation-handoff-list">
                     <span>
@@ -9815,7 +10334,7 @@ function FullGenerationWorkflow({
                     </span>
                   </div>
                 )}
-                {!isStartingGeneration && !agentSessionStarted && (
+                {!isStartingGeneration && (
                   <button
                     type="button"
                     className="ns-button is-primary"
@@ -9842,9 +10361,47 @@ function FullGenerationWorkflow({
             ? "方案仅供比较，选择后才会进入正文生成"
             : step === 2
               ? "确认结果也可以完全由人工编写"
-              : "正文候选需人工审阅后再写入"}
+              : generatedText
+                ? generatedInputDirty
+                  ? "生成依据已变化，请重新生成候选后再采用。正文候选需人工审阅后再写入。"
+                  : generatedTextBudget.withinRange
+                    ? `当前候选 ${generatedTextBudget.count.toLocaleString()} 字，采用后写入正文草稿但不会自动保存。`
+                    : `当前候选 ${generatedTextBudget.count.toLocaleString()} 字，请编辑到 ${generatedTextBudget.minimum?.toLocaleString()}～${generatedTextBudget.maximum?.toLocaleString()} 字后再采用。`
+                : "正文候选需人工审阅后再写入"}
         </span>
-        <div>
+        <div className="ms-full-generation-footer-actions">
+          {step === 3 && generatedText && (
+            <>
+              <button
+                type="button"
+                className="ns-button"
+                onClick={() => void startTextGeneration()}
+                disabled={isStartingGeneration || isApplyingGeneratedText}
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                重新生成
+              </button>
+              <button
+                type="button"
+                className="ns-button is-primary"
+                onClick={() => void applyGeneratedText()}
+                disabled={
+                  !generatedText.trim() ||
+                  generatedInputDirty ||
+                  !generatedTextBudget.withinRange ||
+                  isStartingGeneration ||
+                  isApplyingGeneratedText
+                }
+              >
+                {isApplyingGeneratedText ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Check className="h-3.5 w-3.5" />
+                )}
+                {isApplyingGeneratedText ? "正在写入" : "采用到正文"}
+              </button>
+            </>
+          )}
           {step === 1 && (
             <button
               type="button"
@@ -9882,26 +10439,37 @@ function FullGenerationWorkflow({
 
   return (
     <>
-      {discardGeneratedTextOpen && (
+      {discardWorkflowResultsOpen && (
         <ConfirmDialog
-          title="放弃生成的正文候选"
-          message="当前生成的正文候选尚未写入正文。关闭后将丢弃该候选，且无法恢复。"
+          title={generatedText.trim() ? "放弃生成的正文候选" : "放弃 AI 方案"}
+          message={
+            generatedText.trim()
+              ? "当前有尚未写入正文的生成候选；同时存在的方案结果也会一并清除。放弃后无法恢复，是否继续？"
+              : "当前有尚未处理的正文方案。放弃后不会写入正文，且无法恢复，是否继续？"
+          }
           confirmText="放弃候选"
+          cancelText="继续编辑"
           confirmVariant="danger"
           onConfirm={() => {
-            setDiscardGeneratedTextOpen(false);
-            onClose();
+            const action = workflowResetActionRef.current;
+            workflowResetActionRef.current = null;
+            setDiscardWorkflowResultsOpen(false);
+            clearWorkflowResults();
+            action?.();
           }}
-          onCancel={() => setDiscardGeneratedTextOpen(false)}
+          onCancel={() => {
+            workflowResetActionRef.current = null;
+            setDiscardWorkflowResultsOpen(false);
+          }}
         />
       )}
       {embedded ? (
         <div
           className={`ms-full-generation-embedded ${
-            agentOnly ? "is-agent-only" : ""
+            startAtGeneration ? "is-compact" : ""
           }`}
         >
-          {!agentOnly && (
+          {!startAtGeneration && (
             <header className="ms-full-generation-embedded-header">
               <div className="ms-full-generation-titlebar">
                 <div className="ms-full-generation-title">
@@ -9970,7 +10538,7 @@ export default function ManuscriptStudio({
   onRestoreManuscriptVersion,
   onExtractChaptersToNarrative,
   onAiRun,
-  onOpenAiAgent,
+  onCancelAiRun,
   onAdoptSimulation,
   onOpenNarrative,
   onOpenModelSettings,
@@ -9993,6 +10561,9 @@ export default function ManuscriptStudio({
   const [mobilePane, setMobilePane] = useState<"tree" | "editor" | "context">(
     "editor",
   );
+  useEffect(() => {
+    if (mobileInspectorOpen) setMobilePane("context");
+  }, [inspectorView, mobileInspectorOpen]);
   const [writingSurface, setWritingSurface] =
     useState<WritingSurface>("chapter");
   const [treeSearch, setTreeSearch] = useState("");
@@ -10000,6 +10571,10 @@ export default function ManuscriptStudio({
   const [draft, setDraft] = useState(selectedChapter?.content ?? "");
   const [savedDraft, setSavedDraft] = useState(selectedChapter?.content ?? "");
   const [titleDraft, setTitleDraft] = useState(selectedChapter?.title ?? "");
+  const [chapterGoalCollapsed, setChapterGoalCollapsed] = useState(false);
+  useEffect(() => {
+    setChapterGoalCollapsed(false);
+  }, [selectedChapter?.id, selectedChapter?.narrativeChapterId]);
   const [displayNumberDraft, setDisplayNumberDraft] = useState(
     String(selectedChapter?.displayNumber ?? 1),
   );
@@ -10076,6 +10651,14 @@ export default function ManuscriptStudio({
     ReturnType<ReturnType<typeof createManuscriptTrackingRepository>["load"]>
   > | null>(null);
   const [trackingBusy, setTrackingBusy] = useState(false);
+  const [trackingTimeoutMinutes, setTrackingTimeoutMinutes] = useState(
+    EXTENDED_AI_DEFAULT_TIMEOUT_MINUTES,
+  );
+  const [qualityTimeoutMinutes, setQualityTimeoutMinutes] = useState(
+    EXTENDED_AI_DEFAULT_TIMEOUT_MINUTES,
+  );
+  const [trackingDiscardTarget, setTrackingDiscardTarget] =
+    useState<ManuscriptTrackingBatch | null>(null);
   const [qualityReview, setQualityReview] = useState<QualityReview | null>(
     null,
   );
@@ -10085,10 +10668,13 @@ export default function ManuscriptStudio({
   const [manifestOpen, setManifestOpen] = useState(false);
   const [brainstormOpen, setBrainstormOpen] = useState(false);
   const [brainstormBusy, setBrainstormBusy] = useState(false);
+  const [brainstormPending, setBrainstormPending] = useState(false);
   const [fullGenerationOpen, setFullGenerationOpen] = useState(false);
   const [fullGenerationBusy, setFullGenerationBusy] = useState(false);
+  const [fullGenerationPending, setFullGenerationPending] = useState(false);
   const [simulationOpen, setSimulationOpen] = useState(false);
   const [simulationBusy, setSimulationBusy] = useState(false);
+  const [simulationPending, setSimulationPending] = useState(false);
   const [excludedContextSources, setExcludedContextSources] = useState<
     ReadonlySet<string>
   >(new Set());
@@ -10119,7 +10705,12 @@ export default function ManuscriptStudio({
   );
   const hasPendingNarrativeExtraction = narrativeExtractionDrafts.length > 0;
   const manuscriptAiBusy = Boolean(
-    manuscriptTaskBusy || candidate || hasPendingNarrativeExtraction,
+    manuscriptTaskBusy ||
+      candidate ||
+      hasPendingNarrativeExtraction ||
+      brainstormPending ||
+      fullGenerationPending ||
+      simulationPending,
   );
   const manuscriptMutationBusy =
     Boolean(operation) || isSaving || manuscriptAiBusy;
@@ -10151,16 +10742,24 @@ export default function ManuscriptStudio({
           ) {
             return;
           }
-          if (draftRef.current === savedDraftRef.current) {
+          if (
+            draftRef.current === savedDraftRef.current &&
+            !candidate &&
+            !hasPendingNarrativeExtraction
+          ) {
             setDraft(content);
             setSavedDraft(content);
             setExternalChanged(false);
-          } else if (draftRef.current !== content) {
+          } else if (
+            draftRef.current !== content ||
+            candidate ||
+            hasPendingNarrativeExtraction
+          ) {
             setExternalChanged(true);
           }
         },
       ),
-    [storage.rootPath],
+    [candidate, hasPendingNarrativeExtraction, storage.rootPath],
   );
 
   useEffect(() => {
@@ -10241,14 +10840,20 @@ export default function ManuscriptStudio({
 
   useEffect(() => {
     if (!selectedChapter || selectedChapter.content === savedDraft) return;
-    if (draft === savedDraft) {
+    if (draft === savedDraft && !candidate && !hasPendingNarrativeExtraction) {
       setDraft(selectedChapter.content);
       setSavedDraft(selectedChapter.content);
       setExternalChanged(false);
     } else {
       setExternalChanged(true);
     }
-  }, [draft, savedDraft, selectedChapter]);
+  }, [
+    candidate,
+    draft,
+    hasPendingNarrativeExtraction,
+    savedDraft,
+    selectedChapter,
+  ]);
 
   const saveCurrent = useCallback(async (): Promise<boolean> => {
     if (!selectedChapter || draft === savedDraft) return true;
@@ -10352,7 +10957,13 @@ export default function ManuscriptStudio({
     } catch (cause) {
       setError(`无法载入磁盘正文：${errorText(cause)}`);
     }
-  }, [candidate, hasPendingNarrativeExtraction, isApplyingCandidate, selectedChapter, storage]);
+  }, [
+    candidate,
+    hasPendingNarrativeExtraction,
+    isApplyingCandidate,
+    selectedChapter,
+    storage,
+  ]);
 
   const saveAll = useCallback(async () => {
     const saved = await saveCurrent();
@@ -10379,12 +10990,20 @@ export default function ManuscriptStudio({
         "存在尚未处理的正文提炼候选，请先写入或放弃候选后再离开正文。",
       );
     }
+    if (brainstormPending || fullGenerationPending || simulationPending) {
+      throw new Error(
+        "存在尚未处理的 AI 候选结果，请先采用或放弃候选后再离开正文。",
+      );
+    }
     return saveAll();
   }, [
+    brainstormPending,
     candidate,
+    fullGenerationPending,
     hasPendingNarrativeExtraction,
     isApplyingCandidate,
     saveAll,
+    simulationPending,
   ]);
 
   const exportManuscript = useCallback(async () => {
@@ -10414,7 +11033,9 @@ export default function ManuscriptStudio({
       operationRef.current ||
       saveInFlightRef.current
     ) {
-      setError("当前正文操作尚未完成，请等待保存、结构更新或 AI 任务结束后再切换章节");
+      setError(
+        "当前正文操作尚未完成，请等待保存、结构更新或 AI 任务结束后再切换章节",
+      );
       return;
     }
     if (!(await saveCurrent())) return;
@@ -10432,7 +11053,9 @@ export default function ManuscriptStudio({
 
   const rejectManuscriptMutationWhileAiBusy = (): boolean => {
     if (!manuscriptAiBusy) return false;
-    setError("正在处理 AI 任务或存在待处理候选，请完成处理后再修改正文结构或章节元数据");
+    setError(
+      "正在处理 AI 任务或存在待处理候选，请完成处理后再修改正文结构或章节元数据",
+    );
     return true;
   };
 
@@ -10768,7 +11391,8 @@ export default function ManuscriptStudio({
       const changedDuringExtraction = (
         await Promise.all(
           persistedSourceChapters.map(async (chapter) => {
-            const currentContent = (await storage.readText(chapter.path)).content;
+            const currentContent = (await storage.readText(chapter.path))
+              .content;
             return currentContent === chapter.content ? null : chapter.id;
           }),
         )
@@ -10779,9 +11403,7 @@ export default function ManuscriptStudio({
         }
         narrativeExtractionSourceHashesRef.current = new Map();
         setNarrativeExtractionDrafts([]);
-        throw new Error(
-          "正文在提炼期间发生变化，已丢弃旧结果，请重新运行提炼",
-        );
+        throw new Error("正文在提炼期间发生变化，已丢弃旧结果，请重新运行提炼");
       }
       narrativeExtractionSourceHashesRef.current = sourceHashes;
       setNarrativeExtractionDrafts(
@@ -11051,11 +11673,7 @@ export default function ManuscriptStudio({
       options.quickSelection === true ||
       (selection.end > selection.start &&
         (mode === "revise" || mode === "expand"));
-    if (
-      !selectedChapter ||
-      (quickSelection ? !onAiRun : !onOpenAiAgent && !onAiRun) ||
-      manuscriptAiBusy
-    ) {
+    if (!selectedChapter || !onAiRun || manuscriptAiBusy) {
       return;
     }
     if (rejectManuscriptAiWhileMutationBusy()) return;
@@ -11065,6 +11683,18 @@ export default function ManuscriptStudio({
           ? getTextareaSelectionAnchor(textareaRef.current, selection.end)
           : null))
       : null;
+    const streamOutput = mode === "revise";
+    const runId = streamOutput ? createManuscriptAiRunId(mode) : undefined;
+    const reportProgress = streamOutput
+      ? (progress: WorkbenchAiRunProgress) => {
+          if (!progress.partialOutput || !quickSelectionAnchor) return;
+          setSelectionAiLoading((current) =>
+            current?.anchor === quickSelectionAnchor
+              ? { ...current, partialOutput: progress.partialOutput }
+              : current,
+          );
+        }
+      : undefined;
     if (quickSelectionAnchor) {
       setSelectionAiLoading({ mode, anchor: quickSelectionAnchor });
       setSelectionToolbarPosition(null);
@@ -11113,54 +11743,9 @@ export default function ManuscriptStudio({
         countCharacters(sourceContent),
         countCharacters(target),
       );
-      const runId = `manuscript-${Date.now().toString(36)}-${Math.random()
-        .toString(36)
-        .slice(2, 8)}`;
-      if (onOpenAiAgent && !quickSelection) {
-        await onOpenAiAgent({
-          sceneId,
-          title: `${selectedChapter.title} · ${actionLabel}`,
-          conversationKey: `${selectedChapter.id}.${mode}.${runId}`,
-          runId,
-          chapterId: selectedChapter.id,
-          chapterTitle: selectedChapter.title,
-          initialMessage: [
-            "你是 MyAgents 小说工作台的正文写作 Agent。",
-            `本次任务：${actionLabel}`,
-            `runId：${runId}`,
-            `章节 ID：${selectedChapter.id}`,
-            `章节标题：${selectedChapter.title}`,
-            `处理模式：${mode}`,
-            `处理范围：${range.start}..${range.end}`,
-            planGuidance,
-            writingWordBudget,
-            creativeBrief ? `作者选定的创作指令：${creativeBrief}` : "",
-            instruction ? `本次专项要求：${instruction}` : "",
-            target ? `作者当前选中的文本：\n${target}` : "",
-            `执行规则：
-1. 必须先调用 novel_manuscript_get_context，传 chapterId=${selectedChapter.id}，取得当前章节全文与 sourceHash；不得猜测正文。
-2. 根据实际需要调用人物、时间线、物品、势力、世界架构、剧情工程、修炼体系和连续性只读工具；只读取完成本次写作所需的上下文，不要机械遍历。
-3. 使用 novel_manuscript_create_draft 创建草稿，runId 必须为 ${runId}，chapterId 必须为 ${selectedChapter.id}，mode 必须为 ${mode}，rangeStart/rangeEnd 必须为 ${range.start}/${range.end}，baseSourceHash 使用第一步返回值。
-4. 使用 novel_manuscript_upsert_candidate 小块写入候选；首次调用替换 candidate，后续保持同一 candidateId 并传 append=true 追加，单次不要超过工具限制。候选只包含处理范围的替换或插入文本，不要解释，不要 Markdown 代码围栏。
-5. 依次调用 novel_manuscript_validate_draft、novel_manuscript_submit_draft 和 novel_manuscript_get_proposal_status。工具只会提交候选，不能直接改正文。
-6. ${planningRule} 严格遵守世界设定和连续性状态；保留人物声口，避免模板腔和机械工整感。sourceHash 冲突时停止本次提案并说明正文已变化；可继续使用原始命令和文件工具读取素材，但不得把绕过提案协议的文件修改冒充为正文候选。`,
-            mode === "expand"
-              ? selectedChapter.planningMode === "detached"
-                ? "扩写重点：补足动作、感官、对话和因果；只要不违背正文事实和作者指令，可以突破原计划。"
-                : "扩写重点：补足动作、感官、对话和因果，优先保持计划边界。"
-              : "",
-            mode === "revise"
-              ? "润色重点：保留事实、情节与人物声口，提升节奏和自然度。"
-              : "",
-          ]
-            .filter(Boolean)
-            .join("\n\n"),
-        });
-        return;
-      }
-      if (!onAiRun) return;
       const output = await onAiRun({
         sceneId,
+        ...(runId ? { runId } : {}),
         label: `${selectedChapter.title} · ${actionLabel}`,
         systemPrompt: `你是中文长篇小说正文编辑。${planningRule} 严格遵守已有设定、正文事实和用户指定的字数范围；只输出可直接写入正文的文本，不解释过程，不使用 Markdown 代码围栏。`,
         prompt: [
@@ -11173,7 +11758,7 @@ export default function ManuscriptStudio({
           writingWordBudget,
           creativeBrief ? `作者选定的创作指令：${creativeBrief}` : "",
           instruction ? `本次专项要求：${instruction}` : "",
-          buildOptionalContext(),
+          quickSelection ? "" : buildOptionalContext(),
           mode === "continue"
             ? `已有正文：\n${sourceContent}`
             : `待处理文本：\n${target || "（空）"}`,
@@ -11188,6 +11773,14 @@ export default function ManuscriptStudio({
         ]
           .filter(Boolean)
           .join("\n\n"),
+        ...(streamOutput
+          ? {
+              executionProfile: "standard" as const,
+              maxTurns: 1,
+              streamOutput: true,
+              ...(reportProgress ? { onProgress: reportProgress } : {}),
+            }
+          : {}),
       });
       if (currentChapterIdRef.current !== requestChapterId) return;
       const latestPersistedContent = (
@@ -11253,6 +11846,16 @@ export default function ManuscriptStudio({
     if (rejectManuscriptAiWhileMutationBusy()) return false;
     if (!trackingLoaded) {
       setError("连续性账本正在载入，请稍后再分析当前章节");
+      return false;
+    }
+    if (
+      selectedChapter &&
+      trackingLoaded.ledger.batches.some(
+        (batch) =>
+          batch.chapterId === selectedChapter.id && batch.status === "proposed",
+      )
+    ) {
+      setError("当前章节已有待审阅的连续性批次，请先确认或放弃该批次后再分析");
       return false;
     }
     if (
@@ -11335,12 +11938,37 @@ export default function ManuscriptStudio({
           })),
         ),
       };
-      const output = await onAiRun({
-        sceneId: "manuscript.continuity",
-        label: `${selectedChapter.title} · 连续性同步`,
-        systemPrompt: `你是小说连续性状态抽取器。只提取正文明确发生的事实，每一项必须带正文中的逐字证据和可执行 operation。只能引用目录中存在的稳定 ID；找不到稳定 ID 的人物、地点、势力变化不要输出。只输出 JSON：{"summary":"","changes":[{"domain":"timeline|character-appearance|character-state|relationship|inventory|location|faction|foreshadow|world-rule|continuity","entityId":null,"title":"","before":null,"after":"","evidence":"正文逐字引文","operation":{"kind":"对应操作"}}]}。operation 规则：timeline 使用 {kind:"timeline-event",eventKind:"event|turning-point|battle|discovery|foreshadowing|backstory",timeLabel:""}；人物出场使用 {kind:"character-appearance"}；人物状态使用 {kind:"character-field",field:"status|currentRealm|goals|motivation|hometown"}；关系使用 {kind:"relationship",targetCharacterId:"稳定ID",relationType:"",tone:"positive|negative|neutral"}；物品使用 {kind:"inventory",itemId:null或稳定ID,name:"",quantity:1,unit:""}；地点使用 {kind:"location-field",field:"status|appearanceNote|summary",status:null或"planned|appeared|archived"}；势力使用 {kind:"faction-field",field:"status|summary|governance|military|economy|publicSupport|territorialIntegrity",status:null或"active|neutral|declining|dissolved"}；新伏笔使用 {kind:"foreshadow",foreshadowingId:null,status:"planted",payoffEventId:null}；回收或废弃伏笔必须引用目录里的伏笔 ID，使用 {kind:"foreshadow",foreshadowingId:"稳定ID",status:"paid-off|abandoned",payoffEventId:null}，回收事件由系统自动关联当前章节；世界规则和承接事项使用 {kind:"continuity-fact",key:"英文或拼音稳定短键"}。`,
-        prompt: `章节：${selectedChapter.title}\n\n章节计划：${selectedPlan?.description ?? "未关联"}\n\n可引用实体目录：\n${JSON.stringify(entityCatalog, null, 2)}\n\n正文：\n${persistedSourceContent}`,
-      });
+      const timeAnchors = timeline.library.events
+        .filter((event) => event.timePrecision !== "unknown")
+        .map((event) => ({
+          id: event.id,
+          title: event.title,
+          timeLabel: event.timeLabel,
+          worldSortKey:
+            event.worldSortKey ?? String(Math.trunc(event.sortKey)),
+          timePrecision: event.timePrecision,
+          chapterIds: event.chapterIds,
+        }));
+      const trackingReferenceCatalog: ManuscriptTrackingReferenceCatalog = {
+        characterIds: new Set(entityCatalog.characters.map((item) => item.id)),
+        itemIds: new Set(entityCatalog.items.map((item) => item.id)),
+        locationIds: new Set(entityCatalog.locations.map((item) => item.id)),
+        factionIds: new Set(entityCatalog.factions.map((item) => item.id)),
+        foreshadowingIds: new Set(
+          entityCatalog.foreshadowings.map((item) => item.id),
+        ),
+      };
+      const output = await onAiRun(
+        applyExtendedAiRunBudget(
+          {
+            sceneId: "manuscript.continuity",
+            label: `${selectedChapter.title} · 连续性同步`,
+            systemPrompt: `你是小说连续性状态抽取器。只提取正文明确发生的事实，每一项必须带正文中的逐字证据和可执行 operation。evidence 必须是正文中可直接逐字搜索到的连续原文片段，禁止概括、改写、拼接多处原文或补充正文未写出的信息；无法提供连续原文证据的变化不要输出。只能引用目录中存在的稳定 ID；找不到稳定 ID 的人物、地点、势力变化不要输出。只输出 JSON：{"summary":"","timeAnchorEventId":null,"changes":[{"domain":"timeline|character-appearance|character-state|relationship|inventory|location|faction|foreshadow|world-rule|continuity","entityId":null,"title":"","before":null,"after":"","evidence":"正文逐字引文","operation":{"kind":"对应操作"}}]}。timeAnchorEventId 只能从“已确认时间锚点”目录选择：正文明确发生在某锚点时填写其 ID；没有可靠对应、属于回忆/插叙/梦境或无法确定世界时间时必须为 null，绝不能把章节序号或文字猜测为世界时间。operation 规则：timeline 使用 {kind:"timeline-event",eventKind:"event|turning-point|battle|discovery|foreshadowing|backstory",timeLabel:""}；人物出场使用 {kind:"character-appearance"}；人物状态使用 {kind:"character-field",field:"status|currentRealm|goals|motivation|hometown"}；关系使用 {kind:"relationship",targetCharacterId:"稳定ID",relationType:"",tone:"positive|negative|neutral"}；物品使用 {kind:"inventory",itemId:null或稳定ID,name:"",quantity:1,unit:""}；地点使用 {kind:"location-field",field:"status|appearanceNote|summary",status:null或"planned|appeared|archived"}；势力使用 {kind:"faction-field",field:"status|summary|governance|military|economy|publicSupport|territorialIntegrity",status:null或"active|neutral|declining|dissolved"}；新伏笔使用 {kind:"foreshadow",foreshadowingId:null,status:"planted",payoffEventId:null}；回收或废弃伏笔必须引用目录里的伏笔 ID，使用 {kind:"foreshadow",foreshadowingId:"稳定ID",status:"paid-off|abandoned",payoffEventId:null}，回收事件由系统自动关联当前章节；世界规则和承接事项使用 {kind:"continuity-fact",key:"英文或拼音稳定短键"}。`,
+            prompt: `章节：${selectedChapter.title}\n\n章节计划：${selectedPlan?.description ?? "未关联"}\n\n已确认时间锚点：\n${JSON.stringify(timeAnchors, null, 2)}\n\n可引用实体目录：\n${JSON.stringify(entityCatalog, null, 2)}\n\n正文：\n${persistedSourceContent}`,
+          },
+          trackingTimeoutMinutes,
+        ),
+      );
       if (currentChapterIdRef.current !== requestChapterId) {
         try {
           await onUpdateChapter(requestChapterId, trackingStateBeforeRun);
@@ -11365,8 +11993,39 @@ export default function ManuscriptStudio({
         setError("磁盘正文在连续性分析期间发生变化，旧结果已丢弃，请重新分析");
         return false;
       }
-      const proposal = parseTrackingProposal(output);
-      if (!proposal.changes.length) {
+      const parsedProposal = parseTrackingProposal(output);
+      const timeAnchorEventId = timeAnchors.some(
+        (event) => event.id === parsedProposal.timeAnchorEventId,
+      )
+        ? parsedProposal.timeAnchorEventId
+        : null;
+      const referenceValidChanges = parsedProposal.changes.filter(
+        (change) =>
+          !getManuscriptTrackingReferenceIssue(
+            change,
+            trackingReferenceCatalog,
+          ),
+      );
+      const invalidReferenceCount =
+        parsedProposal.changes.length - referenceValidChanges.length;
+      if (parsedProposal.changes.length > 0 && !referenceValidChanges.length) {
+        throw new Error(
+          `连续性分析返回的 ${invalidReferenceCount} 项变化均引用了不存在的资料实体，请重新分析`,
+        );
+      }
+      const evidencePartition = partitionManuscriptTrackingChangesByEvidence(
+        persistedSourceContent,
+        referenceValidChanges,
+      );
+      if (
+        parsedProposal.changes.length > 0 &&
+        evidencePartition.grounded.length === 0
+      ) {
+        throw new Error(
+          `连续性分析返回的 ${evidencePartition.ungrounded.length} 项变化均缺少可逐字定位的正文证据，请重新分析`,
+        );
+      }
+      if (!parsedProposal.changes.length) {
         await onUpdateChapter(requestChapterId, {
           trackingStatus: "synced",
           lastTrackedAt: new Date().toISOString(),
@@ -11377,8 +12036,22 @@ export default function ManuscriptStudio({
       const next = await trackingRepository.createProposal(before, {
         chapterId: requestChapterId,
         chapterContentHash: sourceHash,
-        summary: proposal.summary,
-        changes: proposal.changes,
+        summary: [
+          parsedProposal.summary,
+          parsedProposal.timeAnchorEventId && !timeAnchorEventId
+            ? "系统已忽略不存在或时间未确认的世界时间锚点"
+            : "",
+          invalidReferenceCount > 0
+            ? `系统已忽略 ${invalidReferenceCount} 项无法关联现有资料实体的模型输出`
+            : "",
+          evidencePartition.ungrounded.length > 0
+            ? `系统已忽略 ${evidencePartition.ungrounded.length} 项无法在正文中逐字定位的模型输出`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("；"),
+        timeAnchorEventId,
+        changes: evidencePartition.grounded,
       });
       await commitTrackingUpdate(before, next, requestChapterId, {
         trackingStatus: "review",
@@ -11424,30 +12097,35 @@ export default function ManuscriptStudio({
       if (!(await saveCurrent())) return;
       if (currentChapterIdRef.current !== requestChapterId) return;
       const reviewedContent = await ensureCurrentDraftMatchesDisk("质量审查");
-      const output = await onAiRun({
-        sceneId: "manuscript.quality",
-        label: `${selectedChapter.title} · 正文质量检查`,
-        systemPrompt:
-          '你是中文长篇小说质量编辑。只输出 JSON：{"score":0,"summary":"","issues":[{"category":"计划|连续性|人物|节奏|文风|钩子","severity":"error|warning|suggestion","title":"","detail":"","evidence":"正文逐字引文","suggestion":""}],"passed":[""]}。必须以正文证据为准，不虚构设定。',
-        prompt: [
-          `章节：${selectedChapter.title}`,
-          selectedPlan
-            ? selectedChapter.planningMode === "detached"
-              ? `章节计划（仅作对照，本章已脱纲）：${selectedPlan.description}`
-              : `章节计划：${selectedPlan.description}`
-            : "章节计划：未关联",
-          selectedChapter.planningMode === "detached"
-            ? "审查规则：正文事实优先。计划偏离仅作为建议，除非造成设定或连续性冲突，不得判为错误。"
-            : "",
-          selectedPlan?.sections.length
-            ? `场景节拍：${selectedPlan.sections.map((section) => `${section.title}：${section.description}`).join("；")}`
-            : "",
-          buildOptionalContext(),
-          `正文：\n${reviewedContent || "（空）"}`,
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
-      });
+      const output = await onAiRun(
+        applyExtendedAiRunBudget(
+          {
+            sceneId: "manuscript.quality",
+            label: `${selectedChapter.title} · 正文质量检查`,
+            systemPrompt:
+              '你是中文长篇小说质量编辑。只输出 JSON：{"score":0,"summary":"","issues":[{"category":"计划|连续性|人物|节奏|文风|钩子","severity":"error|warning|suggestion","title":"","detail":"","evidence":"正文逐字引文","suggestion":""}],"passed":[""]}。必须以正文证据为准，不虚构设定。',
+            prompt: [
+              `章节：${selectedChapter.title}`,
+              selectedPlan
+                ? selectedChapter.planningMode === "detached"
+                  ? `章节计划（仅作对照，本章已脱纲）：${selectedPlan.description}`
+                  : `章节计划：${selectedPlan.description}`
+                : "章节计划：未关联",
+              selectedChapter.planningMode === "detached"
+                ? "审查规则：正文事实优先。计划偏离仅作为建议，除非造成设定或连续性冲突，不得判为错误。"
+                : "",
+              selectedPlan?.sections.length
+                ? `场景节拍：${selectedPlan.sections.map((section) => `${section.title}：${section.description}`).join("；")}`
+                : "",
+              buildOptionalContext(),
+              `正文：\n${reviewedContent || "（空）"}`,
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+          },
+          qualityTimeoutMinutes,
+        ),
+      );
       if (currentChapterIdRef.current !== requestChapterId) return;
       if (draftRef.current !== reviewedContent) {
         setError("正文在质量审查期间发生变化，旧结果已丢弃，请重新检查");
@@ -11461,7 +12139,12 @@ export default function ManuscriptStudio({
         setError("磁盘正文在质量审查期间发生变化，旧结果已丢弃，请重新检查");
         return;
       }
-      setQualityReview(parseQualityReview(output));
+      setQualityReview(
+        verifyQualityReviewEvidence(
+          parseQualityReview(output),
+          reviewedContent,
+        ),
+      );
       setQualityReviewSourceContent(reviewedContent);
       setInspectorView("quality");
       setMobileInspectorOpen(true);
@@ -11477,19 +12160,23 @@ export default function ManuscriptStudio({
       setError("该项没有可定位的正文证据");
       return false;
     }
-    const start = draft.indexOf(evidence);
-    if (start < 0) {
-      setError("正文已变化，未找到该项证据，请重新运行检查或同步");
+    const range = findUniqueEvidenceRange(draft, evidence);
+    if (!range) {
+      const normalizedEvidence = evidence.trim();
+      setError(
+        draft.includes(normalizedEvidence)
+          ? "正文中存在多处相同证据，无法唯一定位，请在编辑器中搜索后核对"
+          : "正文已变化，未找到该项证据，请重新运行检查或同步",
+      );
       return false;
     }
-    const end = start + evidence.length;
     setWritingSurface("chapter");
     setEditorMode("edit");
-    setSelection({ start, end });
+    setSelection(range);
     setMobilePane("editor");
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(start, end);
+      textareaRef.current?.setSelectionRange(range.start, range.end);
     });
     return true;
   };
@@ -11569,8 +12256,27 @@ export default function ManuscriptStudio({
 
   const applyTrackingSelection = async (batch: ManuscriptTrackingBatch) => {
     if (!selectedChapter || !trackingLoaded) return;
-    const selectedIds =
-      syncSelections[batch.id] ?? batch.changes.map((change) => change.id);
+    if (
+      externalChanged ||
+      batch.chapterContentHash !== hashManuscriptContent(savedDraft)
+    ) {
+      setError("章节正文已经变化，请重新执行连续性分析");
+      return;
+    }
+    const groundedIds = batch.changes
+      .filter(
+        (change) =>
+          isManuscriptTrackingEvidenceGrounded(savedDraft, change.evidence) &&
+          !getManuscriptTrackingReferenceIssue(change),
+      )
+      .map((change) => change.id);
+    const selectedIds = (syncSelections[batch.id] ?? groundedIds).filter((id) =>
+      groundedIds.includes(id),
+    );
+    if (!selectedIds.length) {
+      setError("当前批次没有可在正文中逐字定位的证据，请放弃后重新分析");
+      return;
+    }
     await runManuscriptMutation("tracking-selection", async () => {
       const before = trackingLoaded;
       const next = await trackingRepository.applyBatchSelection(
@@ -11578,8 +12284,17 @@ export default function ManuscriptStudio({
         batch.id,
         selectedIds,
       );
+      const chapterBatches = next.ledger.batches.filter(
+        (item) => item.chapterId === selectedChapter.id,
+      );
       await commitTrackingUpdate(before, next, selectedChapter.id, {
-        trackingStatus: "synced",
+        trackingStatus: chapterBatches.some(
+          (item) => item.status === "proposed",
+        )
+          ? "review"
+          : chapterBatches.some((item) => item.status === "applied")
+            ? "synced"
+            : "idle",
         lastTrackedAt: new Date().toISOString(),
       });
     });
@@ -11640,9 +12355,32 @@ export default function ManuscriptStudio({
   const latestProposedBatch = chapterBatches.find(
     (batch) => batch.status === "proposed",
   );
+  const latestProposedGroundedIds = latestProposedBatch
+    ? latestProposedBatch.changes
+        .filter(
+          (change) =>
+            !externalChanged &&
+            latestProposedBatch.chapterContentHash ===
+              hashManuscriptContent(savedDraft) &&
+            isManuscriptTrackingEvidenceGrounded(savedDraft, change.evidence),
+        )
+        .map((change) => change.id)
+    : [];
+  const latestProposedReferenceIssues = latestProposedBatch
+    ? new Map(
+        latestProposedBatch.changes.flatMap((change) => {
+          const issue = getManuscriptTrackingReferenceIssue(change);
+          return issue ? [[change.id, issue] as const] : [];
+        }),
+      )
+    : new Map<string, string>();
+  const latestProposedEligibleIds = latestProposedGroundedIds.filter(
+    (id) => !latestProposedReferenceIssues.has(id),
+  );
   const latestProposedSelectedIds = latestProposedBatch
-    ? (syncSelections[latestProposedBatch.id] ??
-      latestProposedBatch.changes.map((change) => change.id))
+    ? (
+        syncSelections[latestProposedBatch.id] ?? latestProposedEligibleIds
+      ).filter((id) => latestProposedEligibleIds.includes(id))
     : [];
   const qualityReviewStale = Boolean(
     qualityReview &&
@@ -11671,6 +12409,30 @@ export default function ManuscriptStudio({
   };
 
   const normalizedTreeSearch = treeSearch.trim().toLocaleLowerCase("zh-CN");
+  const narrativePlanById = new Map(
+    project.narrative.library.chapters.map((plan) => [plan.id, plan]),
+  );
+  const unassignedNarrativePlanIds = new Set(
+    project.narrative.library.chapters
+      .filter((plan) => plan.directoryId === null)
+      .map((plan) => plan.id),
+  );
+  const unassignedNarrativeChapterIds = new Set(
+    project.chapters
+      .filter(
+        (chapter) =>
+          (chapter.narrativeChapterId !== null &&
+            unassignedNarrativePlanIds.has(chapter.narrativeChapterId)) ||
+          project.narrative.library.chapters.some(
+            (plan) =>
+              plan.directoryId === null &&
+              plan.manuscriptChapterId === chapter.id,
+          ),
+      )
+      .map((chapter) => chapter.id),
+  );
+  const isUnassignedNarrativeChapter = (chapter: LoadedNovelChapter) =>
+    unassignedNarrativeChapterIds.has(chapter.id);
   const currentVolumeId = (() => {
     let directoryId = selectedChapter?.directoryId ?? activeDirectoryId;
     while (directoryId) {
@@ -11712,15 +12474,14 @@ export default function ManuscriptStudio({
       return false;
     if (!normalizedTreeSearch) return true;
     const plan = chapter.narrativeChapterId
-      ? project.narrative.library.chapters.find(
-          (item) => item.id === chapter.narrativeChapterId,
-        )
+      ? narrativePlanById.get(chapter.narrativeChapterId)
       : undefined;
     return [
       chapter.title,
       STATUS_LABELS[chapter.status],
       TRACKING_LABELS[chapter.trackingStatus],
       plan?.description ?? "",
+      isUnassignedNarrativeChapter(chapter) ? "未归类" : "",
     ]
       .join(" ")
       .toLocaleLowerCase("zh-CN")
@@ -11739,7 +12500,9 @@ export default function ManuscriptStudio({
     if (
       project.chapters.some(
         (chapter) =>
-          chapter.directoryId === directory.id && chapterVisible(chapter),
+          chapter.directoryId === directory.id &&
+          !isUnassignedNarrativeChapter(chapter) &&
+          chapterVisible(chapter),
       )
     )
       return true;
@@ -11847,7 +12610,11 @@ export default function ManuscriptStudio({
       (item) => item.id === directory.id,
     );
     const chapters = project.chapters
-      .filter((chapter) => chapter.directoryId === directory.id)
+      .filter(
+        (chapter) =>
+          chapter.directoryId === directory.id &&
+          !isUnassignedNarrativeChapter(chapter),
+      )
       .sort((left, right) => left.order - right.order);
     const chapterCount = (() => {
       const directoryIds = new Set([directory.id]);
@@ -11865,8 +12632,11 @@ export default function ManuscriptStudio({
           }
         });
       }
-      return project.chapters.filter((chapter) =>
-        chapter.directoryId ? directoryIds.has(chapter.directoryId) : false,
+      return project.chapters.filter(
+        (chapter) =>
+          !isUnassignedNarrativeChapter(chapter) &&
+          chapter.directoryId !== null &&
+          directoryIds.has(chapter.directoryId),
       ).length;
     })();
     const directorySubtitle =
@@ -11884,11 +12654,7 @@ export default function ManuscriptStudio({
           className={`ms-directory-row ${selected ? "is-selected" : ""} ${dragOverDirectoryId === directory.id ? "is-drop-target" : ""}`}
           style={{ "--tree-depth": depth } as CSSProperties}
           onDragOver={(event) => {
-            if (
-              !draggedChapterId ||
-              structureLocked ||
-              manuscriptMutationBusy
-            )
+            if (!draggedChapterId || structureLocked || manuscriptMutationBusy)
               return;
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
@@ -11908,11 +12674,7 @@ export default function ManuscriptStudio({
           onDrop={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            if (
-              !draggedChapterId ||
-              structureLocked ||
-              manuscriptMutationBusy
-            )
+            if (!draggedChapterId || structureLocked || manuscriptMutationBusy)
               return;
             void moveChapterTo(draggedChapterId, directory.id);
           }}
@@ -12020,9 +12782,7 @@ export default function ManuscriptStudio({
                   </button>
                   <button
                     type="button"
-                    onClick={() =>
-                      void deleteDirectory(directory.id)
-                    }
+                    onClick={() => void deleteDirectory(directory.id)}
                     aria-label="删除目录"
                     title="删除目录"
                   >
@@ -12069,8 +12829,14 @@ export default function ManuscriptStudio({
   const manualRootDirectories = rootDirectories.filter(
     (directory) => !directoryHasNarrativeAncestor(directory.id),
   );
+  const unassignedNarrativeChapters = canonicalChapters.filter(
+    (chapter) =>
+      isUnassignedNarrativeChapter(chapter) && chapterVisible(chapter),
+  );
   const structuredChapterCount = project.chapters.filter(
-    (chapter) => chapter.narrativeChapterId !== null,
+    (chapter) =>
+      chapter.narrativeChapterId !== null ||
+      isUnassignedNarrativeChapter(chapter),
   ).length;
   const orderedChapters = canonicalChapters;
   const selectedChapterIndex = orderedChapters.findIndex(
@@ -12130,16 +12896,19 @@ export default function ManuscriptStudio({
   const openFullGeneration = async () => {
     if (!(await preparePersistedManuscriptAiSource())) return;
     setFullGenerationBusy(false);
+    setFullGenerationPending(false);
     setFullGenerationOpen(true);
   };
   const openBrainstormRoom = async () => {
     if (!(await preparePersistedManuscriptAiSource())) return;
     setBrainstormBusy(false);
+    setBrainstormPending(false);
     setBrainstormOpen(true);
   };
   const openSimulationRoom = async () => {
     if (!onAiRun || !(await preparePersistedManuscriptAiSource())) return;
     setSimulationBusy(false);
+    setSimulationPending(false);
     setSimulationOpen(true);
   };
 
@@ -12150,7 +12919,10 @@ export default function ManuscriptStudio({
           dirty ||
           typographyDirty ||
           Boolean(candidate) ||
-          hasPendingNarrativeExtraction
+          hasPendingNarrativeExtraction ||
+          brainstormPending ||
+          fullGenerationPending ||
+          simulationPending
         }
         blockLeave={manuscriptTaskBusy}
         label="正文"
@@ -12182,6 +12954,21 @@ export default function ManuscriptStudio({
             })
           }
           onCancel={() => setPermanentDeleteTarget(null)}
+        />
+      )}
+      {trackingDiscardTarget && (
+        <ConfirmDialog
+          title="放弃连续性批次"
+          message="该批次中的状态变化不会写入人物、时间线、物品或其它事实源；放弃后可重新分析当前章节。是否继续？"
+          confirmText="放弃批次"
+          cancelText="继续审阅"
+          confirmVariant="danger"
+          onConfirm={() => {
+            const target = trackingDiscardTarget;
+            setTrackingDiscardTarget(null);
+            void setTrackingBatchStatus(target, "reverted");
+          }}
+          onCancel={() => setTrackingDiscardTarget(null)}
         />
       )}
       {narrativeExtractionDiscardOpen && (
@@ -12247,7 +13034,6 @@ export default function ManuscriptStudio({
           initialNotes={creativeBrief}
           generationContext={buildOptionalContext()}
           targetWordCount={project.metadata.chapterWordCount ?? undefined}
-          onOpenAiAgent={onOpenAiAgent}
           onApplyGeneratedText={async (
             content,
             expectedContent,
@@ -12273,6 +13059,7 @@ export default function ManuscriptStudio({
           persistedManuscriptContent={savedDraft}
           enabled={Boolean(onAiRun)}
           onRun={onAiRun ?? (() => Promise.reject(new Error("AI 当前不可用")))}
+          onCancelAiRun={onCancelAiRun}
           onUseBrief={(brief) => {
             setCreativeBrief(brief);
             setView("write");
@@ -12280,15 +13067,18 @@ export default function ManuscriptStudio({
           onAdoptSimulation={onAdoptSimulation}
           onClose={() => {
             setBrainstormBusy(false);
+            setBrainstormPending(false);
             setBrainstormOpen(false);
           }}
           onBusyChange={setBrainstormBusy}
+          onPendingChange={setBrainstormPending}
         />
       )}
       {fullGenerationOpen && (
         <FullGenerationWorkflow
           storage={storage}
           project={project}
+          typography={typographyDraft}
           open
           chapter={selectedChapter}
           chapterPlan={selectedPlan}
@@ -12298,7 +13088,7 @@ export default function ManuscriptStudio({
           generationContext={buildOptionalContext()}
           targetWordCount={project.metadata.chapterWordCount ?? undefined}
           onRun={onAiRun}
-          onOpenAiAgent={onOpenAiAgent}
+          onCancelRun={onCancelAiRun}
           onApplyGeneratedText={async (
             content,
             expectedContent,
@@ -12318,9 +13108,11 @@ export default function ManuscriptStudio({
           onOpenModelSettings={onOpenModelSettings}
           onClose={() => {
             setFullGenerationBusy(false);
+            setFullGenerationPending(false);
             setFullGenerationOpen(false);
           }}
           onBusyChange={setFullGenerationBusy}
+          onPendingChange={setFullGenerationPending}
         />
       )}
       {simulationOpen && (
@@ -12333,18 +13125,22 @@ export default function ManuscriptStudio({
           manuscriptContent={savedDraft}
           enabled={Boolean(onAiRun)}
           onRun={onAiRun ?? (() => Promise.reject(new Error("AI 当前不可用")))}
+          onCancelRun={onCancelAiRun}
           onUseBrief={(brief) => {
             setCreativeBrief(brief);
             setView("write");
             setSimulationBusy(false);
+            setSimulationPending(false);
             setSimulationOpen(false);
           }}
           onAdoptSimulation={onAdoptSimulation}
           onClose={() => {
             setSimulationBusy(false);
+            setSimulationPending(false);
             setSimulationOpen(false);
           }}
           onBusyChange={setSimulationBusy}
+          onPendingChange={setSimulationPending}
         />
       )}
       <header className="ms-topbar">
@@ -12462,9 +13258,21 @@ export default function ManuscriptStudio({
           <button
             type="button"
             className="ms-mobile-inspector-toggle"
-            onClick={() => setMobileInspectorOpen((open) => !open)}
-            title="打开基本与排版面板"
-            aria-label="打开基本与排版面板"
+            onClick={() => {
+              const nextOpen = mobilePane !== "context";
+              setMobileInspectorOpen(nextOpen);
+              setMobilePane(nextOpen ? "context" : "editor");
+            }}
+            title={
+              mobilePane === "context"
+                ? "收起基本与排版面板"
+                : "打开基本与排版面板"
+            }
+            aria-label={
+              mobilePane === "context"
+                ? "收起基本与排版面板"
+                : "打开基本与排版面板"
+            }
           >
             <PanelRight className="h-4 w-4" />
           </button>
@@ -12655,7 +13463,8 @@ export default function ManuscriptStudio({
             </form>
           )}
           <div className="ms-tree-scroll">
-            {narrativeRootDirectories.length > 0 && (
+            {(narrativeRootDirectories.length > 0 ||
+              unassignedNarrativeChapters.length > 0) && (
               <div className="ms-tree-section-header">
                 <strong>
                   剧情工程结构<small>（自动同步）</small>
@@ -12665,6 +13474,21 @@ export default function ManuscriptStudio({
             )}
             {narrativeRootDirectories.map((directory) =>
               renderDirectory(directory, 0),
+            )}
+            {unassignedNarrativeChapters.length > 0 && (
+              <div
+                className="ms-unassigned-group ms-narrative-unassigned-group"
+                aria-label="剧情工程未归类章节"
+                role="group"
+              >
+                <div className="ms-unassigned-group-header">
+                  <strong>未归类</strong>
+                  <small>{unassignedNarrativeChapters.length} 章</small>
+                </div>
+                {unassignedNarrativeChapters.map((chapter) =>
+                  renderChapterButton(chapter, 0),
+                )}
+              </div>
             )}
             {manualRootDirectories.length > 0 && (
               <div className="ms-unassigned-group ms-free-content-group">
@@ -12681,9 +13505,10 @@ export default function ManuscriptStudio({
                 )}
               </div>
             )}
-            {!rootDirectories.length && (
-              <p className="ms-tree-empty">暂无目录与章节</p>
-            )}
+            {!rootDirectories.length &&
+              unassignedNarrativeChapters.length === 0 && (
+                <p className="ms-tree-empty">暂无目录与章节</p>
+              )}
           </div>
           <footer>
             <button
@@ -12761,9 +13586,7 @@ export default function ManuscriptStudio({
                       type="button"
                       onClick={() => void openFullGeneration()}
                       disabled={
-                        !selectedChapter ||
-                        (!onOpenAiAgent && !onAiRun) ||
-                        manuscriptMutationBusy
+                        !selectedChapter || !onAiRun || manuscriptMutationBusy
                       }
                       title="生成完整正文"
                     >
@@ -12773,9 +13596,7 @@ export default function ManuscriptStudio({
                       type="button"
                       onClick={() => void runWritingAi("continue")}
                       disabled={
-                        !selectedChapter ||
-                        (!onOpenAiAgent && !onAiRun) ||
-                        manuscriptMutationBusy
+                        !selectedChapter || !onAiRun || manuscriptMutationBusy
                       }
                       title="从光标处续写"
                     >
@@ -12785,9 +13606,7 @@ export default function ManuscriptStudio({
                       type="button"
                       onClick={() => void runWritingAi("revise")}
                       disabled={
-                        !selectedChapter ||
-                        (!onOpenAiAgent && !onAiRun) ||
-                        manuscriptMutationBusy
+                        !selectedChapter || !onAiRun || manuscriptMutationBusy
                       }
                       title="润色选区；无选区时处理全文"
                     >
@@ -12797,9 +13616,7 @@ export default function ManuscriptStudio({
                       type="button"
                       onClick={() => void runWritingAi("expand")}
                       disabled={
-                        !selectedChapter ||
-                        (!onOpenAiAgent && !onAiRun) ||
-                        manuscriptMutationBusy
+                        !selectedChapter || !onAiRun || manuscriptMutationBusy
                       }
                       title="扩写选区；无选区时处理全文"
                     >
@@ -12832,7 +13649,9 @@ export default function ManuscriptStudio({
                     type="button"
                     className="ns-icon-button"
                     onClick={() => void runQualityReview()}
-                    disabled={!onAiRun || manuscriptMutationBusy || !draft.trim()}
+                    disabled={
+                      !onAiRun || manuscriptMutationBusy || !draft.trim()
+                    }
                     title="检查当前草稿，不会修改正文"
                     aria-label="检查正文质量"
                   >
@@ -13060,7 +13879,39 @@ export default function ManuscriptStudio({
                         </span>
                         <h1>{titleDraft}</h1>
                         {selectedPlan?.description && (
-                          <p>目标：{selectedPlan.description}</p>
+                          <div
+                            className={`ms-chapter-goal ${chapterGoalCollapsed ? "is-collapsed" : ""}`}
+                          >
+                            <div className="ms-chapter-goal-toolbar">
+                              <span>章节目标</span>
+                              <button
+                                type="button"
+                                className="ms-chapter-goal-toggle"
+                                onClick={() =>
+                                  setChapterGoalCollapsed((current) => !current)
+                                }
+                                aria-label={
+                                  chapterGoalCollapsed
+                                    ? "展开章节目标"
+                                    : "收起章节目标"
+                                }
+                                title={
+                                  chapterGoalCollapsed
+                                    ? "展开章节目标"
+                                    : "收起章节目标"
+                                }
+                              >
+                                {chapterGoalCollapsed ? (
+                                  <ChevronDown className="h-3.5 w-3.5" />
+                                ) : (
+                                  <ChevronUp className="h-3.5 w-3.5" />
+                                )}
+                              </button>
+                            </div>
+                            {!chapterGoalCollapsed && (
+                              <p>目标：{selectedPlan.description}</p>
+                            )}
+                          </div>
                         )}
                       </header>
                       {editorMode === "edit" ? (
@@ -13226,6 +14077,21 @@ export default function ManuscriptStudio({
                   </p>
                 </div>
                 <div className="ms-room-controls gap-2">
+                  <label className="ms-tracking-timeout">
+                    <span>分析超时</span>
+                    <CustomSelect
+                      value={String(trackingTimeoutMinutes)}
+                      options={EXTENDED_AI_TIMEOUT_OPTIONS}
+                      onChange={(value) =>
+                        setTrackingTimeoutMinutes(Number(value))
+                      }
+                      ariaLabel="连续性分析超时"
+                      triggerIcon={<Timer className="h-3.5 w-3.5" />}
+                      popoverMinWidth={112}
+                      compact
+                      disabled={manuscriptMutationBusy}
+                    />
+                  </label>
                   <button
                     type="button"
                     className="ns-button is-primary"
@@ -13293,14 +14159,24 @@ export default function ManuscriptStudio({
                       </div>
                       <footer>
                         {batch.status === "proposed" && (
-                          <button
-                            type="button"
-                            className="ns-button is-primary"
-                            onClick={() => void applyTrackingSelection(batch)}
-                            disabled={manuscriptMutationBusy}
-                          >
-                            <Check className="h-3.5 w-3.5" /> 应用批次
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              className="ns-button is-primary"
+                              onClick={() => void applyTrackingSelection(batch)}
+                              disabled={manuscriptMutationBusy}
+                            >
+                              <Check className="h-3.5 w-3.5" /> 应用批次
+                            </button>
+                            <button
+                              type="button"
+                              className="ns-button is-danger"
+                              onClick={() => setTrackingDiscardTarget(batch)}
+                              disabled={manuscriptMutationBusy}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" /> 放弃批次
+                            </button>
+                          </>
                         )}
                         {batch.status === "applied" && (
                           <button
@@ -13335,9 +14211,7 @@ export default function ManuscriptStudio({
           )}
         </main>
 
-        <aside
-          className={`ms-inspector ${mobileInspectorOpen ? "is-mobile-open" : ""}`}
-        >
+        <aside className="ms-inspector">
           <header className="ms-context-header">
             <div>
               <span className="ms-eyebrow">Chapter context</span>
@@ -13346,7 +14220,10 @@ export default function ManuscriptStudio({
             <div>
               <button
                 type="button"
-                onClick={() => setMobileInspectorOpen(false)}
+                onClick={() => {
+                  setMobileInspectorOpen(false);
+                  setMobilePane("editor");
+                }}
                 title="收起上下文"
                 aria-label="收起上下文"
               >
@@ -13578,9 +14455,7 @@ export default function ManuscriptStudio({
                   type="button"
                   onClick={() => void runWritingAi("continue")}
                   disabled={
-                    !selectedChapter ||
-                    (!onOpenAiAgent && !onAiRun) ||
-                    manuscriptMutationBusy
+                    !selectedChapter || !onAiRun || manuscriptMutationBusy
                   }
                 >
                   <PenLine className="h-4 w-4" />
@@ -13591,9 +14466,7 @@ export default function ManuscriptStudio({
                   type="button"
                   onClick={() => void runWritingAi("revise")}
                   disabled={
-                    !selectedChapter ||
-                    (!onOpenAiAgent && !onAiRun) ||
-                    manuscriptMutationBusy
+                    !selectedChapter || !onAiRun || manuscriptMutationBusy
                   }
                 >
                   <WandSparkles className="h-4 w-4" />
@@ -13604,9 +14477,7 @@ export default function ManuscriptStudio({
                   type="button"
                   onClick={() => void runWritingAi("expand")}
                   disabled={
-                    !selectedChapter ||
-                    (!onOpenAiAgent && !onAiRun) ||
-                    manuscriptMutationBusy
+                    !selectedChapter || !onAiRun || manuscriptMutationBusy
                   }
                 >
                   <Maximize2 className="h-4 w-4" />
@@ -13676,7 +14547,9 @@ export default function ManuscriptStudio({
                   type="button"
                   className="ns-button w-full"
                   onClick={() => void openBrainstormRoom()}
-                  disabled={!selectedChapter || !onAiRun || manuscriptMutationBusy}
+                  disabled={
+                    !selectedChapter || !onAiRun || manuscriptMutationBusy
+                  }
                 >
                   <BrainCircuit className="h-3.5 w-3.5" /> 打开 AI 脑暴室
                 </button>
@@ -13684,7 +14557,9 @@ export default function ManuscriptStudio({
                   type="button"
                   className="ns-button mt-2 w-full"
                   onClick={() => void openSimulationRoom()}
-                  disabled={!selectedChapter || !onAiRun || manuscriptMutationBusy}
+                  disabled={
+                    !selectedChapter || !onAiRun || manuscriptMutationBusy
+                  }
                 >
                   <GitBranch className="h-3.5 w-3.5" /> 打开剧情推演室
                 </button>
@@ -13694,12 +14569,36 @@ export default function ManuscriptStudio({
 
           {inspectorView === "quality" && (
             <div className="ms-inspector-scroll ms-context-panel">
+              <div className="ms-quality-timeout-row">
+                <label className="ms-quality-timeout">
+                  <span>检查超时</span>
+                  <CustomSelect
+                    value={String(qualityTimeoutMinutes)}
+                    options={EXTENDED_AI_TIMEOUT_OPTIONS}
+                    onChange={(value) =>
+                      setQualityTimeoutMinutes(Number(value))
+                    }
+                    ariaLabel="质量检查超时"
+                    triggerIcon={<Timer className="h-3.5 w-3.5" />}
+                    popoverMinWidth={112}
+                    compact
+                    disabled={manuscriptMutationBusy || qualityBusy}
+                  />
+                </label>
+              </div>
               {qualityReview ? (
                 <>
                   {qualityReviewStale && (
                     <div className="ms-quality-stale" role="status">
                       <AlertTriangle className="h-3.5 w-3.5" />
                       正文已变化，这份审查结果仅供参考，请重新检查后再生成修复候选。
+                    </div>
+                  )}
+                  {qualityReview.discardedIssueCount > 0 && (
+                    <div className="ms-quality-stale" role="status">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      已忽略 {qualityReview.discardedIssueCount}{" "}
+                      条无法由正文证实的问题。
                     </div>
                   )}
                   <section className="ms-quality-summary">
@@ -13738,23 +14637,38 @@ export default function ManuscriptStudio({
                       ))}
                     </ul>
                   </section>
-                  <button
-                    type="button"
-                    className="ns-button is-primary w-full"
-                    onClick={() =>
-                      void runWritingAi(
-                        "revise",
-                        `修复以下质量问题：${qualityReview.issues.map((issue) => `${issue.title}：${issue.suggestion}`).join("；")}`,
-                      )
-                    }
-                    disabled={
-                      !qualityReview.issues.length ||
-                      qualityReviewStale ||
-                      manuscriptMutationBusy
-                    }
-                  >
-                    <WandSparkles className="h-3.5 w-3.5" /> 生成修复候选
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      className="ns-button flex-1"
+                      onClick={() => void runQualityReview()}
+                      disabled={qualityBusy || manuscriptMutationBusy}
+                    >
+                      {qualityBusy ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      )}
+                      重新检查
+                    </button>
+                    <button
+                      type="button"
+                      className="ns-button is-primary flex-1"
+                      onClick={() =>
+                        void runWritingAi(
+                          "revise",
+                          `修复以下质量问题：${qualityReview.issues.map((issue) => `${issue.title}：${issue.suggestion}`).join("；")}`,
+                        )
+                      }
+                      disabled={
+                        !qualityReview.issues.length ||
+                        qualityReviewStale ||
+                        manuscriptMutationBusy
+                      }
+                    >
+                      <WandSparkles className="h-3.5 w-3.5" /> 生成修复候选
+                    </button>
+                  </div>
                 </>
               ) : (
                 <div className="ms-inspector-empty-state">
@@ -13766,7 +14680,9 @@ export default function ManuscriptStudio({
                     type="button"
                     className="ns-button is-primary"
                     onClick={() => void runQualityReview()}
-                    disabled={!onAiRun || manuscriptMutationBusy || !draft.trim()}
+                    disabled={
+                      !onAiRun || manuscriptMutationBusy || !draft.trim()
+                    }
                   >
                     {qualityBusy ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -13791,28 +14707,86 @@ export default function ManuscriptStudio({
                   <p>状态变化按章节批次保存，可审阅、应用和回退。</p>
                 </div>
               </section>
-              <button
-                type="button"
-                className="ns-button is-primary w-full"
-                onClick={() => void runTracking()}
-                disabled={
-                  !selectedChapter ||
-                  !onAiRun ||
-                  manuscriptMutationBusy ||
-                  !trackingLoaded
-                }
-              >
-                {trackingBusy ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Sparkles className="h-3.5 w-3.5" />
-                )}
-                {trackingBusy
-                  ? "正在分析"
-                  : !trackingLoaded
-                    ? "正在载入状态账本"
-                    : "分析当前章节"}
-              </button>
+              <div className="ms-sync-actions">
+                <label className="ms-tracking-timeout">
+                  <span>分析超时</span>
+                  <CustomSelect
+                    value={String(trackingTimeoutMinutes)}
+                    options={EXTENDED_AI_TIMEOUT_OPTIONS}
+                    onChange={(value) =>
+                      setTrackingTimeoutMinutes(Number(value))
+                    }
+                    ariaLabel="连续性分析超时"
+                    triggerIcon={<Timer className="h-3.5 w-3.5" />}
+                    popoverMinWidth={112}
+                    compact
+                    disabled={manuscriptMutationBusy}
+                  />
+                </label>
+                <div
+                  className="ms-sync-toolbar"
+                  role="toolbar"
+                  aria-label="状态同步操作"
+                >
+                  <button
+                    type="button"
+                    className="ns-button is-primary"
+                    title="分析当前章节"
+                    onClick={() => void runTracking()}
+                    disabled={
+                      !selectedChapter ||
+                      !onAiRun ||
+                      manuscriptMutationBusy ||
+                      !trackingLoaded
+                    }
+                  >
+                    {trackingBusy ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5" />
+                    )}
+                    分析
+                  </button>
+                  <button
+                    type="button"
+                    className="ns-button is-primary"
+                    title={`同步选中的状态变化（${latestProposedSelectedIds.length}）`}
+                    onClick={() => {
+                      if (latestProposedBatch) {
+                        void applyTrackingSelection(latestProposedBatch);
+                      }
+                    }}
+                    disabled={
+                      !latestProposedBatch ||
+                      manuscriptMutationBusy ||
+                      latestProposedSelectedIds.length === 0
+                    }
+                  >
+                    <Check className="h-3.5 w-3.5" /> 同步
+                  </button>
+                  <button
+                    type="button"
+                    className="ns-button is-danger"
+                    title="放弃当前待审批次"
+                    onClick={() => {
+                      if (latestProposedBatch) {
+                        setTrackingDiscardTarget(latestProposedBatch);
+                      }
+                    }}
+                    disabled={!latestProposedBatch || manuscriptMutationBusy}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> 放弃
+                  </button>
+                  <button
+                    type="button"
+                    className="ns-button"
+                    title="查看全部状态批次与回退"
+                    onClick={() => setView("tracking")}
+                  >
+                    <Eye className="h-3.5 w-3.5" /> 查看
+                  </button>
+                </div>
+              </div>
               {latestProposedBatch && (
                 <section className="ms-inspector-section">
                   <header>
@@ -13824,14 +14798,27 @@ export default function ManuscriptStudio({
                   </header>
                   <div className="ms-sync-changes">
                     {latestProposedBatch.changes.map((change) => {
+                      const evidenceGrounded =
+                        latestProposedGroundedIds.includes(change.id);
+                      const referenceIssue = latestProposedReferenceIssues.get(
+                        change.id,
+                      );
+                      const changeEligible =
+                        evidenceGrounded && !referenceIssue;
                       const selectedIds =
                         syncSelections[latestProposedBatch.id] ??
-                        latestProposedBatch.changes.map((item) => item.id);
+                        latestProposedEligibleIds;
                       return (
-                        <label key={change.id}>
+                        <label
+                          className={changeEligible ? "" : "is-invalid"}
+                          key={change.id}
+                        >
                           <input
                             type="checkbox"
-                            checked={selectedIds.includes(change.id)}
+                            checked={
+                              changeEligible && selectedIds.includes(change.id)
+                            }
+                            disabled={manuscriptMutationBusy || !changeEligible}
                             onChange={(event) =>
                               setSyncSelections((current) => {
                                 const nextIds = new Set(selectedIds);
@@ -13848,35 +14835,30 @@ export default function ManuscriptStudio({
                           <span>
                             <strong>{change.title}</strong>
                             <small>{change.after}</small>
+                            {!evidenceGrounded && (
+                              <small className="ms-sync-invalid-evidence">
+                                证据无法在当前正文中逐字定位，请放弃后重新分析
+                              </small>
+                            )}
+                            {referenceIssue && (
+                              <small className="ms-sync-invalid-evidence">
+                                {referenceIssue}，请放弃后重新分析
+                              </small>
+                            )}
                           </span>
-                          <b>{DOMAIN_LABELS[change.domain]}</b>
+                          <b>
+                            {!evidenceGrounded
+                              ? "证据无效"
+                              : referenceIssue
+                                ? "引用无效"
+                                : DOMAIN_LABELS[change.domain]}
+                          </b>
                         </label>
                       );
                     })}
                   </div>
-                  <button
-                    type="button"
-                    className="ns-button is-primary w-full"
-                    onClick={() =>
-                      void applyTrackingSelection(latestProposedBatch)
-                    }
-                    disabled={
-                      manuscriptMutationBusy ||
-                      latestProposedSelectedIds.length === 0
-                    }
-                  >
-                    <Check className="h-3.5 w-3.5" /> 确认并同步选中项（
-                    {latestProposedSelectedIds.length}）
-                  </button>
                 </section>
               )}
-              <button
-                type="button"
-                className="ns-button w-full"
-                onClick={() => setView("tracking")}
-              >
-                <Eye className="h-3.5 w-3.5" /> 查看全部状态批次与回退
-              </button>
             </div>
           )}
 
@@ -14000,10 +14982,10 @@ export default function ManuscriptStudio({
                           void runManuscriptMutation(
                             "chapter-planning-mode",
                             () =>
-                            onUpdateChapter(selectedChapter.id, {
-                              planningMode:
-                                value as LoadedNovelChapter["planningMode"],
-                            }),
+                              onUpdateChapter(selectedChapter.id, {
+                                planningMode:
+                                  value as LoadedNovelChapter["planningMode"],
+                              }),
                           )
                         }
                         ariaLabel="正文创作方式"
@@ -14030,7 +15012,9 @@ export default function ManuscriptStudio({
                     type="button"
                     className="ns-button is-primary w-full"
                     onClick={openNarrativeExtraction}
-                    disabled={!onAiRun || !draft.trim() || manuscriptMutationBusy}
+                    disabled={
+                      !onAiRun || !draft.trim() || manuscriptMutationBusy
+                    }
                   >
                     <BookMarked className="h-3.5 w-3.5" /> 提炼到剧情工程
                   </button>
@@ -14099,9 +15083,9 @@ export default function ManuscriptStudio({
                                 void runManuscriptMutation(
                                   "directory-parent",
                                   () =>
-                                  onUpdateDirectory(directory.id, {
-                                    parentId: value || null,
-                                  }),
+                                    onUpdateDirectory(directory.id, {
+                                      parentId: value || null,
+                                    }),
                                 )
                               }
                               ariaLabel="当前目录上级目录"
@@ -14223,7 +15207,9 @@ export default function ManuscriptStudio({
                     type="button"
                     className="ns-button is-danger w-full"
                     onClick={() => setDeleteOpen(true)}
-                    disabled={structureLocked || dirty || manuscriptMutationBusy}
+                    disabled={
+                      structureLocked || dirty || manuscriptMutationBusy
+                    }
                   >
                     <Trash2 className="h-3.5 w-3.5" /> 删除章节
                   </button>
