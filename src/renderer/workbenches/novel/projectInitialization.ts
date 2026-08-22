@@ -13,7 +13,6 @@ import { createTimelineLibraryInitializationFiles } from "./timelineLibraryRepos
 import { createCultivationEcologyInitializationFiles } from "./cultivationEcologyRepository";
 import { createInspirationInitializationFiles } from "./inspirationRepository";
 import { createNarrativeEngineeringInitializationFiles } from "./narrativeEngineeringRepository";
-import { createWorldSimulationV2InitializationFiles } from "./worldSimulationRepositoryV2";
 import { createFactionLibraryInitializationFiles } from "./modules/factions/data-access/factionLibraryRepository";
 import {
   createEmptyNovelChapterIndex,
@@ -94,8 +93,6 @@ const DIRECTORIES = [
   "timeline/views/records",
   "timeline/branches/records",
   "timeline/events/records",
-  "simulation",
-  "simulation/runs",
   "research/notes",
   "research/trash",
   "assets/images",
@@ -194,7 +191,6 @@ Thumbs.db
     ...createSettingLibraryInitializationFiles(input.title),
     ...createPromptLibraryInitializationFiles(),
     ...createTimelineLibraryInitializationFiles(input.createdAt),
-    ...createWorldSimulationV2InitializationFiles(),
     ...createInspirationInitializationFiles(input.createdAt),
     { path: "research/index.json", content: createIndex("sources") },
     { path: "research/trash/index.json", content: createIndex("items") },

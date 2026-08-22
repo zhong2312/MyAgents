@@ -116,6 +116,32 @@ describe("MapProposalPreview", () => {
     expect(screen.getByText("主大陆")).toBeInTheDocument();
   });
 
+  it("SVG 降级预览仍渲染竖排印章标签", async () => {
+    const map = createPreviewMap();
+    const styled = {
+      ...map,
+      features: map.features.map((feature) => ({
+        ...feature,
+        name: "北荒",
+        props: {
+          ...feature.props,
+          labelWritingMode: "vertical",
+          labelFrame: "seal",
+        },
+      })),
+    };
+    renderPreviewMock.mockRejectedValueOnce(new Error("canvas unavailable"));
+    const { container } = render(<MapProposalPreview map={styled} />);
+
+    await waitFor(() =>
+      expect(
+        container.querySelector('[data-map-label-frame="seal"]'),
+      ).toBeTruthy(),
+    );
+    expect(screen.getByText("北")).toBeInTheDocument();
+    expect(screen.getByText("荒")).toBeInTheDocument();
+  });
+
   it("支持滚轮缩放、拖拽平移，并可适配回完整画布", async () => {
     const map = createPreviewMap();
     const { container } = render(<MapProposalPreview map={map} />);

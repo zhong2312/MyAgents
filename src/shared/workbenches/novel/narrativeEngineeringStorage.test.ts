@@ -17,7 +17,7 @@ function fixture(): NarrativeEngineeringStorageAggregate {
     arcs: [{ id: "arc-main", title: "人物弧" }],
     directories: [{ id: "directory-one", title: "第一卷" }],
     chapters: [{ id: "chapter-one", title: "第一章", sections: [] }],
-    simulationProposals: [{ id: "simulation-one", title: "推演提案" }],
+    simulationProposals: [],
   };
 }
 

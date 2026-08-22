@@ -40,7 +40,12 @@ describe("mapSceneDrawing", () => {
     ];
     const line = createContext();
     const arc = createContext();
-    drawMapSceneRegionPath(line.context, points, { x: 0, y: 0, zoom: 1 }, "line");
+    drawMapSceneRegionPath(
+      line.context,
+      points,
+      { x: 0, y: 0, zoom: 1 },
+      "line",
+    );
     drawMapSceneRegionPath(arc.context, points, { x: 0, y: 0, zoom: 1 }, "arc");
     expect(line.lineTo).toHaveBeenCalledTimes(points.length - 1);
     expect(line.quadraticCurveTo).not.toHaveBeenCalled();
@@ -62,18 +67,11 @@ describe("mapSceneDrawing", () => {
       { x: 180, y: 120 },
     ];
 
-    drawMapSceneRegionPath(
-      context,
-      points,
-      { x: 0, y: 0, zoom: 1 },
-      "arc",
-    );
+    drawMapSceneRegionPath(context, points, { x: 0, y: 0, zoom: 1 }, "arc");
 
     // 统一采样后，曲线段数量不再等于原始控制点数量；这能保证
     // 区域、画笔要素和离屏地表使用同一条弧线中心线。
-    expect(quadraticCurveTo.mock.calls.length).toBeGreaterThan(
-      points.length,
-    );
+    expect(quadraticCurveTo.mock.calls.length).toBeGreaterThan(points.length);
   });
 
   it("弧线画笔使用贝塞尔路径而不是把控制点直接连成折线", () => {
@@ -263,6 +261,58 @@ describe("mapSceneDrawing", () => {
     expect(context.lineWidth).toBe(6);
     expect(strokeText).toHaveBeenCalledWith("苍风隘口", 0, 0);
     expect(fillText).toHaveBeenCalledWith("苍风隘口", 0, 0);
+  });
+
+  it("竖排印章标签在导出画布中绘制逐字正文与圆形底纹", () => {
+    const arc = vi.fn();
+    const fillText = vi.fn();
+    const context = {
+      save: vi.fn(),
+      restore: vi.fn(),
+      translate: vi.fn(),
+      rotate: vi.fn(),
+      beginPath: vi.fn(),
+      arc,
+      fill: vi.fn(),
+      stroke: vi.fn(),
+      fillText,
+      globalAlpha: 1,
+      font: "",
+      textAlign: "start",
+      textBaseline: "alphabetic",
+      lineJoin: "miter",
+      strokeStyle: "",
+      lineWidth: 1,
+      fillStyle: "",
+    } as unknown as CanvasRenderingContext2D;
+    const feature = {
+      id: "seal-label-drawing",
+      kind: "label" as const,
+      name: "北荒",
+      entityRef: null,
+      layerId: "layer-main",
+      points: [{ x: 20, y: 30 }],
+      timeFrom: null,
+      timeTo: null,
+      props: {
+        labelWritingMode: "vertical",
+        labelFrame: "seal",
+        labelHaloWidth: "0",
+      },
+      description: "",
+    };
+
+    drawMapFeatureLabel(
+      context,
+      feature,
+      feature.points,
+      { x: 0, y: 0, zoom: 1 },
+      1,
+    );
+
+    expect(arc).toHaveBeenCalledWith(0, 0, expect.any(Number), 0, Math.PI * 2);
+    expect(fillText).toHaveBeenCalledTimes(2);
+    expect(fillText.mock.calls.map(([text]) => text)).toEqual(["北", "荒"]);
   });
 
   it("道路和城墙在单次路线事实上绘制出边缘与结构细节", () => {

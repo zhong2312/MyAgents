@@ -173,4 +173,32 @@ describe("修炼生态语义校验", () => {
       errors.some((error) => error.includes("阶段“stage-1”顺序应为 0")),
     ).toBe(true);
   });
+
+  it("拒绝故事转折规则引用不存在的经历、法门和约束", () => {
+    const ecology = ecologyFixture();
+    const system = ecology.systems[0]!;
+    system.narrativeMilestones = [
+      {
+        id: "milestone-trial",
+        name: "试炼",
+        summary: "完成试炼",
+        category: "trial",
+        satisfiedBy: [],
+      },
+    ];
+    const level = system.progressionTracks[0]!.levels[0]!;
+    level.simulationBreakthroughRule = {
+      schemaVersion: 1,
+      status: "approved",
+      enabled: true,
+      requiredMethodIds: ["missing-method"],
+      requiredAbilityIds: [],
+      forbiddenActiveConstraintIds: ["missing-constraint"],
+      requiredNarrativeMilestoneIds: ["missing-milestone"],
+    };
+    const errors = validateCultivationEcology(ecology);
+    expect(errors.some((error) => error.includes("故事转折法门"))).toBe(true);
+    expect(errors.some((error) => error.includes("故事转折约束"))).toBe(true);
+    expect(errors.some((error) => error.includes("故事转折经历"))).toBe(true);
+  });
 });

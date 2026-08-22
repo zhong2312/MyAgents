@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 
 import { createNovelRepository } from "../data-access/repository";
-import { createEmptyNovelStorage, type NovelMemoryStorage } from "../../../shared/infrastructure/testStorage";
+import {
+  createEmptyNovelStorage,
+  type NovelMemoryStorage,
+} from "../../../shared/infrastructure/testStorage";
 import { useNovelProject } from "./useNovelProject";
+import { createNarrativeEngineeringRepository } from "../../../narrativeEngineeringRepository";
 
 const CHAPTER_INDEX_PATH = "manuscript/index.json";
 
@@ -61,4 +65,5 @@ describe("useNovelProject 刷新路径读盘次数", () => {
     expect(result.current.project?.chapterIndexNeedsMigration).toBe(false);
     expect(indexReads()).toBe(2);
   });
+
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyGeneratorCandidate,
+  convertMapToFantasyStyleDocument,
   generateFantasyMapCandidate,
   generateRedBlobCandidate,
   importAzgaarCandidate,
@@ -68,6 +69,79 @@ function distanceToPath(
 }
 
 describe("mapGenerators", () => {
+  it("旧地图转换为玄幻风格时保留几何和实体引用，并移除跨地图素材路径", () => {
+    const source = document();
+    const converted = convertMapToFantasyStyleDocument(
+      {
+        ...source,
+        features: [
+          {
+            id: "location-cloud-city",
+            kind: "marker",
+            name: "云中城",
+            entityRef: { kind: "location", id: "cloud-city" },
+            layerId: "layer-main",
+            points: [{ x: 120, y: 180 }],
+            timeFrom: null,
+            timeTo: null,
+            props: { terrain: "city" },
+            description: "旧城",
+          },
+        ],
+        artwork: {
+          ...source.artwork,
+          assets: [
+            {
+              id: "old-project-asset",
+              name: "旧素材",
+              path: "world/maps/assets/map-1/artwork/old-project-asset.png",
+              mimeType: "image/png",
+              width: 64,
+              height: 64,
+              brush: true,
+            },
+          ],
+          layers: source.artwork.layers.map((layer) => ({
+            ...layer,
+            stamps: [
+              ...layer.stamps,
+              {
+                id: "old-stamp",
+                layerId: layer.id,
+                assetId: "old-project-asset",
+                x: 10,
+                y: 10,
+                variant: 0,
+                scale: 1,
+                rotation: 0,
+                opacity: 1,
+                flipX: false,
+                flipY: false,
+              },
+            ],
+          })),
+        },
+      },
+      "map-1-fantasy",
+      "九州 · 中文玄幻风格",
+    );
+    expect(converted.id).toBe("map-1-fantasy");
+    expect(converted.canvas.backgroundPreset).toBe("parchment");
+    expect(converted.features[0]).toMatchObject({
+      points: [{ x: 120, y: 180 }],
+      entityRef: { kind: "location", id: "cloud-city" },
+      props: {
+        generator: "fantasy-style-conversion",
+        showLabel: "true",
+      },
+    });
+    expect(converted.artwork.assets).toHaveLength(0);
+    expect(
+      converted.artwork.layers.every((layer) => layer.stamps.length === 0),
+    ).toBe(true);
+    expect(mapDocumentSchema.parse(converted)).toEqual(converted);
+  });
+
   it("Red Blob 同种子生成确定的合法大陆候选", () => {
     const first = generateRedBlobCandidate({
       seed: "jiuzhou",
@@ -287,7 +361,9 @@ describe("mapGenerators", () => {
       expect(
         firstStamps.every(
           (stamp) =>
-            stamp.layerId === sourceLayerIds.relief && stamp.scale >= 0.56,
+            stamp.layerId === sourceLayerIds.relief &&
+            stamp.sourceFeatureId === feature.id &&
+            stamp.scale >= 0.56,
         ),
       ).toBe(true);
       expect(appliedRidge).toBeDefined();

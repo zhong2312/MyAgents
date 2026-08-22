@@ -33,6 +33,8 @@ function getBuildVersions() {
 }
 
 const buildVersions = getBuildVersions();
+const developmentBackendPort = process.env.MYAGENTS_DEV_BACKEND_PORT ?? '3000';
+const developmentBackendUrl = `http://127.0.0.1:${developmentBackendPort}`;
 
 export default defineConfig({
   root: resolve(__dirname, 'src/renderer'),
@@ -81,20 +83,20 @@ export default defineConfig({
       // All API endpoints under /api/. Exclude source modules both with and
       // without Vite HMR query strings (for example apiFetch.ts?t=...).
       '^/api/(?!.*\\.(ts|tsx|js|jsx)(?:\\?|$))': {
-        target: 'http://localhost:3000',
+        target: developmentBackendUrl,
         changeOrigin: true,
         rewrite: (path) => path, // Keep path as-is
       },
       '/chat': {
-        target: 'http://localhost:3000',
+        target: developmentBackendUrl,
         changeOrigin: true,
       },
       '/agent': {
-        target: 'http://localhost:3000',
+        target: developmentBackendUrl,
         changeOrigin: true,
       },
       '/sessions': {
-        target: 'http://localhost:3000',
+        target: developmentBackendUrl,
         changeOrigin: true,
       }
     }

@@ -1,7 +1,7 @@
 /**
  * 小说知识索引的事实源边界。
  *
- * 提案、回收站、派生缓存和世界推演运行结果都不是当前正式事实，所有
+ * 提案、回收站和派生缓存都不是当前正式事实，所有
  * renderer/server 索引入口必须使用同一套规则，避免不同入口得到不同答案。
  */
 export const KNOWLEDGE_INDEXABLE_EXTENSIONS = Object.freeze([
@@ -17,7 +17,6 @@ const IGNORED_EXACT_PREFIXES = Object.freeze([
   "manuscript/trash/",
   "research/trash/",
   "world/maps/trash/",
-  "simulation/runs/",
 ] as const);
 
 export function normalizeKnowledgePath(path: string): string {

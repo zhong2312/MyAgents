@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+import {
+  mapGenerationMetadataSchema,
+  type MapGenerationMetadata,
+} from "../../../../../../shared/workbenches/novel/mapGenerationPlan";
+
 export const MAP_LIBRARY_SCHEMA_VERSION = 1 as const;
 export const MAP_LIBRARY_PATH = "world/maps/index.json";
 export const MAP_CANVAS_WIDTH = 1_600;
@@ -205,6 +210,8 @@ export const mapArtworkStampSchema = z
     y: z.number().finite(),
     /** 内置素材的稳定视觉变体；旧地图缺失时使用首个变体。 */
     variant: z.number().int().min(0).max(31).default(0),
+    /** 设定驱动生成印章的来源 MapFeature；手工和旧地图可以省略。 */
+    sourceFeatureId: z.string().trim().min(1).max(160).optional(),
     scale: z.number().finite().min(0.05).max(20).default(1),
     rotation: z.number().finite().default(0),
     opacity: z.number().finite().min(0).max(1).default(1),
@@ -573,7 +580,10 @@ export const mapSceneSchema = z
           stroke.terrainMaterial !== null &&
           (stroke.tool !== "paint" ||
             stroke.brushAssetId !== null ||
-            !mapTerrainMaterialSupportsLayer(stroke.terrainMaterial, layer.kind))
+            !mapTerrainMaterialSupportsLayer(
+              stroke.terrainMaterial,
+              layer.kind,
+            ))
         ) {
           context.addIssue({
             code: "custom",
@@ -769,6 +779,8 @@ export const mapDocumentSchema = z
     artwork: mapArtworkSchema.default(createEmptyMapArtwork()),
     /** 独立绘图场景；旧地图缺失时由渲染器从 features/artwork 兼容投影。 */
     scene: mapSceneSchema.optional(),
+    /** Agent 生成事实；地图几何和视觉结果必须可追溯到同一份规划。 */
+    generation: mapGenerationMetadataSchema.optional(),
     /**
      * 组合只用于一起选择和变换，不能替代成员自身的地图事实。旧地图没有
      * 组合时保持缺省，首次创建组合后才写入该字段。
@@ -818,10 +830,7 @@ export const mapDocumentSchema = z
           message: "时间区间无效（结束早于开始）",
         });
       }
-      if (
-        feature.kind === "node" &&
-        feature.props.linkedMapId === map.id
-      ) {
+      if (feature.kind === "node" && feature.props.linkedMapId === map.id) {
         context.addIssue({
           code: "custom",
           path: ["features", index, "props", "linkedMapId"],
@@ -919,6 +928,7 @@ export const mapDocumentSchema = z
   });
 
 export type MapDocument = z.infer<typeof mapDocumentSchema>;
+export type { MapGenerationMetadata };
 
 export const mapIndexEntrySchema = z
   .object({

@@ -7,6 +7,7 @@ import {
   Eye,
   EyeOff,
   Eraser,
+  ExternalLink,
   Globe2,
   GitBranch,
   Hand,
@@ -58,6 +59,7 @@ import {
   type WorkbenchStorage,
 } from "@/workbench-sdk";
 import MapProposalReview from "./MapProposalReview";
+import MapProposalPreview from "./MapProposalPreview";
 import MapRendererCanvas from "./MapRendererCanvas";
 import MapGeneratorDialog, {
   type MapAgentGenerationRequest,
@@ -118,8 +120,10 @@ import { createNovelTimelineLibraryRepository } from "../../../timelineLibraryRe
 import { TIMELINE_INDEX_PATH } from "../../../../../../shared/workbenches/novel/timelineStorage";
 import {
   applyGeneratorCandidate,
+  convertMapToFantasyStyleDocument,
   type MapGeneratorCandidate,
 } from "../business/mapGenerators";
+import { validateMapGenerationProjection } from "../business/mapGenerationProjectionValidation";
 import { mapRendererForProjection } from "../business/mapRenderer";
 import {
   arrangeTopologyNodes,
@@ -298,7 +302,8 @@ const TOOL_LABELS: Readonly<Partial<Record<MapCanvasTool, string>>> =
     river: "河流画笔",
     "terrain-land": "增加陆地",
     "terrain-water": "切回水域",
-    freehand: "自由画笔",
+    freehand: "自由",
+    polygon: "多边形",
     "terrain-region-land": "勾画陆地区域",
     "terrain-region-water": "勾画水域区域",
     "terrain-prefab": "放置预设区域",
@@ -322,7 +327,12 @@ const MAP_AREA_SHAPE_OPTIONS: {
 }[] = [
   // 自由画笔放在首项，避免窄窗口或下拉菜单滚动时被规则形状遮住。
   // 选择它会切换到独立的 `freehand` 工具，而不是把手绘轨迹当成多边形。
-  { value: "freehand", label: "自由画笔", icon: <Paintbrush className="h-3.5 w-3.5" /> },
+  {
+    value: "freehand",
+    label: "自由",
+    icon: <Paintbrush className="h-3.5 w-3.5" />,
+  },
+  { value: "closed", label: "闭合" },
   { value: "polygon", label: "多边形" },
   { value: "circle", label: "圆形" },
   { value: "ellipse", label: "椭圆" },
@@ -486,6 +496,7 @@ interface MapEditorProps {
     readonly token: number;
   } | null;
   readonly focus?: DomainEntityRef | null;
+  readonly onOpenEntity?: (ref: DomainEntityRef) => void;
   readonly agentAvailable?: boolean;
   readonly agentLaunching?: boolean;
   readonly onLaunchMapAgent?: (
@@ -503,6 +514,7 @@ export default function MapEditor({
   isActive,
   quickCreateRequest,
   focus,
+  onOpenEntity,
   agentAvailable = false,
   agentLaunching = false,
   onLaunchMapAgent,
@@ -516,6 +528,20 @@ export default function MapEditor({
   const [maps, setMaps] = useState<readonly MapIndexEntry[]>([]);
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
   const [doc, setDoc] = useState<LoadedMapDocument | null>(null);
+  const [isNarrowViewport, setIsNarrowViewport] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(max-width: 767px)").matches,
+  );
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(max-width: 767px)");
+    const update = () => setIsNarrowViewport(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
   const [documentRebase, setDocumentRebase] = useState<{
     readonly revision: number;
     readonly translation: MapScenePoint;
@@ -563,6 +589,7 @@ export default function MapEditor({
   const quickCreateHandledRef = useRef<number | null>(null);
   const [proposalReviewOpen, setProposalReviewOpen] = useState(false);
   const [generatorOpen, setGeneratorOpen] = useState(false);
+  const [fantasyConversionOpen, setFantasyConversionOpen] = useState(false);
   const [tool, setTool] = useState<MapCanvasTool>("select");
   const [canvasSettings, setCanvasSettings] = useState<MapCanvasSettings>(
     DEFAULT_MAP_CANVAS_SETTINGS,
@@ -686,7 +713,13 @@ export default function MapEditor({
       setCanvasSettings((current) =>
         current.areaShape === areaShape ? current : { ...current, areaShape },
       );
-      chooseTool(areaShape === "freehand" ? "freehand" : "area");
+      chooseTool(
+        areaShape === "freehand"
+          ? "freehand"
+          : areaShape === "polygon"
+            ? "polygon"
+            : "area",
+      );
     },
     [chooseTool],
   );
@@ -1411,6 +1444,11 @@ export default function MapEditor({
         setError(errors.join("；"));
         return false;
       }
+      const generationErrors = validateMapGenerationProjection(current.map);
+      if (generationErrors.length > 0) {
+        setError(generationErrors.join("；"));
+        return false;
+      }
       const saved = await repository.saveMap(current, current.map);
       const cleanupFailures = await finalizeProjectArtworkRemovals(saved.map);
       replaceDoc(saved);
@@ -1741,7 +1779,9 @@ export default function MapEditor({
         // 路径构件的主卡就是连续路径笔刷；只有拖入画布时才走一次性
         // 预制件落图。此前这里无论构件类型都进入 terrain-prefab，
         // 导致点击路径构件后只能放置固定短线，弧线/触点设置也不会生效。
-        setTool(placement === "path" ? "component-path-brush" : "terrain-prefab");
+        setTool(
+          placement === "path" ? "component-path-brush" : "terrain-prefab",
+        );
         return;
       }
       const activeLayer = doc.map.layers.find(
@@ -4000,6 +4040,13 @@ export default function MapEditor({
           entity.id === selectedTopologyNode.entityRef?.id,
       )
     : undefined;
+  const selectedFeatureEntity = selectedFeature?.entityRef
+    ? entityOptions.find(
+        (entity) =>
+          entity.kind === selectedFeature.entityRef?.kind &&
+          entity.id === selectedFeature.entityRef?.id,
+      )
+    : undefined;
   const topologyNodeOptions = (doc?.map.features ?? [])
     .filter((feature) => feature.kind === "node")
     .map((feature) => ({ value: feature.id, label: feature.name }));
@@ -4302,6 +4349,38 @@ export default function MapEditor({
     [chooseTool, mutateDoc],
   );
 
+  const createFantasyStyleCopy = useCallback(async () => {
+    const current = docRef.current;
+    if (!current) return;
+    const source = current.map;
+    const copyId = `map-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const converted = convertMapToFantasyStyleDocument(
+      source,
+      copyId,
+      `${source.name} · 中文玄幻风格`,
+    );
+    try {
+      const created = await repository.createMap({
+        id: copyId,
+        name: converted.name,
+        projectionType: converted.projectionType,
+      });
+      try {
+        await repository.saveMap(created, converted, {
+          preserveInitialGeometry: true,
+        });
+      } catch (cause) {
+        await repository.deleteMap(copyId).catch(() => undefined);
+        throw cause;
+      }
+      setFantasyConversionOpen(false);
+      await loadMaps();
+      await openMap(copyId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, [loadMaps, openMap, repository]);
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--paper)]">
       <NarrativeUnsavedChangesGuard
@@ -4321,10 +4400,25 @@ export default function MapEditor({
         aria-label="导入项目地图素材"
         onChange={handleProjectArtworkInput}
       />
-      <div className="flex h-12 shrink-0 items-center gap-3 border-b border-[var(--line)] px-5">
+      <div className="flex h-12 shrink-0 items-center gap-3 overflow-x-auto border-b border-[var(--line)] px-5">
         <MapIcon className="h-4 w-4 text-[var(--accent-warm)]" />
         <h1 className="text-sm font-semibold">世界地图</h1>
         <span className="text-xs text-[var(--ink-muted)]">{projectTitle}</span>
+        {isNarrowViewport && tab === "maps" && maps.length > 0 && (
+          <div className="w-36 shrink-0">
+            <CustomSelect
+              value={selectedMapId ?? ""}
+              options={maps.map((entry) => ({
+                value: entry.id,
+                label: entry.name,
+              }))}
+              onChange={(value) => void openMap(value)}
+              ariaLabel="选择地图"
+              size="toolbar"
+              className="w-36"
+            />
+          </div>
+        )}
         <div className="ml-4 flex h-8 items-center gap-1 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] p-1">
           <button
             type="button"
@@ -4381,6 +4475,17 @@ export default function MapEditor({
                 <span className="max-xl:hidden">生成地图</span>
               </button>
             )}
+            {rendererKind === "geographic" && (
+              <button
+                type="button"
+                onClick={() => setFantasyConversionOpen(true)}
+                title="保留当前地图几何，创建中文玄幻风格副本"
+                className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 text-sm font-medium text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+              >
+                <Paintbrush className="h-4 w-4" />
+                <span className="max-xl:hidden">转换风格</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void save()}
@@ -4411,8 +4516,8 @@ export default function MapEditor({
           isActive={isActive}
         />
       ) : (
-        <div className="flex min-h-0 flex-1">
-          <aside className="flex w-52 shrink-0 flex-col border-r border-[var(--line-subtle)]">
+        <div className="flex min-h-0 flex-1 max-md:flex-col">
+          <aside className="flex w-52 shrink-0 flex-col border-r border-[var(--line-subtle)] max-md:hidden">
             <div className="flex h-9 shrink-0 items-center justify-between border-b border-[var(--line-subtle)] px-3">
               <span className="text-xs font-medium text-[var(--ink-muted)]">
                 地图库
@@ -5011,7 +5116,7 @@ export default function MapEditor({
               </div>
             ) : (
               <>
-                <div className="flex min-h-12 shrink-0 flex-wrap items-center gap-1 border-b border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-3 py-1.5">
+                <div className="flex min-h-12 shrink-0 flex-wrap items-center gap-1 overflow-x-auto border-b border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-3 py-1.5 max-md:h-12 max-md:min-h-12 max-md:flex-nowrap max-md:overflow-x-auto">
                   <span className="mr-1 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ink-subtle)]">
                     导航
                   </span>
@@ -5081,12 +5186,12 @@ export default function MapEditor({
                         onClick={() => chooseAreaShape("freehand")}
                         disabled={!canDrawFeature}
                         title="自由绘制线条或闭合轮廓（F）；闭合后可在右侧转换为陆地、水域或附加材质区域"
-                        aria-label="自由画笔"
+                        aria-label="自由"
                         aria-pressed={tool === "freehand"}
                         className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs disabled:cursor-not-allowed disabled:opacity-35 ${tool === "freehand" ? "bg-[var(--accent-warm)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
                       >
                         <Paintbrush className="h-3.5 w-3.5" />
-                        自由画笔
+                        自由
                       </button>
                       <button
                         type="button"
@@ -5180,7 +5285,9 @@ export default function MapEditor({
                   {visibleFeatureKinds.map((kind) =>
                     (() => {
                       const label =
-                        kind === "area" ? "自由画笔" : FEATURE_KIND_LABELS[kind];
+                        kind === "area"
+                          ? "自由"
+                          : FEATURE_KIND_LABELS[kind];
                       const Icon = FEATURE_KIND_ICONS[kind];
                       const activeLayer = doc.map.layers.find(
                         (layer) => layer.id === activeLayerId,
@@ -5540,6 +5647,8 @@ export default function MapEditor({
                             chooseAreaShape(areaShape as MapAreaShape)
                           }
                           ariaLabel="画笔形状"
+                          className="w-32 shrink-0"
+                          popoverMinWidth={128}
                           size="toolbar"
                           disabled={!canDrawFeature}
                         />
@@ -5553,6 +5662,7 @@ export default function MapEditor({
                             : (TOOL_LABELS[tool] ?? "工具")}
                       </span>
                       {(tool === "area" ||
+                        tool === "polygon" ||
                         tool === "freehand" ||
                         tool === "route" ||
                         tool === "river" ||
@@ -5876,7 +5986,7 @@ export default function MapEditor({
                     />
                   </div>
                 </div>
-                <div className="flex min-h-0 flex-1">
+                <div className="flex min-h-0 flex-1 max-md:flex-col">
                   {rendererKind === "geographic" && (
                     <MapComponentPalette
                       orientation="vertical"
@@ -5890,24 +6000,25 @@ export default function MapEditor({
                           ? activateArtworkBrush(component.id)
                           : component.interaction === "path"
                             ? activatePathBrush(component)
-                          : component.interaction === "surface" &&
-                              mapComponentPlacement(component) === "overlay"
-                            ? (() => {
-                                const layer = doc?.map.layers.find(
-                                  (candidate) => candidate.id === activeLayerId,
-                                );
-                                if (!layer?.visible || layer.locked) {
-                                  setError("当前绘图层已隐藏或锁定。");
-                                  return;
-                                }
-                                setArtworkBrushAssetId(null);
-                                setActiveStampAssetId(null);
-                                setActiveTerrainMaterial(null);
-                                setActiveComponentId(component.id);
-                                setSelectedFeatureId(null);
-                                setTool("component-surface-brush");
-                              })()
-                            : activateComponent(component)
+                            : component.interaction === "surface" &&
+                                mapComponentPlacement(component) === "overlay"
+                              ? (() => {
+                                  const layer = doc?.map.layers.find(
+                                    (candidate) =>
+                                      candidate.id === activeLayerId,
+                                  );
+                                  if (!layer?.visible || layer.locked) {
+                                    setError("当前绘图层已隐藏或锁定。");
+                                    return;
+                                  }
+                                  setArtworkBrushAssetId(null);
+                                  setActiveStampAssetId(null);
+                                  setActiveTerrainMaterial(null);
+                                  setActiveComponentId(component.id);
+                                  setSelectedFeatureId(null);
+                                  setTool("component-surface-brush");
+                                })()
+                              : activateComponent(component)
                       }
                       onTerrainMaterial={activateTerrainMaterial}
                       projectArtworkAssets={projectArtworkAssets}
@@ -5974,7 +6085,8 @@ export default function MapEditor({
                           (mapComponentPlacement(activeComponent) ===
                             "terrain-prefab" ||
                             mapComponentPlacement(activeComponent) === "path" ||
-                            mapComponentPlacement(activeComponent) === "overlay")
+                            mapComponentPlacement(activeComponent) ===
+                              "overlay")
                             ? activeComponent.id
                             : null
                         }
@@ -8262,6 +8374,51 @@ export default function MapEditor({
                       </label>
                       <label className="block">
                         <span className="mb-1 block text-[var(--ink-muted)]">
+                          排列
+                        </span>
+                        <CustomSelect
+                          value={selectedLabelStyle.writingMode}
+                          options={[
+                            { value: "horizontal", label: "横排" },
+                            { value: "vertical", label: "竖排" },
+                          ]}
+                          onChange={(labelWritingMode) =>
+                            updateFeature(selectedFeature.id, {
+                              props: {
+                                ...selectedFeature.props,
+                                labelWritingMode,
+                              },
+                            })
+                          }
+                          ariaLabel="标签排列"
+                          size="sm"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[var(--ink-muted)]">
+                          题签
+                        </span>
+                        <CustomSelect
+                          value={selectedLabelStyle.frame}
+                          options={[
+                            { value: "none", label: "无" },
+                            { value: "cartouche", label: "题签" },
+                            { value: "seal", label: "印章" },
+                          ]}
+                          onChange={(labelFrame) =>
+                            updateFeature(selectedFeature.id, {
+                              props: {
+                                ...selectedFeature.props,
+                                labelFrame,
+                              },
+                            })
+                          }
+                          ariaLabel="标签题签"
+                          size="sm"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[var(--ink-muted)]">
                           字号
                         </span>
                         <input
@@ -8527,16 +8684,30 @@ export default function MapEditor({
                     关联实体（派生）
                   </span>
                   {selectedFeature.entityRef ? (
-                    <span className="block rounded-md bg-[var(--paper-inset)] px-2.5 py-1.5">
-                      {entityOptions.find(
-                        (option) =>
-                          option.id === selectedFeature.entityRef?.id &&
-                          option.kind === selectedFeature.entityRef?.kind,
-                      )?.name ?? selectedFeature.entityRef.id}
-                      <span className="ml-1 text-[var(--ink-subtle)]">
-                        ({selectedFeature.entityRef.kind})
+                    selectedFeatureEntity && onOpenEntity ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpenEntity(selectedFeatureEntity)}
+                        aria-label="打开关联实体"
+                        className="flex w-full items-center gap-1 rounded-md bg-[var(--paper-inset)] px-2.5 py-1.5 text-left hover:bg-[var(--hover-bg)]"
+                      >
+                        <span className="min-w-0 flex-1 truncate">
+                          {selectedFeatureEntity.name}
+                        </span>
+                        <span className="text-[var(--ink-subtle)]">
+                          ({selectedFeature.entityRef.kind})
+                        </span>
+                        <ExternalLink className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
+                      </button>
+                    ) : (
+                      <span className="block rounded-md bg-[var(--paper-inset)] px-2.5 py-1.5">
+                        {selectedFeatureEntity?.name ??
+                          selectedFeature.entityRef.id}
+                        <span className="ml-1 text-[var(--ink-subtle)]">
+                          ({selectedFeature.entityRef.kind})
+                        </span>
                       </span>
-                    </span>
+                    )
                   ) : (
                     <span className="block rounded-md bg-[var(--paper-inset)] px-2.5 py-1.5 text-[var(--ink-muted)]">
                       未关联实体
@@ -8738,6 +8909,83 @@ export default function MapEditor({
           onApply={applyGeneratedCandidate}
           onClose={() => setGeneratorOpen(false)}
         />
+      )}
+      {fantasyConversionOpen && doc && (
+        <div
+          className="fixed inset-0 z-[320] flex items-center justify-center bg-black/30 px-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setFantasyConversionOpen(false);
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="fantasy-conversion-title"
+            className="flex max-h-[min(820px,92vh)] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--paper)] shadow-xl"
+          >
+            <header className="flex h-12 shrink-0 items-center gap-3 border-b border-[var(--line)] px-4">
+              <Paintbrush className="h-4 w-4 text-[var(--accent-warm)]" />
+              <h2
+                id="fantasy-conversion-title"
+                className="text-sm font-semibold"
+              >
+                中文玄幻风格转换预览
+              </h2>
+              <button
+                type="button"
+                aria-label="关闭风格转换预览"
+                onClick={() => setFantasyConversionOpen(false)}
+                className="ml-auto grid h-8 w-8 place-items-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              <div className="grid gap-4 min-[900px]:grid-cols-2">
+                <div>
+                  <p className="mb-2 text-xs font-medium text-[var(--ink-muted)]">
+                    当前地图 · {doc.map.name}
+                  </p>
+                  <MapProposalPreview map={doc.map} />
+                </div>
+                <div>
+                  <p className="mb-2 text-xs font-medium text-[var(--accent-warm)]">
+                    转换副本 · 保留几何与实体引用
+                  </p>
+                  <MapProposalPreview
+                    map={convertMapToFantasyStyleDocument(
+                      doc.map,
+                      "map-fantasy-preview",
+                      `${doc.map.name} · 中文玄幻风格`,
+                    )}
+                  />
+                </div>
+              </div>
+              <p className="mt-4 text-xs leading-5 text-[var(--ink-muted)]">
+                转换只修改羊皮纸背景、玄幻标签层级、边界和地貌色彩，当前地图不会被覆盖；确认后会创建一张独立副本，原图仍可随时打开。
+              </p>
+            </div>
+            <footer className="flex shrink-0 justify-end gap-2 border-t border-[var(--line-subtle)] px-4 py-3">
+              <button
+                type="button"
+                onClick={() => setFantasyConversionOpen(false)}
+                className="h-8 rounded-md border border-[var(--line)] px-3 text-xs text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void createFantasyStyleCopy()}
+                className="flex h-8 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-3 text-xs font-medium text-white hover:brightness-105"
+              >
+                <Copy className="h-3.5 w-3.5" /> 创建风格副本
+              </button>
+            </footer>
+          </section>
+        </div>
       )}
       {deleteArtworkLayerTarget && doc && (
         <ConfirmDialog

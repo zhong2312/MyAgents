@@ -53,6 +53,7 @@ describe("Sidecar production composition", () => {
     ["GET", "/api/cc-plugin/list", "common"],
     ["POST", "/api/workbench-agent/configure", "session"],
     ["POST", "/api/workbench-ai/run", "global"],
+    ["POST", "/api/workbench-dev-storage/request", "common"],
     [
       "GET",
       "/api/workbench-ai/run/7ed0f6ee-0000-4000-8000-000000000000",

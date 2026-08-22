@@ -1,6 +1,6 @@
 ---
 intent: 将小说工作台存储层从「大聚合 JSON = 单一 CAS 单元」重构为「实体级分片事实源 + 可丢弃 SQLite 只读投影 + 统一事务原语」，在保留 Git 友好性的前提下解决并发冲突面过大、跨文件事务靠手写补偿、跨库查询需全量读取、热路径重复全量读盘四类问题。
-success_criteria: characters 库以 meta.json + index.json + records/<id>.json 三层分片持久化且全部调用点已切换；WorkbenchProjection 能力可用并已承载 domainIndex 与 findInboundReferences 查询；StorageTransaction 原语替代 createChapter 的手写补偿分支；useNovelProject 单次刷新只做一次全量读取；simulation 的 event-ledger 与 checkpoints 以 JSONL 追加写入；npm run lint、npm run typecheck、npm run test:unit、npm run test:dom 全绿，cargo test 全绿。
+success_criteria: characters 库以 meta.json + index.json + records/<id>.json 三层分片持久化且全部调用点已切换；WorkbenchProjection 能力可用并已承载 domainIndex 与 findInboundReferences 查询；StorageTransaction 原语替代 createChapter 的手写补偿分支；useNovelProject 单次刷新只做一次全量读取；npm run lint、npm run typecheck、npm run test:unit、npm run test:dom 全绿，cargo test 全绿。
 risk_level: medium
 auto_approve: true
 ---
@@ -81,16 +81,10 @@ loop: false
 verify: npx vitest run --project unit src/renderer/workbenches/novel/projectInitialization.test.ts
 
 - [ ] **Step 14: 切换渲染层读取 characters/index.json 的调用点**
-action: 依次修改 `src/renderer/workbenches/novel/domainIndex.ts`（L82、L94）、`crossLibraryReferences.ts`（L78、L372）、`knowledgeGraph.ts`（L508）、`worldSimulationProjection.ts`（L565、L1118）、`CultivationEcologyWorkbench.tsx`（L2130、L2133）。这些位置此前假定 `characters/index.json` 内嵌完整 record；改为消费 Step 10 定义的 index 条目字段。凡需要 record 内独有字段的位置，改为调用 `loadCharacter` 按需读取。
+action: 依次修改 `src/renderer/workbenches/novel/domainIndex.ts`（L82、L94）、`crossLibraryReferences.ts`（L78、L372）、`knowledgeGraph.ts`（L508）和 `CultivationEcologyWorkbench.tsx`（L2130、L2133）。这些位置此前假定 `characters/index.json` 内嵌完整 record；改为消费 Step 10 定义的 index 条目字段。凡需要 record 内独有字段的位置，改为调用 `loadCharacter` 按需读取。
 loop: until typecheck 通过
 max_iterations: 5
 verify: npm run typecheck
-
-- [ ] **Step 15: 切换世界推演采纳逻辑的 characters 写入路径**
-action: 修改 `src/renderer/workbenches/novel/worldSimulationAdoptionV2.ts`（L708、L838）。此前该逻辑把整份 characters index 当作单一写入目标；改为对每个受影响角色分别写 record 并更新对应 index 条目，复用 `characterLibraryRepository.saveCharacter`。保留原有的失败回滚语义。
-loop: until 相关测试全绿
-max_iterations: 4
-verify: npx vitest run --project unit src/renderer/workbenches/novel/worldSimulationAdoptionV2.test.ts
 
 - [ ] **Step 16: 为服务端 readIdSet 锁定分片 index 契约**
 action: `src/server/tools/novel-workbench-tool.ts` 的 `readIdSet`（L2018-L2032）只从 `characters` 数组的每个条目提取 `.id`，分片后的 index 条目仍保留 `id`，因此 L2061 与 L2188 两处调用无需改动。新建 `src/server/tools/novel-workbench-tool-idset.unit.test.ts`，构造一份分片形态的 `characters/index.json`（条目仅含 `id`、`name`、`recordPath`、`updatedAt`，不含完整 record 字段），断言 `readIdSet` 仍返回正确的 id 集合。若 `readIdSet` 当前非导出则改为导出以便测试。文件名必须使用 `.unit.test.ts` 后缀，否则 `npm run test:classification` 会失败。
@@ -99,7 +93,7 @@ max_iterations: 3
 verify: npx vitest run --project unit src/server/tools/novel-workbench-tool-idset.unit.test.ts
 
 - [ ] **Step 17: 更新全部 characters 测试 fixture**
-action: 更新 `domainIndex.test.ts`、`crossLibraryReferences.test.ts`、`knowledgeGraph.test.ts`、`useDomainIndex.test.tsx`、`CommandPalette.test.tsx`、`KnowledgeGraphView.test.tsx`、`worldSimulationAdoptionV2.test.ts`、`projectInitialization.test.ts` 中的 characters fixture，把内嵌完整 record 的 `characters/index.json` 改为 index 条目加对应 `characters/records/<id>.json` 文件。
+action: 更新 `domainIndex.test.ts`、`crossLibraryReferences.test.ts`、`knowledgeGraph.test.ts`、`useDomainIndex.test.tsx`、`CommandPalette.test.tsx`、`KnowledgeGraphView.test.tsx`、`projectInitialization.test.ts` 中的 characters fixture，把内嵌完整 record 的 `characters/index.json` 改为 index 条目加对应 `characters/records/<id>.json` 文件。
 loop: until unit 与 dom 两个 project 全绿
 max_iterations: 5
 verify:
@@ -164,18 +158,6 @@ action: 修改 `src/renderer/workbenches/novel/crossLibraryReferences.ts` 的 `f
 loop: until crossLibraryReferences.test.ts 全绿
 max_iterations: 4
 verify: npx vitest run --project unit src/renderer/workbenches/novel/crossLibraryReferences.test.ts
-
-- [ ] **Step 28: simulation event-ledger 改 JSONL 追加写入**
-action: 修改 `src/renderer/workbenches/novel/worldSimulationRepositoryV2.ts` 的分支落盘逻辑（L202 附近），把 `${branchRoot}/event-ledger.json` 的整体重写改为 `${branchRoot}/event-ledger.jsonl` 的逐行追加：每个事件序列化为一行 JSON，新增事件通过读取现有行数后追加实现，不重写既有行。同步更新 `worldSimulationV2Schema.ts` 中相关路径常量。
-loop: until worldSimulationRepositoryV2.test.ts 全绿
-max_iterations: 4
-verify: npx vitest run --project unit src/renderer/workbenches/novel/worldSimulationRepositoryV2.test.ts
-
-- [ ] **Step 29: simulation checkpoints 改 JSONL 追加写入**
-action: 按 Step 28 同样方式把 `checkpoints.json` 改为 `checkpoints.jsonl` 追加写入。在 `worldSimulationRepositoryV2.test.ts` 追加用例，断言追加第二个 checkpoint 后文件行数为 2 且第一行内容逐字节未变。
-loop: until 用例通过
-max_iterations: 4
-verify: npx vitest run --project unit src/renderer/workbenches/novel/worldSimulationRepositoryV2.test.ts
 
 - [ ] **Step 30: 全量静态检查与测试**
 action: 依次运行 `npm run typecheck`、`npm run lint`、`npm run test:unit`、`npm run test:dom`、`cargo test --manifest-path src-tauri/Cargo.toml`，修复暴露出的类型错误、lint 违规与测试失败。不得通过放宽 lint 规则或跳过测试来达成绿灯。

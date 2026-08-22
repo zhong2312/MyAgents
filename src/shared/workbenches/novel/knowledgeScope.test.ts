@@ -13,7 +13,6 @@ describe("knowledge source scope", () => {
     expect(isKnowledgeSourcePath("proposals/character.json")).toBe(false);
     expect(isKnowledgeSourcePath("world/factions/proposals/a.json")).toBe(false);
     expect(isKnowledgeSourcePath("trash/old.md")).toBe(false);
-    expect(isKnowledgeSourcePath("simulation/runs/run-1.json")).toBe(false);
   });
 
   it("normalizes Windows paths before applying scope rules", () => {

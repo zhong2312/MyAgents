@@ -14,6 +14,7 @@ import {
   mapArtworkVariantIndex,
 } from "./mapArtwork";
 import { generateFantasyMapCandidate as generateFantasyMapCandidateCore } from "../../../../../../shared/workbenches/novel/fantasyMapGenerator";
+import { mapGenerationRoleUsesLandmarkArtwork } from "../../../../../../shared/workbenches/novel/mapGenerationPlan";
 import { getMapTerrainMaterialPreset } from "./mapTerrainMaterials";
 import {
   addMapSceneRegion,
@@ -49,6 +50,108 @@ export interface MapGeneratorCandidate {
   readonly features: readonly MapFeature[];
 }
 
+const FANTASY_CONVERSION_COLORS: Readonly<Record<string, string>> =
+  Object.freeze({
+    coast: "#72543f",
+    mountain: "#665546",
+    forest: "#4d684e",
+    desert: "#a57b4b",
+    snow: "#819aa0",
+    tundra: "#819aa0",
+    swamp: "#596b59",
+    volcanic: "#75463d",
+    river: "#2e687a",
+    region: "#8a694f",
+  });
+
+function fantasyConversionProps(feature: MapFeature): MapFeature["props"] {
+  const terrain = feature.props.terrain ?? feature.props.terrainMaterial;
+  const role = feature.props.entityRole;
+  const color =
+    FANTASY_CONVERSION_COLORS[terrain ?? ""] ??
+    (feature.kind === "route" ? "#72543f" : "#665546");
+  const isWater = terrain === "river" || terrain === "lake";
+  const isRegion = isMapFeatureFreeformArea(feature.kind);
+  const labelSize =
+    role === "realm" || role === "capital"
+      ? "28"
+      : role === "region" || isRegion
+        ? "22"
+        : isWater
+          ? "16"
+          : "14";
+  return {
+    ...feature.props,
+    generator: "fantasy-style-conversion",
+    color,
+    ...(isRegion && terrain !== "lake"
+      ? { fill: feature.props.fill ?? "#b8ad7d77" }
+      : {}),
+    ...(feature.name.trim() ? { showLabel: "true" } : {}),
+    labelFont: isWater
+      ? "cartographer"
+      : role === "realm"
+        ? "atlas-serif"
+        : "humanist",
+    labelSize,
+    labelWeight: role === "realm" || role === "capital" ? "700" : "600",
+    labelColor: isWater ? "#284f62" : "#3a3329",
+    labelHaloColor: "#f6eddb",
+    labelHaloWidth: isWater ? "4" : "3",
+    labelFollowPath: isWater || feature.kind === "route" ? "true" : "false",
+  };
+}
+
+/**
+ * 将既有地图复制成中文玄幻风格版本。只改渲染属性和标签规则，保留
+ * 所有原始点、实体引用、场景和内置素材；项目图片素材不跨地图复制，
+ * 以免新地图引用旧地图的 assets 路径。
+ */
+export function convertMapToFantasyStyleDocument(
+  document: MapDocument,
+  outputId: string,
+  outputName: string,
+): MapDocument {
+  const projectAssetIds = new Set(
+    document.artwork.assets.map((asset) => asset.id),
+  );
+  return {
+    ...document,
+    id: outputId,
+    name: outputName.trim() || `${document.name} · 中文玄幻风格`,
+    canvas: {
+      ...document.canvas,
+      backgroundColor: "#d8c49a",
+      backgroundPreset: "parchment",
+      backgroundImage: document.canvas.backgroundAssetPath
+        ? null
+        : document.canvas.backgroundImage,
+      backgroundAssetPath: null,
+      backgroundOpacity: document.canvas.backgroundOpacity ?? 1,
+      showGrid: false,
+    },
+    features: document.features.map((feature) => ({
+      ...feature,
+      props: fantasyConversionProps(feature),
+      description: feature.description
+        ? `${feature.description}\n已由旧地图转换为中文玄幻风格。`
+        : "已由旧地图转换为中文玄幻风格。",
+    })),
+    artwork: {
+      ...document.artwork,
+      assets: [],
+      layers: document.artwork.layers.map((layer) => ({
+        ...layer,
+        stamps: layer.stamps.filter(
+          (stamp) => !projectAssetIds.has(stamp.assetId),
+        ),
+      })),
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 /**
  * 生成结果不属于作者当前选中的图层。来源图层 ID 是稳定契约：同一个
  * 生成器多次应用候选时复用同一组层，作者即可一次隐藏、锁定或删除该来源
@@ -61,6 +164,7 @@ export function mapGeneratorSourceLayerIds(generatorId: MapGeneratorId): {
   readonly artwork: string;
   readonly relief: string;
   readonly vegetation: string;
+  readonly civilization: string;
 } {
   const suffix = generatorId.replace(/[^a-z0-9]+/giu, "-");
   return {
@@ -69,6 +173,7 @@ export function mapGeneratorSourceLayerIds(generatorId: MapGeneratorId): {
     artwork: `artwork-generator-${suffix}`,
     relief: `artwork-generator-${suffix}-relief`,
     vegetation: `artwork-generator-${suffix}-vegetation`,
+    civilization: `artwork-generator-${suffix}-civilization`,
   };
 }
 
@@ -1042,6 +1147,15 @@ export function applyGeneratorCandidate(
         : "mountain-range";
     }
     if (terrain === "forest") return "forest";
+    const component = feature.props.component;
+    if (
+      feature.props.planEntityId &&
+      mapGenerationRoleUsesLandmarkArtwork(feature.props.entityRole ?? "") &&
+      component &&
+      getMapArtworkStampAsset(component)
+    ) {
+      return component;
+    }
     return null;
   };
   const artwork = hasGeneratedGeometry
@@ -1055,6 +1169,11 @@ export function applyGeneratorCandidate(
           id: sourceLayerIds.vegetation,
           name: `${sourceLabel} · 植被`,
           kind: "vegetation" as const,
+        },
+        {
+          id: sourceLayerIds.civilization,
+          name: `${sourceLabel} · 宗门与遗迹`,
+          kind: "stamp" as const,
         },
       ].reduce(
         (currentArtwork, descriptor) =>
@@ -1086,7 +1205,9 @@ export function applyGeneratorCandidate(
     const layerId =
       assetId === "mountain-range" || assetId === "snow-peak"
         ? sourceLayerIds.relief
-        : sourceLayerIds.vegetation;
+        : assetId === "forest"
+          ? sourceLayerIds.vegetation
+          : sourceLayerIds.civilization;
     const baseId = `generated-artwork-${feature.id}-${index}`;
     let stampId = baseId;
     let suffix = 2;
@@ -1109,6 +1230,7 @@ export function applyGeneratorCandidate(
         assetId,
         x: point.x,
         y: point.y,
+        sourceFeatureId: feature.id,
         variant: asset
           ? mapArtworkVariantIndex(asset, `${feature.id}:${index}`)
           : 0,

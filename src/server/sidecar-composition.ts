@@ -149,6 +149,9 @@ const COMMON_PREFIXES = [
   '/api/rules',
   '/api/skill/',
   '/api/skills',
+  // Browser development storage is still bounded to the active workspace by
+  // its route handler. It must pass the sidecar capability gate first.
+  '/api/workbench-dev-storage/',
   '/bridge/',
   '/refs/',
 ] as const;

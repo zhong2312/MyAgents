@@ -13,6 +13,10 @@ import {
   createNovelMapProposalRepository,
   type LoadedMapProposal,
 } from "../data-access/mapProposalRepository";
+import {
+  createMapPlanningDraftRepository,
+  type MapPlanningDraft,
+} from "../data-access/mapPlanningDraftRepository";
 import type { MapProposalOperation } from "../entities/mapProposalSchema";
 import { MAP_PROJECTION_LABELS, type MapDocument } from "../entities/mapSchema";
 import MapProposalPreview from "./MapProposalPreview";
@@ -136,11 +140,98 @@ function OperationCard({
             个地形成分
           </p>
           <p className="mt-1.5">{operation.summary}</p>
+          {map.generation ? (
+            <p className="mt-2 text-[var(--accent-warm)]">
+              设定驱动规划 · {map.generation.plan.entities.length} 个实体 ·{" "}
+              {map.generation.plan.relations.length} 条空间关系 ·{" "}
+              {map.generation.runtime === "compatibility-adapter"
+                ? "兼容生成器降级"
+                : "Azgaar Runtime"}
+            </p>
+          ) : null}
           {map.canvas.backgroundImage || map.canvas.backgroundAssetPath ? (
             <p className="mt-2 text-[var(--accent-cool)]">含生成底图参考层</p>
           ) : null}
         </div>
       </div>
+    </article>
+  );
+}
+
+function PlanningDraftCard({
+  draft,
+  acting,
+  onConfirm,
+}: {
+  readonly draft: MapPlanningDraft;
+  readonly acting: boolean;
+  readonly onConfirm: () => void;
+}) {
+  const plan = draft.generationPlan;
+  return (
+    <article className="border-b border-[var(--line-subtle)] px-4 py-3 last:border-b-0">
+      <div className="flex flex-wrap items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <strong className="block truncate text-sm">{draft.title}</strong>
+          <p className="mt-0.5 truncate text-xs text-[var(--ink-muted)]">
+            {plan.scope.nodePath} ·{" "}
+            {plan.scope.generationLevelName ?? "未指定层级"}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="rounded-full bg-[var(--warning-bg)] px-2 py-0.5 text-xs text-[var(--warning)]">
+            待作者确认
+          </span>
+          <button
+            type="button"
+            className="flex h-7 items-center gap-1 rounded-md bg-[var(--success)] px-2 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
+            disabled={acting}
+            onClick={onConfirm}
+          >
+            {acting ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Check className="h-3 w-3" />
+            )}
+            确认规划
+          </button>
+        </div>
+      </div>
+      {draft.description && (
+        <p className="mt-2 text-xs leading-5 text-[var(--ink-muted)]">
+          {draft.description}
+        </p>
+      )}
+      <div className="mt-3 grid gap-3 text-xs leading-5 text-[var(--ink-muted)] min-[760px]:grid-cols-3">
+        <div>
+          <strong className="block text-[var(--ink)]">空间层级</strong>
+          <p>{plan.spatialLayers.map((layer) => layer.name).join("、")}</p>
+        </div>
+        <div>
+          <strong className="block text-[var(--ink)]">实体与地点</strong>
+          <p>
+            {plan.entities.length > 0
+              ? plan.entities.map((entity) => entity.name).join("、")
+              : "未规划独立实体"}
+          </p>
+        </div>
+        <div>
+          <strong className="block text-[var(--ink)]">山河与视觉</strong>
+          <p>
+            {plan.azgaar.heightmapTemplate} · {plan.azgaar.riverCount}{" "}
+            条水系意图 · {plan.visual.reliefStyle}
+          </p>
+        </div>
+      </div>
+      {plan.relations.length > 0 && (
+        <p className="mt-2 text-xs text-[var(--accent-warm)]">
+          {plan.relations.length} 条空间关系已纳入规划
+        </p>
+      )}
+      <p className="mt-2 text-xs text-[var(--ink-subtle)]">
+        草稿 r{draft.revision} · {draft.source.promptId}@
+        {draft.source.promptVersion} · 会话 {draft.source.sessionId}
+      </p>
     </article>
   );
 }
@@ -155,7 +246,12 @@ export default function MapProposalReview({
     () => createNovelMapProposalRepository(storage),
     [storage],
   );
+  const planningRepository = useMemo(
+    () => createMapPlanningDraftRepository(storage),
+    [storage],
+  );
   const [proposals, setProposals] = useState<LoadedMapProposal[]>([]);
+  const [planningDrafts, setPlanningDrafts] = useState<MapPlanningDraft[]>([]);
   const [loadErrors, setLoadErrors] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [acting, setActing] = useState(false);
@@ -165,13 +261,22 @@ export default function MapProposalReview({
   const load = useCallback(async () => {
     setError(null);
     try {
-      const result = await repository.list();
+      const [result, planningResult] = await Promise.all([
+        repository.list(),
+        planningRepository.list(),
+      ]);
       setProposals([...result.proposals]);
-      setLoadErrors(result.errors.map((entry) => entry.message));
+      setPlanningDrafts([...planningResult.drafts]);
+      setLoadErrors([
+        ...result.errors.map((entry) => entry.message),
+        ...planningResult.errors.map(
+          (entry) => `规划草稿 ${entry.draftId}：${entry.message}`,
+        ),
+      ]);
     } catch (cause) {
       setError(errorMessage(cause));
     }
-  }, [repository]);
+  }, [planningRepository, repository]);
 
   useEffect(() => {
     void load();
@@ -207,7 +312,7 @@ export default function MapProposalReview({
   return (
     <ProposalReviewSurface
       title="地图提案审阅"
-      subtitle={`${projectTitle} · ${pendingCount} 个待处理候选`}
+      subtitle={`${projectTitle} · ${planningDrafts.length} 份待确认规划 · ${pendingCount} 个待处理候选`}
       sideBySide={sideBySide}
       onSideBySideChange={setSideBySide}
       onRefresh={() => void load()}
@@ -222,7 +327,24 @@ export default function MapProposalReview({
             {loadErrors.join("；")}
           </div>
         )}
-        {proposals.length === 0 && !error && (
+        {planningDrafts.length > 0 && (
+          <section className="mb-4 overflow-hidden rounded-lg border border-[var(--warning)]/35 bg-[var(--paper)]">
+            <header className="border-b border-[var(--line-subtle)] px-4 py-2.5">
+              <h2 className="text-sm font-semibold">地图规划草案</h2>
+            </header>
+            {planningDrafts.map((draft) => (
+              <PlanningDraftCard
+                key={draft.draftId}
+                draft={draft}
+                acting={acting}
+                onConfirm={() =>
+                  void run(() => planningRepository.confirm(draft.draftId))
+                }
+              />
+            ))}
+          </section>
+        )}
+        {proposals.length === 0 && planningDrafts.length === 0 && !error && (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-[var(--ink-muted)]">
             <GitCompareArrows className="h-6 w-6" />
             <p>暂无地图提案</p>

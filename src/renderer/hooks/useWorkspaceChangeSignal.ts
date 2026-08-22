@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState } from "react";
 
-import { listenWithCleanup } from '@/utils/tauriListen';
-import { useWorkspaceFileService } from './useWorkspaceFileService';
+import { listenWithCleanup } from "@/utils/tauriListen";
+import { isTauriEnvironment } from "@/utils/browserMock";
+import { useWorkspaceFileService } from "./useWorkspaceFileService";
+
+const BROWSER_WATCH_POLL_INTERVAL_MS = 2_000;
 
 /**
  * Ref-counted workspace filesystem change signal.
@@ -20,6 +23,14 @@ export function useWorkspaceChangeSignal(
   useEffect(() => {
     if (!enabled || !fileService.isAvailable) return;
 
+    if (!isTauriEnvironment()) {
+      const timer = window.setInterval(
+        () => setSignal((previous) => previous + 1),
+        BROWSER_WATCH_POLL_INTERVAL_MS,
+      );
+      return () => window.clearInterval(timer);
+    }
+
     const ac = new AbortController();
     let mounted = true;
     let token: string | null = null;
@@ -32,11 +43,15 @@ export function useWorkspaceChangeSignal(
           return;
         }
         token = handle.token;
-        await listenWithCleanup(`workspace:files-changed:${handle.eventKey}`, () => {
-          if (mounted) setSignal((prev) => prev + 1);
-        }, ac.signal);
+        await listenWithCleanup(
+          `workspace:files-changed:${handle.eventKey}`,
+          () => {
+            if (mounted) setSignal((prev) => prev + 1);
+          },
+          ac.signal,
+        );
       } catch (err) {
-        console.warn('[useWorkspaceChangeSignal] watch start failed:', err);
+        console.warn("[useWorkspaceChangeSignal] watch start failed:", err);
       }
     })();
 

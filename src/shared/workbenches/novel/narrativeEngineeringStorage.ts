@@ -33,7 +33,7 @@ export interface NarrativeEngineeringStorageAggregate {
   readonly arcs: readonly NarrativeStorageRecord[];
   readonly directories: readonly NarrativeStorageRecord[];
   readonly chapters: readonly NarrativeStorageRecord[];
-  readonly simulationProposals: readonly NarrativeStorageRecord[];
+  readonly simulationProposals?: readonly NarrativeStorageRecord[];
   readonly legacyArchive?: unknown;
 }
 
@@ -130,20 +130,20 @@ export function createNarrativeEngineeringFiles(
     );
   }
   const collections = Object.fromEntries(
-    (Object.keys(COLLECTION_SEGMENTS) as NarrativeCollectionKey[]).map((key) => [
-      key,
-      collectionFiles(key, library[key]),
-    ]),
-  ) as Record<
-    NarrativeCollectionKey,
-    ReturnType<typeof collectionFiles>
-  >;
-  const files = (Object.keys(COLLECTION_SEGMENTS) as NarrativeCollectionKey[])
-    .flatMap((key) => collections[key].files);
+    (Object.keys(COLLECTION_SEGMENTS) as NarrativeCollectionKey[]).map(
+      (key) => [key, collectionFiles(key, library[key] ?? [])],
+    ),
+  ) as Record<NarrativeCollectionKey, ReturnType<typeof collectionFiles>>;
+  const files = (
+    Object.keys(COLLECTION_SEGMENTS) as NarrativeCollectionKey[]
+  ).flatMap((key) => collections[key].files);
   const legacyArchivePath =
     library.legacyArchive === undefined ? null : narrativeLegacyArchivePath();
   if (legacyArchivePath) {
-    files.push({ path: legacyArchivePath, content: json(library.legacyArchive) });
+    files.push({
+      path: legacyArchivePath,
+      content: json(library.legacyArchive),
+    });
   }
   files.push({
     path: NARRATIVE_ENGINEERING_INDEX_PATH,
@@ -179,7 +179,10 @@ async function loadCollection(
         if (entry.path !== expectedPath) {
           throw new Error(`${owner}.path 必须是 ${expectedPath}`);
         }
-        const record = objectValue(expectedPath, parseJson(expectedPath, await read(expectedPath)));
+        const record = objectValue(
+          expectedPath,
+          parseJson(expectedPath, await read(expectedPath)),
+        );
         if (idValue(`${expectedPath}.id`, record.id) !== id) {
           throw new Error(`${expectedPath}.id 与索引不一致`);
         }
@@ -219,7 +222,9 @@ export async function loadNarrativeEngineeringFiles(
     );
   }
   if (typeof index.updatedAt !== "string" || !index.updatedAt) {
-    throw new Error(`${NARRATIVE_ENGINEERING_INDEX_PATH}.updatedAt 必须是非空字符串`);
+    throw new Error(
+      `${NARRATIVE_ENGINEERING_INDEX_PATH}.updatedAt 必须是非空字符串`,
+    );
   }
   const [lines, arcs, directories, chapters, simulationProposals] =
     await Promise.all([
@@ -260,9 +265,7 @@ export async function loadNarrativeEngineeringFiles(
 
 /** 多文件内容的稳定表示，同时作为 sourceHash 输入和 Repository CAS 快照。 */
 export function serializeNarrativeFileSnapshot(
-  files:
-    | ReadonlyMap<string, string>
-    | readonly NarrativeEngineeringTextFile[],
+  files: ReadonlyMap<string, string> | readonly NarrativeEngineeringTextFile[],
 ): string {
   const entries = Array.isArray(files)
     ? files.map((file) => [file.path, file.content] as const)

@@ -50,12 +50,6 @@ export const MODEL_SCENE_IDS = [
   "factions.rights",
   "factions.history",
   "factions.batch",
-  "simulation.actor",
-  "simulation.world",
-  "simulation.resolve",
-  "simulation.report",
-  "simulation.council",
-  "simulation.epoch-narration",
 ] as const;
 
 export type NovelModelSceneId = (typeof MODEL_SCENE_IDS)[number];
@@ -307,48 +301,6 @@ export const NOVEL_MODEL_SCENES: readonly NovelModelSceneDefinition[] = [
     label: "物品批量生产",
     description: "批量物品设计对话",
     execution: "agent",
-  },
-  {
-    id: "simulation.actor",
-    group: "世界推演",
-    label: "主体决策",
-    description: "角色与势力的下一步行动判断",
-    execution: "run",
-  },
-  {
-    id: "simulation.world",
-    group: "世界推演",
-    label: "世界响应",
-    description: "规则、环境与外部势力响应",
-    execution: "run",
-  },
-  {
-    id: "simulation.resolve",
-    group: "世界推演",
-    label: "冲突裁定",
-    description: "规则碰撞与行动结果裁定",
-    execution: "run",
-  },
-  {
-    id: "simulation.report",
-    group: "世界推演",
-    label: "推演报告",
-    description: "事件流与状态变化摘要",
-    execution: "run",
-  },
-  {
-    id: "simulation.council",
-    group: "世界推演",
-    label: "圆桌会商",
-    description: "多角色代表逐轮发言与投票",
-    execution: "run",
-  },
-  {
-    id: "simulation.epoch-narration",
-    group: "世界推演",
-    label: "纪元叙事",
-    description: "将长尺度聚合状态整理为可追溯叙事",
-    execution: "run",
   },
 ] as const;
 

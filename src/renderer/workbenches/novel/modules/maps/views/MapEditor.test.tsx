@@ -12,6 +12,7 @@ import MapEditor from "./MapEditor";
 import { NovelMemoryStorage } from "../../../shared/infrastructure/testStorage";
 import { MAP_COMPONENT_DRAG_MIME } from "../business/mapComponents";
 import { createMapProjectArtworkAsset } from "../business/mapProjectArtwork";
+import { serializeMapDocument } from "../entities/mapSchema";
 
 function fireMapPointer(
   canvas: HTMLCanvasElement,
@@ -44,6 +45,102 @@ function fireMapPointer(
 }
 
 describe("MapEditor（地图阶段验收）", () => {
+  it("中文玄幻风格转换会预览并创建独立副本，原图保持不变", async () => {
+    const storage = new NovelMemoryStorage({});
+    const repository = await import("../data-access/mapRepository").then(
+      (module) => module.createNovelMapRepository(storage),
+    );
+    const created = await repository.createMap({
+      id: "map-fantasy-conversion-source",
+      name: "苍穹九州",
+      projectionType: "continent",
+    });
+    const source = await repository.saveMap(created, {
+      ...created.map,
+      features: [
+        {
+          id: "conversion-cloud-city",
+          kind: "marker",
+          name: "云中城",
+          entityRef: { kind: "location", id: "cloud-city" },
+          layerId: "layer-main",
+          points: [{ x: 320, y: 240 }],
+          timeFrom: null,
+          timeTo: null,
+          props: { terrain: "city" },
+          description: "旧城设定",
+        },
+        {
+          id: "conversion-spirit-vein",
+          kind: "route",
+          name: "玄霄灵脉",
+          entityRef: { kind: "faction", id: "xuanxiao-sect" },
+          layerId: "layer-main",
+          points: [
+            { x: 320, y: 240 },
+            { x: 720, y: 560 },
+          ],
+          timeFrom: null,
+          timeTo: null,
+          props: { routeStyle: "ley-line", terrain: "spirit-vein" },
+          description: "连接两地的灵脉",
+        },
+      ],
+    });
+
+    render(<MapEditor storage={storage} projectTitle="测试小说" isActive />);
+    fireEvent.click(await screen.findByText("苍穹九州"));
+    fireEvent.click(
+      await screen.findByTitle("保留当前地图几何，创建中文玄幻风格副本"),
+    );
+
+    expect(
+      await screen.findByRole("dialog", { name: "中文玄幻风格转换预览" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("转换副本 · 保留几何与实体引用"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "创建风格副本" }));
+
+    await waitFor(async () => {
+      const index = await repository.loadIndex();
+      expect(index.index.maps).toHaveLength(2);
+    });
+
+    const index = await repository.loadIndex();
+    const copyEntry = index.index.maps.find(
+      (entry) => entry.id !== source.map.id,
+    );
+    expect(copyEntry).toMatchObject({ name: "苍穹九州 · 中文玄幻风格" });
+
+    const [reloadedSource, copy] = await Promise.all([
+      repository.loadMap(source.map.id),
+      repository.loadMap(copyEntry!.id),
+    ]);
+    expect(reloadedSource.map).toEqual(source.map);
+    expect(copy.map.canvas).toMatchObject({
+      backgroundPreset: "parchment",
+      backgroundColor: "#d8c49a",
+    });
+    expect(
+      copy.map.features.map((feature) => ({
+        points: feature.points,
+        entityRef: feature.entityRef,
+      })),
+    ).toEqual(
+      source.map.features.map((feature) => ({
+        points: feature.points,
+        entityRef: feature.entityRef,
+      })),
+    );
+    expect(
+      copy.map.features.every(
+        (feature) => feature.props.generator === "fantasy-style-conversion",
+      ),
+    ).toBe(true);
+  });
+
   it("空项目渲染地图库空态，可创建地图并进入编辑", async () => {
     const storage = new NovelMemoryStorage({});
     const { unmount } = render(
@@ -637,7 +734,7 @@ describe("MapEditor（地图阶段验收）", () => {
       for (const label of ["+ 标记", "+ 标签", "+ 路线"]) {
         expect(screen.getByText(label)).toBeInTheDocument();
       }
-      expect(screen.queryByText("+ 自由画笔")).not.toBeInTheDocument();
+      expect(screen.queryByText("+ 自由")).not.toBeInTheDocument();
       expect(screen.queryByText("+ 拓扑节点")).not.toBeInTheDocument();
       expect(screen.queryByText("+ 多边形")).not.toBeInTheDocument();
       expect(
@@ -666,7 +763,7 @@ describe("MapEditor（地图阶段验收）", () => {
       expect(
         screen.getByRole("button", { name: "河流画笔" }),
       ).toBeInTheDocument();
-      expect(screen.getAllByRole("button", { name: "自由画笔" })).toHaveLength(
+      expect(screen.getAllByRole("button", { name: "自由" })).toHaveLength(
         1,
       );
       expect(screen.getByLabelText("地图构件库")).toBeInTheDocument();
@@ -674,29 +771,37 @@ describe("MapEditor（地图阶段验收）", () => {
         screen.getByRole("button", { name: "画布背景" }),
       ).toBeInTheDocument();
     });
-    fireEvent.click(screen.getByRole("button", { name: "自由画笔" }));
+    fireEvent.click(screen.getByRole("button", { name: "自由" }));
     fireEvent.click(screen.getByRole("button", { name: "画笔形状" }));
+    expect(screen.getByRole("button", { name: "闭合" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "多边形" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "圆形" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "椭圆" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "自由画笔" })).toHaveLength(
-      2,
+    expect(screen.getAllByRole("button", { name: "自由" })).toHaveLength(2);
+    expect(
+      screen.getByRole("button", { name: "画笔形状" }).parentElement,
+    ).toHaveClass("w-32");
+    fireEvent.click(screen.getByRole("button", { name: "多边形" }));
+    expect(screen.getByRole("button", { name: "画笔形状" })).toHaveTextContent(
+      "多边形",
     );
+    fireEvent.click(screen.getByRole("button", { name: "画笔形状" }));
     fireEvent.click(screen.getByRole("button", { name: "椭圆" }));
     expect(screen.getByRole("button", { name: "画笔形状" })).toHaveTextContent(
       "椭圆",
     );
     fireEvent.click(screen.getByRole("button", { name: "画笔形状" }));
     const freehandOptions = screen.getAllByRole("button", {
-      name: "自由画笔",
+      name: "自由",
     });
     fireEvent.click(freehandOptions.at(-1)!);
     expect(screen.getByRole("button", { name: "画笔形状" })).toHaveTextContent(
-      "自由画笔",
+      "自由",
     );
-    expect(
-      screen.getByRole("button", { name: "自由画笔" }),
-    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "自由" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     fireEvent.click(screen.getByRole("button", { name: "画布背景" }));
     fireEvent.click(await screen.findByRole("button", { name: "宇宙星空" }));
     fireEvent.click(
@@ -1933,7 +2038,12 @@ describe("MapEditor（地图阶段验收）", () => {
       name: "失效世界",
       linkedMapId: "map-that-was-deleted",
     });
-    await repository.saveMap(topology, { ...topology.map, features: [node] });
+    // 直接构造历史遗留的悬空关联，验证编辑器能够识别并解除；正式仓储
+    // 保存路径现在会拒绝继续写入这种非法状态。
+    storage.setExternalText(
+      "world/maps/records/map-topology-stale-link.json",
+      serializeMapDocument({ ...topology.map, features: [node] }),
+    );
 
     render(<MapEditor storage={storage} projectTitle="测试小说" isActive />);
     fireEvent.click(await screen.findByText("失效关联拓扑"));
@@ -2265,6 +2375,7 @@ describe("MapEditor（地图阶段验收）", () => {
 
   it("拓扑节点检查器可以关联地点实体并保存", async () => {
     const storage = new NovelMemoryStorage({});
+    const onOpenEntity = vi.fn();
     const repository = await import("../data-access/mapRepository").then(
       (module) => module.createNovelMapRepository(storage),
     );
@@ -2316,7 +2427,14 @@ describe("MapEditor（地图阶段验收）", () => {
       features: [node],
     });
 
-    render(<MapEditor storage={storage} projectTitle="测试小说" isActive />);
+    render(
+      <MapEditor
+        storage={storage}
+        projectTitle="测试小说"
+        isActive
+        onOpenEntity={onOpenEntity}
+      />,
+    );
     fireEvent.click(await screen.findByText("实体检查拓扑"));
     fireEvent.click(await screen.findByRole("button", { name: "待关联地点" }));
 
@@ -2328,6 +2446,19 @@ describe("MapEditor（地图阶段验收）", () => {
       await screen.findByRole("button", { name: "古城（地点）" }),
     );
     expect(entitySelector).toHaveTextContent("古城（地点）");
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "打开关联实体" }),
+    );
+    expect(onOpenEntity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "location",
+        id: "location-ancient-city",
+        name: "古城",
+        route: "lore",
+        focus: { locationId: "location-ancient-city" },
+      }),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(async () => {

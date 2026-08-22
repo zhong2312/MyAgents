@@ -162,7 +162,7 @@ export default function MapComponentPalette({
     <section
       className={
         vertical
-          ? "map-asset-dock flex w-[218px] shrink-0 flex-col border-r border-[var(--line-subtle)] bg-[var(--paper)]"
+          ? "map-asset-dock flex w-[218px] shrink-0 flex-col border-r border-[var(--line-subtle)] bg-[var(--paper)] max-md:h-40 max-md:w-full max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:border-r-0"
           : "shrink-0 border-b border-[var(--line-subtle)] bg-[var(--paper)]"
       }
       aria-label="地图构件库"
@@ -170,7 +170,7 @@ export default function MapComponentPalette({
       <div
         className={
           vertical
-            ? "shrink-0 border-b border-[var(--line-subtle)] px-3 py-3"
+            ? "shrink-0 border-b border-[var(--line-subtle)] px-3 py-3 max-md:w-36 max-md:overflow-y-auto max-md:border-b-0 max-md:border-r"
             : "flex min-h-10 items-center gap-1 overflow-x-auto border-b border-[var(--line-subtle)] px-3 py-1"
         }
       >
@@ -202,7 +202,7 @@ export default function MapComponentPalette({
       <div
         className={
           vertical
-            ? "shrink-0 border-b border-[var(--line-subtle)] px-3 py-2"
+            ? "shrink-0 border-b border-[var(--line-subtle)] px-3 py-2 max-md:w-36 max-md:overflow-y-auto max-md:border-b-0 max-md:border-r"
             : "flex min-h-9 items-center gap-1 overflow-x-auto border-b border-[var(--line-subtle)] px-3 py-1"
         }
         role="tablist"
@@ -232,7 +232,7 @@ export default function MapComponentPalette({
       <div
         className={
           vertical
-            ? "min-h-0 flex-1 overflow-y-auto px-2.5 py-3"
+            ? "min-h-0 flex-1 overflow-y-auto px-2.5 py-3 max-md:w-[218px] max-md:flex-none max-md:overflow-y-auto"
             : "flex min-h-12 items-stretch gap-1 overflow-x-auto px-3 py-1.5"
         }
       >
@@ -455,10 +455,10 @@ export default function MapComponentPalette({
                 );
                 const hasContinuousBrush = Boolean(
                   onBrush &&
-                    (mapComponentPlacement(component) !== "terrain-prefab" &&
-                      (mapComponentInteraction(component) === "surface" ||
-                        mapComponentInteraction(component) === "path" ||
-                        startsBrush)),
+                    mapComponentPlacement(component) !== "terrain-prefab" &&
+                    (mapComponentInteraction(component) === "surface" ||
+                      mapComponentInteraction(component) === "path" ||
+                      startsBrush),
                 );
                 return (
                   <div

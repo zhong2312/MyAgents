@@ -42,6 +42,9 @@ export interface NovelMapRepository {
   saveMap(
     current: LoadedMapDocument,
     map: MapDocument,
+    options?: {
+      readonly preserveInitialGeometry?: boolean;
+    },
   ): Promise<LoadedMapDocument>;
   deleteMap(mapId: string): Promise<void>;
 }
@@ -144,6 +147,29 @@ export function createNovelMapRepository(
     return { map, content: file.content };
   };
 
+  const findMapReferences = async (
+    mapId: string,
+    index: MapLibraryIndex,
+  ): Promise<readonly string[]> => {
+    const references: string[] = [];
+    for (const entry of index.maps) {
+      if (entry.id === mapId) continue;
+      const file = await readMapRecord(mapRecordPath(entry.id));
+      const map = parseMapDocument(mapRecordPath(entry.id), file.content);
+      map.features.forEach((feature) => {
+        if (
+          feature.kind === "node" &&
+          feature.props.linkedMapId?.trim() === mapId
+        ) {
+          references.push(
+            `地图“${map.name}”的拓扑节点“${feature.name}”仍然关联此地图`,
+          );
+        }
+      });
+    }
+    return references;
+  };
+
   return {
     async loadIndex() {
       return loadIndex();
@@ -201,7 +227,7 @@ export function createNovelMapRepository(
       return loadMap(mapId);
     },
 
-    async saveMap(current, map) {
+    async saveMap(current, map, options) {
       if (map.id !== current.map.id) {
         throw new Error("保存地图时不得修改稳定 id");
       }
@@ -212,18 +238,26 @@ export function createNovelMapRepository(
       ) {
         throw new Error(`地图索引中不存在记录：${map.id}`);
       }
+      const linkedMapErrors = validateMapLinkedMapReferences(
+        map,
+        new Set(index.index.maps.map((entry) => entry.id)),
+      );
+      if (linkedMapErrors.length > 0) {
+        throw new Error(linkedMapErrors.join("；"));
+      }
       const withTimestamp: MapDocument = {
         ...map,
         updatedAt: new Date().toISOString(),
       };
-      const initialContentFitted = fitMapCanvasToContentWhenEmpty(
-        current.map,
-        withTimestamp,
-      );
+      const initialContentFitted = options?.preserveInitialGeometry
+        ? withTimestamp
+        : fitMapCanvasToContentWhenEmpty(current.map, withTimestamp);
       const normalized = mapDocumentHasGeneratedContent(initialContentFitted)
         ? fitMapCanvasToGeneratedContent(initialContentFitted)
         : initialContentFitted;
-      const next: MapDocument = expandMapCanvasToContent(normalized);
+      const next: MapDocument = options?.preserveInitialGeometry
+        ? expandMapCanvasToContent(normalized, 0)
+        : expandMapCanvasToContent(normalized);
       const recordContent = serializeMapDocument(persistedMap(next));
       await storage.writeText(mapRecordPath(map.id), recordContent, {
         expectedContent: current.content,
@@ -266,6 +300,12 @@ export function createNovelMapRepository(
       const index = await loadIndex();
       if (!index.exists) throw new Error("地图库索引不存在");
       if (!index.index.maps.some((entry) => entry.id === mapId)) return;
+      const references = await findMapReferences(mapId, index.index);
+      if (references.length > 0) {
+        throw new Error(
+          `无法删除地图“${mapId}”：${references.join("；")}。请先解除关联。`,
+        );
+      }
       const recordPath = mapRecordPath(mapId);
       const record = await readMapRecord(recordPath);
       const trashPath = `world/maps/trash/${mapId}-${Date.now().toString(36)}.json`;
@@ -300,6 +340,21 @@ export function createNovelMapRepository(
       }
     },
   };
+}
+
+/** 校验拓扑节点关联的地图是否仍存在；该约束由地图 Repository 统一执行。 */
+export function validateMapLinkedMapReferences(
+  map: MapDocument,
+  availableMapIds: ReadonlySet<string>,
+): readonly string[] {
+  return map.features.flatMap((feature) => {
+    if (feature.kind !== "node") return [];
+    const linkedMapId = feature.props.linkedMapId?.trim();
+    if (!linkedMapId || availableMapIds.has(linkedMapId)) return [];
+    return [
+      `地图“${map.name}”的拓扑节点“${feature.name}”关联了不存在的地图：${linkedMapId}`,
+    ];
+  });
 }
 
 /** 校验地图要素的实体引用存在性（复用领域索引思路，供 T11 使用）。 */

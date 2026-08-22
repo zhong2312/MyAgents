@@ -224,6 +224,7 @@ function addSystemFiles(
       summary: system.summary,
       kind: system.kind,
       terminology: system.terminology,
+      narrativeMilestones: system.narrativeMilestones,
       modules: {
         projection: `${base}/projection.json`,
         theory: `${base}/theory/index.json`,

@@ -142,6 +142,9 @@ export function validateCultivationEcology(
       system.resources.map((resource) => resource.id),
     );
     const abilityIds = new Set(system.abilities.map((ability) => ability.id));
+    const narrativeMilestoneIds = new Set(
+      (system.narrativeMilestones ?? []).map((milestone) => milestone.id),
+    );
     const topologyIds = new Set(
       system.methods.flatMap((method) =>
         method.operationTopologies.map((topology) => topology.id),
@@ -191,6 +194,28 @@ export function validateCultivationEcology(
         check(level.naturalAbilityIds, abilityIds, "境界自然能力");
         check(level.methodIds, methodIds, "境界法门");
         checkRequirements(level.resourceRequirements, "境界");
+        if (level.simulationBreakthroughRule) {
+          check(
+            level.simulationBreakthroughRule.requiredMethodIds,
+            methodIds,
+            `境界“${level.id}”故事转折法门`,
+          );
+          check(
+            level.simulationBreakthroughRule.requiredAbilityIds,
+            abilityIds,
+            `境界“${level.id}”故事转折能力`,
+          );
+          check(
+            level.simulationBreakthroughRule.forbiddenActiveConstraintIds,
+            new Set(system.constraints.map((constraint) => constraint.id)),
+            `境界“${level.id}”故事转折约束`,
+          );
+          check(
+            level.simulationBreakthroughRule.requiredNarrativeMilestoneIds,
+            narrativeMilestoneIds,
+            `境界“${level.id}”故事转折经历`,
+          );
+        }
         level.subStages.forEach((stage, stageIndex) => {
           register(stage.id, "境内阶段");
           if (stage.order !== stageIndex)
@@ -218,6 +243,39 @@ export function validateCultivationEcology(
         );
         check(transition.methodIds, methodIds, "轨道跃迁法门");
         checkRequirements(transition.resourceRequirements, "轨道跃迁");
+        if (transition.simulationRule) {
+          check(
+            transition.simulationRule.requiredMethodIds,
+            methodIds,
+            `轨道跃迁“${transition.id}”故事转折法门`,
+          );
+          check(
+            transition.simulationRule.requiredAbilityIds,
+            abilityIds,
+            `轨道跃迁“${transition.id}”故事转折能力`,
+          );
+          check(
+            transition.simulationRule.forbiddenActiveConstraintIds,
+            new Set(system.constraints.map((constraint) => constraint.id)),
+            `轨道跃迁“${transition.id}”故事转折约束`,
+          );
+          check(
+            transition.simulationRule.requiredNarrativeMilestoneIds,
+            narrativeMilestoneIds,
+            `轨道跃迁“${transition.id}”故事转折经历`,
+          );
+        }
+      });
+    });
+    (system.narrativeMilestones ?? []).forEach((milestone) => {
+      register(milestone.id, "叙事里程碑");
+      const duplicateSources = new Set<string>();
+      milestone.satisfiedBy.forEach((source) => {
+        const key = `${source.kind}:${source.id}`;
+        if (duplicateSources.has(key)) {
+          add(`体系“${system.id}”的叙事里程碑“${milestone.id}”重复引用事实“${key}”`);
+        }
+        duplicateSources.add(key);
       });
     });
     (system.trackInteractions ?? []).forEach((interaction) => {

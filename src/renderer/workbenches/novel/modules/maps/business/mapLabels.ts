@@ -21,6 +21,8 @@ export const MAP_LABEL_FONT_OPTIONS = Object.freeze([
 ] as const);
 
 export type MapLabelFontId = (typeof MAP_LABEL_FONT_OPTIONS)[number]["id"];
+export type MapLabelWritingMode = "horizontal" | "vertical";
+export type MapLabelFrame = "none" | "cartouche" | "seal";
 
 export const MAP_LABEL_STYLE_PRESETS = Object.freeze([
   {
@@ -91,6 +93,44 @@ export const MAP_LABEL_STYLE_PRESETS = Object.freeze([
       labelFollowPath: "false",
     },
   },
+  {
+    id: "vertical-title",
+    name: "竖排题签",
+    props: {
+      labelFont: "atlas-serif",
+      labelSize: "22",
+      labelWeight: "700",
+      labelColor: "#3a3329",
+      labelHaloColor: "#f6eddb",
+      labelHaloWidth: "2",
+      labelOffsetX: "0",
+      labelOffsetY: "0",
+      labelRotation: "0",
+      labelItalic: "false",
+      labelFollowPath: "false",
+      labelWritingMode: "vertical",
+      labelFrame: "cartouche",
+    },
+  },
+  {
+    id: "seal",
+    name: "朱印落款",
+    props: {
+      labelFont: "cartographer",
+      labelSize: "16",
+      labelWeight: "700",
+      labelColor: "#fffaf1",
+      labelHaloColor: "#fffaf1",
+      labelHaloWidth: "0",
+      labelOffsetX: "0",
+      labelOffsetY: "0",
+      labelRotation: "0",
+      labelItalic: "false",
+      labelFollowPath: "false",
+      labelWritingMode: "vertical",
+      labelFrame: "seal",
+    },
+  },
 ] as const);
 
 export type MapLabelStyle = {
@@ -106,12 +146,27 @@ export type MapLabelStyle = {
   readonly rotation: number;
   readonly italic: boolean;
   readonly followPath: boolean;
+  readonly writingMode: MapLabelWritingMode;
+  readonly frame: MapLabelFrame;
 };
 
 export type MapLabelLayout = {
   readonly anchor: MapScenePoint;
   /** 只包含路径方向；作者设置的旋转角度由渲染器叠加。 */
   readonly pathRotation: number;
+};
+
+export type MapLabelPlacement = {
+  readonly visible: boolean;
+  readonly layout: MapLabelLayout;
+  readonly offsetX: number;
+  readonly offsetY: number;
+};
+
+export type MapLabelPlacementOptions = {
+  /** 仅用于缩放级别筛选，不会改变 MapDocument 中的标签事实。 */
+  readonly zoom?: number;
+  readonly padding?: number;
 };
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -139,7 +194,43 @@ function fontOption(id: string | undefined) {
   );
 }
 
-function defaultStyle(feature: MapFeature): Omit<MapLabelStyle, "fontFamily"> {
+function writingMode(value: string | undefined): MapLabelWritingMode {
+  return value === "vertical" ? "vertical" : "horizontal";
+}
+
+function frame(value: string | undefined): MapLabelFrame {
+  if (value === "cartouche" || value === "seal") return value;
+  return "none";
+}
+
+function defaultStyle(
+  feature: MapFeature,
+): Omit<MapLabelStyle, "fontFamily" | "writingMode" | "frame"> {
+  const role = feature.props.entityRole;
+  if (
+    role === "sect" ||
+    role === "holy-land" ||
+    role === "secret-realm" ||
+    role === "forbidden-land" ||
+    role === "ruin" ||
+    role === "demon-den" ||
+    role === "portal" ||
+    role === "battlefield"
+  ) {
+    return {
+      fontId: "cartographer",
+      fontSize: 16,
+      fontWeight: 600,
+      color: "#5a382c",
+      haloColor: "#f6eddb",
+      haloWidth: 4,
+      offsetX: 0,
+      offsetY: -34,
+      rotation: 0,
+      italic: false,
+      followPath: false,
+    };
+  }
   if (isMapRiverFeature(feature)) {
     return {
       fontId: "cartographer",
@@ -267,6 +358,8 @@ export function getMapLabelStyle(feature: MapFeature): MapLabelStyle {
       feature.props.labelFollowPath === undefined
         ? fallback.followPath
         : feature.props.labelFollowPath === "true",
+    writingMode: writingMode(feature.props.labelWritingMode),
+    frame: frame(feature.props.labelFrame),
   };
 }
 
@@ -365,4 +458,262 @@ export function getMapLabelLayout(
     return { anchor: polygonCentroid(points), pathRotation: 0 };
   }
   return { anchor: points[0] ?? { x: 0, y: 0 }, pathRotation: 0 };
+}
+
+type LabelRect = {
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
+  readonly bottom: number;
+};
+
+const LABEL_COLLISION_CELL_SIZE = 128;
+
+function labelTextWidth(text: string, fontSize: number): number {
+  let width = 0;
+  for (const character of text) {
+    width += /[\u2e80-\u9fff\uff00-\uffef]/u.test(character)
+      ? fontSize
+      : fontSize * 0.58;
+  }
+  return Math.max(fontSize, width);
+}
+
+export function mapLabelLines(
+  text: string,
+  style: Pick<MapLabelStyle, "writingMode">,
+): readonly string[] {
+  if (style.writingMode !== "vertical") return [text];
+  return Array.from(text).filter((character) => !/\s/u.test(character));
+}
+
+export function mapLabelText(
+  text: string,
+  style: Pick<MapLabelStyle, "writingMode">,
+): string {
+  return mapLabelLines(text, style).join("\n");
+}
+
+export type MapLabelTextDimensions = {
+  readonly width: number;
+  readonly height: number;
+};
+
+export function getMapLabelTextDimensions(
+  text: string,
+  style: Pick<MapLabelStyle, "fontSize" | "writingMode" | "frame">,
+): MapLabelTextDimensions {
+  const lines = mapLabelLines(text, style);
+  const textWidth =
+    style.writingMode === "vertical"
+      ? style.fontSize
+      : labelTextWidth(text, style.fontSize);
+  const textHeight =
+    style.writingMode === "vertical"
+      ? Math.max(1, lines.length) * style.fontSize * 1.15
+      : style.fontSize * 1.24;
+  if (style.frame === "cartouche") {
+    return {
+      width: textWidth + style.fontSize * 0.9,
+      height: textHeight + style.fontSize * 0.7,
+    };
+  }
+  if (style.frame === "seal") {
+    const diameter = Math.max(textWidth, textHeight) + style.fontSize * 0.8;
+    return { width: diameter, height: diameter };
+  }
+  return { width: textWidth, height: textHeight };
+}
+
+export type MapLabelFrameStyle = {
+  readonly fill: string;
+  readonly stroke: string;
+  readonly lineWidth: number;
+};
+
+export function getMapLabelFrameStyle(
+  style: Pick<MapLabelStyle, "frame" | "color" | "haloColor">,
+): MapLabelFrameStyle | null {
+  if (style.frame === "cartouche") {
+    return { fill: "#f6eddbdd", stroke: style.color, lineWidth: 1.2 };
+  }
+  if (style.frame === "seal") {
+    return { fill: "#9b3329", stroke: "#f6eddb", lineWidth: 1.5 };
+  }
+  return null;
+}
+
+function labelPriority(feature: MapFeature): number {
+  const explicit = Number(
+    feature.props.labelPriority ?? feature.props.importance,
+  );
+  if (Number.isFinite(explicit)) return clamp(explicit, 0, 10);
+  if (feature.kind === "label" || isMapFeatureFreeformArea(feature.kind))
+    return 5;
+  if (
+    feature.props.entityRole === "capital" ||
+    feature.props.entityRole === "realm"
+  )
+    return 5;
+  if (feature.props.entityRole) return 4;
+  if (isMapRiverFeature(feature)) return 3;
+  return 2;
+}
+
+function intersects(
+  left: LabelRect,
+  right: LabelRect,
+  padding: number,
+): boolean {
+  return !(
+    left.right + padding < right.left ||
+    right.right + padding < left.left ||
+    left.bottom + padding < right.top ||
+    right.bottom + padding < left.top
+  );
+}
+
+function collisionCellRange(rect: LabelRect, padding: number) {
+  return {
+    left: Math.floor((rect.left - padding) / LABEL_COLLISION_CELL_SIZE),
+    right: Math.floor((rect.right + padding) / LABEL_COLLISION_CELL_SIZE),
+    top: Math.floor((rect.top - padding) / LABEL_COLLISION_CELL_SIZE),
+    bottom: Math.floor((rect.bottom + padding) / LABEL_COLLISION_CELL_SIZE),
+  };
+}
+
+function collisionCellKey(column: number, row: number): string {
+  return `${column}:${row}`;
+}
+
+/**
+ * 标签避让只需与相邻空间格中的矩形比较。格子由候选矩形和 padding 同时
+ * 扩展，因而不会遗漏跨格碰撞，同时避免大地图中的全量线性扫描。
+ */
+function createLabelCollisionIndex(padding: number) {
+  const cells = new Map<string, LabelRect[]>();
+
+  return {
+    intersects(rect: LabelRect): boolean {
+      const range = collisionCellRange(rect, padding);
+      const checked = new Set<LabelRect>();
+      for (let column = range.left; column <= range.right; column += 1) {
+        for (let row = range.top; row <= range.bottom; row += 1) {
+          const candidates = cells.get(collisionCellKey(column, row));
+          if (!candidates) continue;
+          for (const candidate of candidates) {
+            if (checked.has(candidate)) continue;
+            checked.add(candidate);
+            if (intersects(rect, candidate, padding)) return true;
+          }
+        }
+      }
+      return false;
+    },
+    add(rect: LabelRect): void {
+      const range = collisionCellRange(rect, padding);
+      for (let column = range.left; column <= range.right; column += 1) {
+        for (let row = range.top; row <= range.bottom; row += 1) {
+          const key = collisionCellKey(column, row);
+          const bucket = cells.get(key);
+          if (bucket) bucket.push(rect);
+          else cells.set(key, [rect]);
+        }
+      }
+    },
+  };
+}
+
+/**
+ * 为所有标签做一次确定性的避让。排版是渲染派生值：同一批要素、同一
+ * 缩放级别始终得到同一结果，作者仍然只需要编辑原始点和标签样式。
+ */
+export function resolveMapLabelPlacements(
+  features: readonly MapFeature[],
+  options: MapLabelPlacementOptions = {},
+): ReadonlyMap<string, MapLabelPlacement> {
+  const zoom = Number.isFinite(options.zoom) ? Math.max(0.1, options.zoom!) : 1;
+  const padding = Number.isFinite(options.padding)
+    ? Math.max(0, options.padding!)
+    : 6;
+  const candidates = features
+    .filter((feature) => mapFeatureHasLabel(feature) && feature.name.trim())
+    .map((feature) => {
+      const style = getMapLabelStyle(feature);
+      const layout = getMapLabelLayout(feature);
+      return {
+        feature,
+        style,
+        layout,
+        priority: labelPriority(feature),
+      };
+    })
+    .sort(
+      (left, right) =>
+        right.priority - left.priority ||
+        right.style.fontSize - left.style.fontSize ||
+        left.feature.id.localeCompare(right.feature.id),
+    );
+  const occupied = createLabelCollisionIndex(padding);
+  const result = new Map<string, MapLabelPlacement>();
+  for (const candidate of candidates) {
+    const { feature, style, layout, priority } = candidate;
+    // 低缩放时保留区域、都城和高重要度玄幻地点，避免整张图被次要村镇
+    // 和短路线名称覆盖。放大后所有显式标签仍会重新参与布局。
+    if (zoom < 0.55 && priority < 4) {
+      result.set(feature.id, {
+        visible: false,
+        layout,
+        offsetX: 0,
+        offsetY: 0,
+      });
+      continue;
+    }
+    if (zoom < 0.78 && priority < 2.5) {
+      result.set(feature.id, {
+        visible: false,
+        layout,
+        offsetX: 0,
+        offsetY: 0,
+      });
+      continue;
+    }
+    const dimensions = getMapLabelTextDimensions(feature.name, style);
+    const halfWidth = dimensions.width / 2;
+    const halfHeight = dimensions.height / 2;
+    const offsetCandidates: readonly [number, number][] = [
+      [style.offsetX, style.offsetY],
+      [style.offsetX, style.offsetY - style.fontSize * 1.35],
+      [style.offsetX + halfWidth + padding, style.offsetY],
+      [style.offsetX - halfWidth - padding, style.offsetY],
+      [style.offsetX, style.offsetY + style.fontSize * 1.35],
+    ];
+    let placement: MapLabelPlacement | null = null;
+    for (const [offsetX, offsetY] of offsetCandidates) {
+      const anchor = {
+        x: layout.anchor.x + offsetX,
+        y: layout.anchor.y + offsetY,
+      };
+      const rect = {
+        left: anchor.x - halfWidth,
+        right: anchor.x + halfWidth,
+        top: anchor.y - halfHeight,
+        bottom: anchor.y + halfHeight,
+      };
+      if (occupied.intersects(rect)) continue;
+      occupied.add(rect);
+      placement = {
+        visible: true,
+        layout: { ...layout, anchor },
+        offsetX: 0,
+        offsetY: 0,
+      };
+      break;
+    }
+    result.set(
+      feature.id,
+      placement ?? { visible: false, layout, offsetX: 0, offsetY: 0 },
+    );
+  }
+  return result;
 }

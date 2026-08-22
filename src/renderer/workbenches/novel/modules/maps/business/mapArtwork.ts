@@ -1348,6 +1348,7 @@ export function createMapArtworkStamp(input: {
   readonly assetId: string;
   readonly x: number;
   readonly y: number;
+  readonly sourceFeatureId?: string;
   readonly variant?: number;
   readonly scale?: number;
   readonly rotation?: number;
@@ -1361,6 +1362,9 @@ export function createMapArtworkStamp(input: {
     assetId: input.assetId,
     x: input.x,
     y: input.y,
+    ...(input.sourceFeatureId
+      ? { sourceFeatureId: input.sourceFeatureId }
+      : {}),
     variant: input.variant ?? 0,
     scale: input.scale ?? 1,
     rotation: input.rotation ?? 0,

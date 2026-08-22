@@ -1,3 +1,5 @@
+import type { MapGenerationEntityRef } from "./mapGenerationPlan";
+
 export interface AzgaarMapPoint {
   readonly x: number;
   readonly y: number;
@@ -7,7 +9,7 @@ export interface AzgaarMapFeature {
   readonly id: string;
   readonly kind: "marker" | "label" | "area" | "route";
   readonly name: string;
-  readonly entityRef: null;
+  readonly entityRef: MapGenerationEntityRef | null;
   readonly layerId: string;
   readonly points: readonly AzgaarMapPoint[];
   readonly timeFrom: null;

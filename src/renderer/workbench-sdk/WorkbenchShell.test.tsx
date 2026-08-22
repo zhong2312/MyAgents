@@ -81,10 +81,10 @@ describe("WorkbenchShell", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "辅助" }));
-    expect(screen.getByRole("button", { name: "世界推演" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "运行控制台" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "世界推演" }));
-    expect(onNavigate).toHaveBeenCalledWith("simulation");
+    expect(screen.getByRole("button", { name: "诊断" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "内部诊断" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "诊断" }));
+    expect(onNavigate).toHaveBeenCalledWith("diagnostics");
   });
 
   it("routes full Agent Session requests through the MyAgents host", async () => {
