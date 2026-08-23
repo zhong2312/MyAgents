@@ -409,7 +409,9 @@ try {
     $requiredCspParts = @(
         "http://ipc.localhost",
         "asset:",
-        "https://download.myagents.io"
+        "https://download.myagents.io",
+        "https://github.com",
+        "https://objects.githubusercontent.com"
     )
 
     $missingParts = @()

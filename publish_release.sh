@@ -23,6 +23,8 @@ ENV_FILE="${PROJECT_DIR}/.env"
 # 配置
 R2_BUCKET="myagents-releases"
 DOWNLOAD_BASE_URL="https://download.myagents.io"
+GITHUB_REPO="zhong2312/MyAgents"
+GITHUB_RELEASE_BASE_URL="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}"
 DMG_MOUNT=""
 
 cd "${PROJECT_DIR}"
@@ -471,7 +473,7 @@ for TARGET in "${FOUND_TARGETS[@]}"; do
   "notes": "MyAgents v${VERSION}",
   "pub_date": "${PUB_DATE}",
   "signature": "${SIGNATURE}",
-  "url": "${DOWNLOAD_BASE_URL}/releases/v${VERSION}/${TAR_UPLOAD_NAME}"
+  "url": "${GITHUB_RELEASE_BASE_URL}/${TAR_UPLOAD_NAME}"
 }
 EOF
         echo -e "    ${GREEN}✓${NC} ${MANIFEST_NAME}.json 已生成"
@@ -654,8 +656,8 @@ echo ""
 
 # 自动更新渠道
 echo -e "  ${CYAN}🔄 自动更新 (Tauri Updater):${NC}"
-echo -e "    ARM64 清单:  ${DOWNLOAD_BASE_URL}/update/darwin-aarch64.json"
-echo -e "    x86_64 清单: ${DOWNLOAD_BASE_URL}/update/darwin-x86_64.json"
+echo -e "    ARM64 清单:  ${GITHUB_REPO}/releases/latest/download/darwin-aarch64.json"
+echo -e "    x86_64 清单: ${GITHUB_REPO}/releases/latest/download/darwin-x86_64.json"
 echo ""
 
 # 官网 API
@@ -804,7 +806,8 @@ fi
 # ========================================
 echo -e "  ${CYAN}📦 上传到 GitHub Release...${NC}"
 
-if "${PROJECT_DIR}/upload_github_release_mac.sh"; then
+if env MYAGENTS_MANIFEST_DIR="$MANIFEST_DIR" MYAGENTS_GITHUB_REPO="$GITHUB_REPO" \
+    "${PROJECT_DIR}/upload_github_release_mac.sh"; then
     echo -e "    ${GREEN}✓${NC} GitHub Release 上传完成"
 else
     echo -e "    ${YELLOW}⚠️${NC} GitHub Release 上传失败，可稍后运行 ./upload_github_release_mac.sh 重试"

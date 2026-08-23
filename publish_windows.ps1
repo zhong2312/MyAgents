@@ -77,6 +77,8 @@ $EnvFile = Join-Path $ProjectDir ".env"
 # 配置
 $R2Bucket = "myagents-releases"
 $DownloadBaseUrl = "https://download.myagents.io"
+$GithubRepo = "zhong2312/MyAgents"
+$GithubReleaseBaseUrl = "https://github.com/$GithubRepo/releases/download/v$Version"
 
 Write-Host ""
 Write-Host "=========================================" -ForegroundColor Cyan
@@ -323,7 +325,7 @@ if ($UpdateZip) {
         notes     = "MyAgents v$Version"
         pub_date  = $PubDate
         signature = $Signature
-        url       = "$DownloadBaseUrl/releases/v$Version/$UpdateUploadName"
+        url       = "$GithubReleaseBaseUrl/$UpdateUploadName"
     }
 
     # 添加下载链接
@@ -576,7 +578,7 @@ Write-Host "上传到 GitHub Release..." -ForegroundColor Cyan
 
 $ghScript = Join-Path $ProjectDir "upload_github_release_win.ps1"
 try {
-    & $ghScript
+    & $ghScript -ManifestDir $ManifestDir -GithubRepo $GithubRepo
     Write-Host "  [OK] GitHub Release 上传完成" -ForegroundColor Green
 } catch {
     Write-Host "  [!] GitHub Release 上传失败: $_" -ForegroundColor Yellow
@@ -616,7 +618,7 @@ if ($PortableZip) {
 }
 Write-Host ""
 Write-Host "  自动更新清单 (Tauri Updater):" -ForegroundColor Blue
-Write-Host "    $DownloadBaseUrl/update/windows-x86_64.json" -ForegroundColor Cyan
+Write-Host "    https://github.com/$GithubRepo/releases/latest/download/windows-x86_64.json" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  网站下载 API:" -ForegroundColor Blue
 Write-Host "    $DownloadBaseUrl/update/latest_win.json" -ForegroundColor Cyan

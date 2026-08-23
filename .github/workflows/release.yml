@@ -111,7 +111,9 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'MyAgents v__VERSION__'
           releaseBody: 'See the assets to download this version and install.'
-          releaseDraft: true
+          # The desktop updater consumes releases/latest/download, so the
+          # release must be published rather than left as a draft.
+          releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
 
@@ -175,9 +177,11 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           DOWNLOAD_BASE_URL: https://download.myagents.io
+          UPDATE_BASE_URL: https://github.com/zhong2312/MyAgents/releases/download/v${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Create update directory
-          mkdir -p update-manifests
+          mkdir -p update-manifests github-release-assets
 
           # Variables for latest.json
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -225,9 +229,16 @@ jobs:
             # Determine manifest filename based on target
             if [ "$target" = "aarch64-apple-darwin" ]; then
               MANIFEST_NAME="darwin-aarch64"
+              ASSET_SUFFIX="aarch64"
             else
               MANIFEST_NAME="darwin-x86_64"
+              ASSET_SUFFIX="x86_64"
             fi
+
+            UPDATE_FILENAME="MyAgents_${VERSION}_${ASSET_SUFFIX}.app.tar.gz"
+            UPDATE_SIG_FILENAME="${UPDATE_FILENAME}.sig"
+            cp "$TAR_GZ" "github-release-assets/${UPDATE_FILENAME}"
+            cp "$SIG" "github-release-assets/${UPDATE_SIG_FILENAME}"
 
             # Generate update manifest JSON (for Tauri updater)
             printf '%s\n' \
@@ -235,12 +246,8 @@ jobs:
               "  \"version\": \"${VERSION}\"," \
               "  \"notes\": \"MyAgents v${VERSION}\"," \
               "  \"pub_date\": \"${PUB_DATE}\"," \
-              '  "platforms": {' \
-              "    \"${MANIFEST_NAME}\": {" \
-              "      \"signature\": \"${SIGNATURE}\"," \
-              "      \"url\": \"${DOWNLOAD_BASE_URL}/releases/v${VERSION}/${FILENAME}\"" \
-              '    }' \
-              '  }' \
+              "  \"signature\": \"${SIGNATURE}\"," \
+              "  \"url\": \"${UPDATE_BASE_URL}/${UPDATE_FILENAME}\"" \
               '}' \
               > "update-manifests/${MANIFEST_NAME}.json"
 
@@ -271,10 +278,15 @@ jobs:
           # Upload all manifests to R2
           rclone copy update-manifests/ "r2:myagents-releases/update/"
 
+          # The desktop updater reads the project-owned GitHub Release assets.
+          # Keep the R2 copy above for the website and historical compatibility.
+          gh release upload "v${VERSION}" update-manifests/*.json github-release-assets/* \
+            --repo zhong2312/MyAgents --clobber
+
           echo "Upload complete!"
           echo "Update endpoints:"
-          echo "  - ${DOWNLOAD_BASE_URL}/update/darwin-aarch64.json (updater)"
-          echo "  - ${DOWNLOAD_BASE_URL}/update/darwin-x86_64.json (updater)"
+          echo "  - https://github.com/zhong2312/MyAgents/releases/latest/download/darwin-aarch64.json (updater)"
+          echo "  - https://github.com/zhong2312/MyAgents/releases/latest/download/darwin-x86_64.json (updater)"
           echo "  - ${DOWNLOAD_BASE_URL}/update/latest.json (website)"
 
       - name: Summary

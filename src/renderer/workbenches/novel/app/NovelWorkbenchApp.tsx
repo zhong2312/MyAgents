@@ -2290,7 +2290,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
                                 mode: "world",
                                 promptId: "novel.simulation.advance",
                                 promptVersion: "1.0.0",
-                                readToolCallLimit: "10",
+                                readToolCallLimit: "4",
                               },
                             },
                           }

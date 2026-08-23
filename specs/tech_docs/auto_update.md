@@ -1,5 +1,9 @@
 # MyAgents 自动更新系统
 
+桌面应用的自动更新源是本项目的 GitHub Release：
+`https://github.com/zhong2312/MyAgents/releases/latest/download/{{target}}.json`。
+Cloudflare R2 仍用于官网资源和历史发布兼容，但不再作为客户端自动更新入口。
+
 ## 设计理念
 
 采用类似 Chrome/VSCode 的**静默更新**机制：
@@ -41,7 +45,7 @@
 | 文件 | 说明 |
 |------|------|
 | `src-tauri/Cargo.toml` | 添加 `tauri-plugin-updater` 和 `tauri-plugin-process` |
-| `src-tauri/tauri.conf.json` | updater 配置、endpoints、pubkey |
+| `src-tauri/tauri.conf.json` | updater 配置、项目 GitHub Release endpoint、pubkey |
 | `src-tauri/capabilities/default.json` | updater 权限 |
 | `src-tauri/src/updater.rs` | 静默检查、下载、重启命令 |
 | `src-tauri/src/lib.rs` | 插件注册、启动时触发检查 |
@@ -120,6 +124,8 @@ npx tauri signer generate -w ~/.tauri/myagents.key
 
 ## Cloudflare R2 配置
 
+R2 只承载官网静态下载、运行时资源和历史兼容文件；桌面自动更新清单及签名包会同步上传到本项目 GitHub Release，客户端只访问 GitHub Release。
+
 ### 1. 创建 Bucket
 
 1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
@@ -161,13 +167,13 @@ npx tauri signer generate -w ~/.tauri/myagents.key
 ```
 myagents-releases/
 ├── update/
-│   ├── darwin-aarch64.json    # Apple Silicon 更新清单 (Tauri Updater)
-│   ├── darwin-x86_64.json     # Intel Mac 更新清单 (Tauri Updater)
+│   ├── darwin-aarch64.json    # Apple Silicon 历史兼容清单（客户端不再读取）
+│   ├── darwin-x86_64.json     # Intel Mac 历史兼容清单（客户端不再读取）
 │   └── latest.json            # 网站下载页 API
 └── releases/
     └── v{VERSION}/
-        ├── MyAgents_{VERSION}_aarch64.app.tar.gz  # Updater 用
-        ├── MyAgents_{VERSION}_x64.app.tar.gz      # Updater 用
+        ├── MyAgents_{VERSION}_aarch64.app.tar.gz  # R2 历史兼容副本
+        ├── MyAgents_{VERSION}_x64.app.tar.gz      # R2 历史兼容副本
         ├── MyAgents_{VERSION}_aarch64.dmg         # 网站下载用
         └── MyAgents_{VERSION}_x64.dmg             # 网站下载用
 ```
@@ -177,6 +183,16 @@ myagents-releases/
 ---
 
 ## 发布新版本
+
+### 项目 GitHub Release 更新资产
+
+每个平台发布时必须在 `zhong2312/MyAgents` 对应版本 Release 中上传：
+
+- `darwin-aarch64.json` / `darwin-x86_64.json` 或 `windows-x86_64.json`
+- 对应签名更新包及 `.sig` 文件
+
+manifest 的 `url` 必须指向同一 Release 的资产。客户端只读取
+`releases/latest/download/{{target}}.json`，因此不能只上传 R2 清单而跳过 GitHub Release 资产。
 
 ### 方式一: Git Tag 触发
 
@@ -226,8 +242,8 @@ git push origin main --tags
 ### 2. 检查 R2 文件
 
 ```bash
-# 检查更新清单
-curl https://download.myagents.io/update/darwin-aarch64.json
+# 检查桌面自动更新清单
+curl https://github.com/zhong2312/MyAgents/releases/latest/download/darwin-aarch64.json
 ```
 
 预期返回:
@@ -236,19 +252,15 @@ curl https://download.myagents.io/update/darwin-aarch64.json
   "version": "0.2.0",
   "notes": "MyAgents v0.2.0",
   "pub_date": "2026-01-23T14:00:00Z",
-  "platforms": {
-    "darwin-aarch64": {
-      "signature": "...",
-      "url": "https://download.myagents.io/releases/v0.2.0/MyAgents_0.2.0_aarch64.app.tar.gz"
-    }
-  }
+  "signature": "...",
+  "url": "https://github.com/zhong2312/MyAgents/releases/download/v0.2.0/MyAgents_aarch64.app.tar.gz"
 }
 ```
 
 ### 3. 本地测试更新
 
 1. 构建旧版本 (如 v0.1.0)
-2. 发布新版本到 R2 (如 v0.2.0)
+2. 发布新版本到项目 GitHub Release (如 v0.2.0)
 3. 运行旧版本
 4. 等待启动期检查触发（当前为 60 秒）后，顶栏应出现「重启更新」按钮
 
@@ -283,12 +295,8 @@ curl https://download.myagents.io/update/darwin-aarch64.json
   "version": "0.2.0",
   "notes": "MyAgents v0.2.0",
   "pub_date": "2026-01-23T14:00:00Z",
-  "platforms": {
-    "darwin-aarch64": {
-      "signature": "base64编码的签名",
-      "url": "https://download.myagents.io/releases/v0.2.0/MyAgents_0.2.0_aarch64.app.tar.gz"
-    }
-  }
+  "signature": "base64编码的签名",
+  "url": "https://github.com/zhong2312/MyAgents/releases/download/v0.2.0/MyAgents_aarch64.app.tar.gz"
 }
 ```
 
@@ -337,8 +345,8 @@ const downloadUrl = isMacARM
 
 ### 更新检查失败
 
-1. 检查网络是否能访问 `download.myagents.io`
-2. 检查 CSP 配置是否允许该域名
+1. 检查网络是否能访问 `github.com` 以及 GitHub Release 资产域名
+2. 检查项目 GitHub Release 是否包含对应架构的 `.json`、`.app.tar.gz` 和 `.sig` 资产
 3. 查看 Rust 日志 `[Updater]` 前缀
 
 ### 签名验证失败

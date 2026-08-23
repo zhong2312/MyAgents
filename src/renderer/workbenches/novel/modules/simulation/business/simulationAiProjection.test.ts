@@ -262,21 +262,24 @@ describe("simulation AI projection", () => {
   });
 
   it("模型拒答、空文本和错误说明不能被当成故事保存", () => {
-    for (const output of [
-      "我无法直接读取超出限制的资料，请提供更多上下文。",
-      "The model returned no text.",
-      "   ",
-    ]) {
-      expect(() => projectSimulationAiEvents(output, input())).toThrow(
-        "不是有效 JSON",
-      );
-    }
+    expect(() =>
+      projectSimulationAiEvents(
+        "我无法直接读取超出限制的资料，请提供更多上下文。",
+        input(),
+      ),
+    ).toThrow("模型返回了拒答或错误说明");
+    expect(() =>
+      projectSimulationAiEvents("The model returned no text.", input()),
+    ).toThrow("模型返回了拒答或错误说明");
+    expect(() => projectSimulationAiEvents("   ", input())).toThrow(
+      "AI 没有返回故事正文或事件候选",
+    );
     expect(() =>
       projectSimulationAiEvents(
         JSON.stringify({ narrative: "", events: [] }),
         input(),
       ),
-    ).toThrow("没有故事正文或可用事件候选");
+    ).toThrow("AI 没有返回故事正文或事件候选");
   });
 
   it("recovers a JSON object surrounded by model explanation text", () => {
@@ -411,7 +414,10 @@ describe("simulation AI projection", () => {
     expect(overflow.events).toHaveLength(0);
     expect(overflow.droppedEventCount).toBe(1);
 
-    const richSource = { ...source, characters: [{ id: "hero", name: "沈照夜" }] };
+    const richSource = {
+      ...source,
+      characters: [{ id: "hero", name: "沈照夜" }],
+    };
     const richResult = advanceSimulationRun(
       run,
       richSource,

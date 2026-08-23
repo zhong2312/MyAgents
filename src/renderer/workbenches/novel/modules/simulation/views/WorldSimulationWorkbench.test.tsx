@@ -159,11 +159,19 @@ describe("WorldSimulationWorkbench", () => {
       expect(manifest.endTimeUnit).toBe("year");
       expect(manifest.timeStep).toBe(1);
       expect(manifest.aiTimeoutMinutes).toBe(5);
-      expect(onAiRun.mock.calls[0]?.[0]).toMatchObject({
-        executionProfile: "extended",
-        timeoutMs: 300_000,
-      });
     });
+
+    expect(onAiRun.mock.calls[0]?.[0]).toMatchObject({
+      sceneId: "simulation.advance",
+      executionProfile: "extended",
+      timeoutMs: 300_000,
+      maxTurns: 6,
+      streamOutput: true,
+      usesNovelContextTools: true,
+    });
+    expect(onAiRun.mock.calls[0]?.[0].systemPrompt).toContain(
+      "无法可靠构造事件字段时直接返回故事正文",
+    );
 
     expect(onAiRun).toHaveBeenCalledTimes(1);
     expect(
@@ -269,9 +277,7 @@ describe("WorldSimulationWorkbench", () => {
       await screen.findByRole("button", { name: "AI 推演 1 轮" }),
     );
     await waitFor(() => expect(onAiRun).toHaveBeenCalledOnce());
-    fireEvent.click(
-      await screen.findByRole("button", { name: "取消推演" }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: "取消推演" }));
     resolveAiRun(JSON.stringify({ narrative: "被取消的故事", events: [] }));
 
     expect(
@@ -287,7 +293,56 @@ describe("WorldSimulationWorkbench", () => {
     expect(manifest.roundsCompleted).toBe(0);
   });
 
-  it("模型返回非 JSON 时只用无工具请求整理一次再保存", async () => {
+  it("连续推演进入下一轮后仍可取消", async () => {
+    const storage = createStorage();
+    let rejectSecondRun: ((reason?: unknown) => void) | undefined;
+    const firstOutput = JSON.stringify({
+      narrative: "第一轮故事已经完成并保存。",
+      events: [],
+    });
+    const onAiRun = vi.fn((_request: SimulationAiRunRequest) => {
+      if (onAiRun.mock.calls.length === 1) return Promise.resolve(firstOutput);
+      return new Promise<string>((_resolve, reject) => {
+        rejectSecondRun = reject;
+      });
+    });
+    const onCancelAiRun = vi.fn(async () => {
+      rejectSecondRun?.(new Error("本次 AI 生成已取消"));
+    });
+    render(
+      <WorldSimulationWorkbench
+        storage={storage}
+        projectTitle="测试小说"
+        isActive
+        onAiRun={onAiRun}
+        onCancelAiRun={onCancelAiRun}
+        registerNavigationGuard={() => () => undefined}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "创建并进入舞台" }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "连续推演" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "连续推演轮数" }), {
+      target: { value: "2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始" }));
+
+    await waitFor(() => expect(onAiRun).toHaveBeenCalledTimes(2));
+    expect(
+      await screen.findByRole("button", { name: "取消推演" }),
+    ).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "正在保存" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "取消推演" }));
+
+    await waitFor(() => expect(onCancelAiRun).toHaveBeenCalledOnce());
+    expect(
+      await screen.findByText("AI 推演已取消，未完成的本轮没有保存。"),
+    ).toBeInTheDocument();
+  });
+
+  it("模型返回结构化根错误时只用无工具请求整理一次再保存", async () => {
     const storage = createStorage();
     const repairOutput = JSON.stringify({
       events: [
@@ -305,10 +360,7 @@ describe("WorldSimulationWorkbench", () => {
         },
       ],
     });
-    const outputs = [
-      "我无法直接读取超出限制的资料，请提供更多上下文。",
-      repairOutput,
-    ];
+    const outputs = ["[]", repairOutput];
     const onAiRun = vi.fn(
       async (_request: SimulationAiRunRequest) =>
         outputs.shift() ?? repairOutput,
@@ -335,8 +387,39 @@ describe("WorldSimulationWorkbench", () => {
       usesNovelContextTools: false,
       maxTurns: 1,
       streamOutput: false,
+      timeoutMs: 60_000,
     });
     expect(await screen.findByText("格式整理后的世界事件")).toBeInTheDocument();
+  });
+
+  it("模型拒答时不再启动格式整理，并显示可重试错误", async () => {
+    const storage = createStorage();
+    const refusal = "我无法直接读取超出限制的资料，请提供更多上下文。";
+    const onAiRun = vi.fn(async (_request: SimulationAiRunRequest) => refusal);
+    render(
+      <WorldSimulationWorkbench
+        storage={storage}
+        projectTitle="测试小说"
+        isActive
+        onAiRun={onAiRun}
+        registerNavigationGuard={() => () => undefined}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "创建并进入舞台" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "AI 推演 1 轮" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "AI 未生成本轮故事（模型返回了拒答或错误说明），请重试或检查模型场景配置",
+      ),
+    ).toBeInTheDocument();
+    expect(onAiRun).toHaveBeenCalledOnce();
+    expect(screen.queryByText("格式整理后的世界事件")).toBeNull();
   });
 
   it("支持在运行操作中配置 AI 请求超时并持久化", async () => {
@@ -423,7 +506,9 @@ describe("WorldSimulationWorkbench", () => {
         },
       ],
     });
-    const onAiRun = vi.fn(async (_request: SimulationAiRunRequest) => legacyOutput);
+    const onAiRun = vi.fn(
+      async (_request: SimulationAiRunRequest) => legacyOutput,
+    );
     render(
       <WorldSimulationWorkbench
         storage={storage}
@@ -484,7 +569,9 @@ describe("WorldSimulationWorkbench", () => {
     const storage = createStorage();
     const narrative =
       "北山的风雪提前压过山口。沈照夜决定先护住山村，再追查灵脉异动。";
-    const onAiRun = vi.fn(async (_request: SimulationAiRunRequest) => narrative);
+    const onAiRun = vi.fn(
+      async (_request: SimulationAiRunRequest) => narrative,
+    );
 
     render(
       <WorldSimulationWorkbench
@@ -576,11 +663,14 @@ describe("WorldSimulationWorkbench", () => {
 
   it("读取独立时间线事件记录并把正式事实交给时间调度", async () => {
     const storage = new NovelMemoryStorage({
-      "characters/index.json": '{"characters":[{"id":"hero","name":"沈照夜"}]}\n',
+      "characters/index.json":
+        '{"characters":[{"id":"hero","name":"沈照夜"}]}\n',
       "world/factions/index.json": '{"factions":[]}\n',
       "world/locations/index.json": '{"locations":[]}\n',
       "timeline/index.json": `${JSON.stringify({
-        events: [{ id: "fact-north", path: "timeline/events/records/fact-north.json" }],
+        events: [
+          { id: "fact-north", path: "timeline/events/records/fact-north.json" },
+        ],
       })}\n`,
       "timeline/events/records/fact-north.json": `${JSON.stringify({
         id: "fact-north",

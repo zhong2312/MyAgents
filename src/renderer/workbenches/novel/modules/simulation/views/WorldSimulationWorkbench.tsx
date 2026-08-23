@@ -43,6 +43,7 @@ import {
   projectSimulationAiEvents,
   SimulationAiFormatError,
   SimulationAiJsonParseError,
+  SimulationAiNoContentError,
 } from "../business/simulationAiProjection";
 import {
   createNovelSimulationRepository,
@@ -114,6 +115,8 @@ type SimulationTargetCandidate = SimulationObservationTarget & {
 
 type InspectorType = "characters" | "factions" | "regions" | "world";
 type MobilePanel = "timeline" | "stage" | "inspector";
+
+const SIMULATION_AI_FORMAT_TIMEOUT_MS = 60_000;
 
 const TIME_UNIT_OPTIONS: readonly SelectOption[] = [
   { value: "day", label: "天" },
@@ -412,8 +415,8 @@ async function readSimulationInputs(
     ...aggregateTimelineEntries,
   ];
   const seenTimelineIds = new Set<string>();
-  const timelineEvents: SimulationTimelineSnapshot[] = timelineCandidates.flatMap(
-    (entry) => {
+  const timelineEvents: SimulationTimelineSnapshot[] =
+    timelineCandidates.flatMap((entry) => {
       if (!entry || typeof entry !== "object") return [];
       const indexEntry = entry as Record<string, unknown>;
       const item = {
@@ -431,7 +434,10 @@ async function readSimulationInputs(
               summary: stringValue(item.summary, ""),
               timeLabel: stringValue(item.timeLabel, ""),
               time: timelineTimeValue(
-                item.time ?? item.worldTime ?? item.sortKey ?? item.worldSortKey,
+                item.time ??
+                  item.worldTime ??
+                  item.sortKey ??
+                  item.worldSortKey,
               ),
               characterIds: stringList(item.characterIds),
               factionIds: stringList(item.factionIds),
@@ -439,8 +445,7 @@ async function readSimulationInputs(
             },
           ]
         : [];
-    },
-  );
+    });
   const factsThroughEventId = stringValue(
     timelineIndex.factsThroughEventId,
     "",
@@ -1374,6 +1379,7 @@ export default function WorldSimulationWorkbench({
   const [isCreating, setIsCreating] = useState(false);
   const [isSettling, setIsSettling] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isSavingRound, setIsSavingRound] = useState(false);
   const [isSavingTimeout, setIsSavingTimeout] = useState(false);
   const [aiProgress, setAiProgress] = useState("准备本轮推演");
   const [setupOpen, setSetupOpen] = useState(false);
@@ -1390,6 +1396,7 @@ export default function WorldSimulationWorkbench({
   const [notice, setNotice] = useState<string | null>(null);
   const activeAiRunIdsRef = useRef(new Set<string>());
   const aiCancelRequestedRef = useRef(false);
+  const aiCommitStartedRef = useRef(false);
   const reload = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -1523,6 +1530,9 @@ export default function WorldSimulationWorkbench({
   const advanceOne = async (
     current: LoadedSimulationLibrary,
   ): Promise<LoadedSimulationLibrary> => {
+    // 连续推演的每一轮都有独立的提交阶段；上一轮保存完成后，下一轮必须重新开放取消。
+    aiCommitStartedRef.current = false;
+    setIsSavingRound(false);
     const throwIfCancelled = () => {
       if (aiCancelRequestedRef.current) {
         throw new SimulationAiRunCancelledError();
@@ -1645,6 +1655,9 @@ export default function WorldSimulationWorkbench({
       projected = projectSimulationAiEvents(aiOutput, aiInput);
       assertUsableProjection(projected, aiOutput);
     } catch (cause) {
+      if (cause instanceof SimulationAiNoContentError) {
+        throw cause;
+      }
       if (
         !(cause instanceof SimulationAiJsonParseError) &&
         !(cause instanceof SimulationAiFormatError)
@@ -1662,7 +1675,7 @@ export default function WorldSimulationWorkbench({
         ),
         systemPrompt:
           "你只负责把已有的世界推演候选整理成 JSON。不得调用工具、读取资料或改变事实；格式不明时返回空 events 数组。",
-        timeoutMs: aiTimeoutMinutes(run) * 60_000,
+        timeoutMs: SIMULATION_AI_FORMAT_TIMEOUT_MS,
         usesNovelContextTools: false,
         streamOutput: false,
       });
@@ -1699,6 +1712,9 @@ export default function WorldSimulationWorkbench({
     }
     setAiProgress("正在保存本轮账本");
     throwIfCancelled();
+    // 进入持久化提交后不再接受取消，避免出现“界面已取消但检查点已经落盘”的状态。
+    aiCommitStartedRef.current = true;
+    setIsSavingRound(true);
     const events = [...result.events, ...projected.events];
     const round = {
       ...result.round,
@@ -1728,8 +1744,10 @@ export default function WorldSimulationWorkbench({
       return;
     setIsSettling(true);
     aiCancelRequestedRef.current = false;
+    aiCommitStartedRef.current = false;
     activeAiRunIdsRef.current.clear();
     setIsCancelling(false);
+    setIsSavingRound(false);
     // 取消属于整轮推演，而不只是已发出的模型请求；上下文读取阶段也应可中止。
     setAiProgress("准备本轮推演");
     setError(null);
@@ -1764,12 +1782,14 @@ export default function WorldSimulationWorkbench({
     } finally {
       activeAiRunIdsRef.current.clear();
       aiCancelRequestedRef.current = false;
+      aiCommitStartedRef.current = false;
       setIsCancelling(false);
+      setIsSavingRound(false);
       setIsSettling(false);
     }
   };
   const cancelAdvance = async () => {
-    if (!isSettling || isCancelling) return;
+    if (!isSettling || isCancelling || aiCommitStartedRef.current) return;
     const runIds = [...activeAiRunIdsRef.current];
     aiCancelRequestedRef.current = true;
     setIsCancelling(true);
@@ -2090,18 +2110,32 @@ export default function WorldSimulationWorkbench({
               <button
                 type="button"
                 className="ws-btn ws-btn-danger"
-                disabled={isCancelling}
-                aria-label={isCancelling ? "正在取消" : "取消推演"}
-                aria-busy={isCancelling}
-                title="停止当前 AI 推演；未完成的本轮不会保存"
+                disabled={isCancelling || isSavingRound}
+                aria-label={
+                  isSavingRound
+                    ? "正在保存"
+                    : isCancelling
+                      ? "正在取消"
+                      : "取消推演"
+                }
+                aria-busy={isCancelling || isSavingRound}
+                title={
+                  isSavingRound
+                    ? "本轮结果正在保存"
+                    : "停止当前 AI 推演；未完成的本轮不会保存"
+                }
                 onClick={() => void cancelAdvance()}
               >
-                {isCancelling ? (
+                {isCancelling || isSavingRound ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   <Square className="h-4 w-4" />
                 )}
-                {isCancelling ? "正在取消" : "取消推演"}
+                {isSavingRound
+                  ? "正在保存"
+                  : isCancelling
+                    ? "正在取消"
+                    : "取消推演"}
               </button>
             )}
             <button
@@ -2757,7 +2791,7 @@ export default function WorldSimulationWorkbench({
                 <div className="ws-run-setting">
                   <div>
                     <strong>AI 请求超时</strong>
-                    <span>首轮 AI 推演和格式整理共用此时限</span>
+                    <span>首轮 AI 推演使用此时限；格式整理最多 60 秒</span>
                   </div>
                   <CustomSelect
                     value={String(aiTimeoutMinutes(activeRun))}
