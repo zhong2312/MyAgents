@@ -177,6 +177,14 @@ describe("WorldSimulationWorkbench", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(await screen.findByText("第 1 轮")).toBeInTheDocument();
     expect(screen.getByText("本轮行动记录")).toBeInTheDocument();
+
+    const worldPulse = screen.getByRole("button", {
+      name: "查看世界过程 AI 推演变化",
+    });
+    fireEvent.click(worldPulse);
+    expect(
+      screen.getByRole("heading", { name: "当前时间点" }),
+    ).toBeInTheDocument();
   });
 
   it("模型返回非 JSON 时只用无工具请求整理一次再保存", async () => {
