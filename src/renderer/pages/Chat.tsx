@@ -464,6 +464,8 @@ interface ChatProps {
   onNewSession?: () => Promise<boolean>;
   /** Opens a persisted Session through App's canonical new/jump/revive path. */
   onOpenSession?: (sessionId: string, title: string, historyEntrySource?: HistoryEntrySource) => void;
+  /** Opens a workbench-local history Session in this Chat tab when possible. */
+  onOpenSessionInCurrentTab?: (sessionId: string, title: string, historyEntrySource?: HistoryEntrySource) => void;
   /** Explicit per-row new-tab action; it shares the same canonical App path. */
   onOpenSessionInNewTab?: (sessionId: string, title: string) => void;
   /** Initial message from Launcher for auto-send on workspace open */
@@ -493,7 +495,7 @@ function isCurrentSessionGoal(goal: SessionGoal | null | undefined): goal is Ses
   return Boolean(goal);
 }
 
-export default function Chat({ compactAgentSurface = false, isWindowFocused, workbenchSurface, onNewSession, onOpenSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
+export default function Chat({ compactAgentSurface = false, isWindowFocused, workbenchSurface, onNewSession, onOpenSession, onOpenSessionInCurrentTab, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
   const isNovelWorkbenchSurface = Boolean(workbenchSurface);
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
@@ -5020,6 +5022,14 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, wor
     onOpenSession(id, title, historyEntrySource);
   }, [onOpenSession]);
 
+  const handleSelectWorkbenchHistorySession = useCallback((id: string, title: string) => {
+    if (!onOpenSessionInCurrentTab) {
+      console.error('[Chat] Cannot open workbench history Session in the current tab without the App navigation owner');
+      return;
+    }
+    onOpenSessionInCurrentTab(id, title, 'workspace_history');
+  }, [onOpenSessionInCurrentTab]);
+
   // Handover-button visibility predicate (Q10 lockdown):
   //   - session is currently NOT bound to any channel
   //   - session was not originally created from an IM source (sessionMeta.source)
@@ -5685,7 +5695,7 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, wor
           streamingMessage={streamingMessage}
           workspacePath={agentDir}
           currentSessionId={sessionId}
-          onSelectSession={(id) => handleSelectSession(id, 'chat_dropdown')}
+          onSelectSession={handleSelectWorkbenchHistorySession}
         />
       )}
 

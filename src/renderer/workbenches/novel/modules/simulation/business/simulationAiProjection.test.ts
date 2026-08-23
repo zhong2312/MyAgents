@@ -252,6 +252,33 @@ describe("simulation AI projection", () => {
     expect(result.narrative).toBe(narrative);
   });
 
+  it("模型只返回自然语言故事时直接保存叙事，不触发格式整理", () => {
+    const narrative =
+      "北山的风雪提前压过山口。沈照夜发现闭关准备被打断，只能先护住山村，再追查灵脉异动。";
+    const result = projectSimulationAiEvents(narrative, input());
+
+    expect(result.events).toHaveLength(0);
+    expect(result.narrative).toBe(narrative);
+  });
+
+  it("模型拒答、空文本和错误说明不能被当成故事保存", () => {
+    for (const output of [
+      "我无法直接读取超出限制的资料，请提供更多上下文。",
+      "The model returned no text.",
+      "   ",
+    ]) {
+      expect(() => projectSimulationAiEvents(output, input())).toThrow(
+        "不是有效 JSON",
+      );
+    }
+    expect(() =>
+      projectSimulationAiEvents(
+        JSON.stringify({ narrative: "", events: [] }),
+        input(),
+      ),
+    ).toThrow("没有故事正文或可用事件候选");
+  });
+
   it("recovers a JSON object surrounded by model explanation text", () => {
     const output = JSON.stringify({
       events: [

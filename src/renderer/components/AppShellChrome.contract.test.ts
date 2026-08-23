@@ -113,6 +113,17 @@ describe('App Shell chrome contract', () => {
       .toBeLessThan(settings.indexOf('about.developer.chatHistoryEntryTitle'));
   });
 
+  it('routes workbench history rows through the current-tab owner', () => {
+    const chat = source('src/renderer/pages/Chat.tsx');
+    const app = source('src/renderer/App.tsx');
+
+    expect(chat).toContain('onOpenSessionInCurrentTab?:');
+    expect(chat).toContain("onOpenSessionInCurrentTab(id, title, 'workspace_history')");
+    expect(chat).toContain('onSelectSession={handleSelectWorkbenchHistorySession}');
+    expect(app).toContain('onOpenSessionInCurrentTab={(sessionId, title, historyEntrySource) =>');
+    expect(app).toContain('onOpenHistorySessionInCurrentTab(\n                      tab.id,');
+  });
+
   it('keeps the right workspace toolbar free of a redundant text heading', () => {
     const directory = source('src/renderer/components/directory-panel/DirectoryPanel.tsx');
 

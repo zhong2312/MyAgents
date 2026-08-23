@@ -1,166 +1,130 @@
 <div align="center">
 
-# MyAgents
+# My Novel Studio
 
-**活在你的电脑里，真正能干活的个人 Agent**
+**把一部小说的世界、人物、剧情与正文，放进同一个可持续创作的工作室**
 
-[中文](#chinese) · [English](#english) · [官网](https://myagents.io) · [下载](https://myagents.io) · [架构文档](specs/ARCHITECTURE.md) · [贡献指南](CONTRIBUTING.md)
+[中文](#chinese) · [English](#english) · [项目设计](Novel-Design.md) · [贡献指南](CONTRIBUTING.md)
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![macOS](https://img.shields.io/badge/macOS-13.0+-black.svg)](https://www.apple.com/macos/)
-[![Windows](https://img.shields.io/badge/Windows-10+-blue.svg)](https://www.microsoft.com/windows/)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-orange.svg)](https://tauri.app/)
 [![React](https://img.shields.io/badge/React-19-61dafb.svg)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6.svg)](https://www.typescriptlang.org/)
 
-![MyAgents Launcher](specs/assets/readme/01-launcher.png)
+![My Novel Studio 新建项目](specs/assets/readme/novel-create-desktop.png)
 
 </div>
 
 <a id="chinese"></a>
 
-## MyAgents 是什么
+## My Novel Studio 是什么
 
-MyAgents 是一款开源桌面端个人 Agent 工作台。它不是另一个聊天窗口，而是把对话、工作区、文件、工具、模型、任务和长期记忆放进同一个桌面系统里，让 AI 真正进入你的日常工作流。
+My Novel Studio 是面向长篇与短篇小说创作的本地优先工作台。它把创作中最容易失散的几类事实放到同一部小说目录里：世界设定、人物关系、势力组织、时间线、剧情工程、正文、研究资料和知识图谱。
 
-你可以把它理解成三件事的组合：
+小说项目不是一张孤立的编辑页面，而是一套可以持续积累、检查、修改和备份的创作档案。Markdown 与 JSON 是项目的可移植事实源，项目目录可以独立移动、复制、提交 Git，也可以用其它编辑器继续处理。
 
-- **一个本地优先的 Agent 桌面客户端**：多标签页、工作区文件树、内嵌终端、内嵌浏览器、历史会话和本地全文搜索都在同一个窗口里。
-- **一个可持续工作的任务系统**：想法可以沉淀成任务，任务可以被周期调度，执行状态可以被追踪和复盘。
-- **一个开放的 AI 运行环境**：支持多模型供应商、MCP、Skills、自定义 Agent、IM Bot、插件和外部 Runtime。
+## 从世界到正文
 
-最终目标很简单：让人把注意力放在判断、品味和验收上，把上下文整理、工具调用、长程执行和重复工作交给 Agent。
+### 先建立可供写作依赖的世界
 
-## 核心体验
+设定、地点、势力、物品、世界地图和修行体系拥有稳定 ID 与结构化关系。世界地图可以从架构事实生成提案，设定库保留页面、词条、空间层级和版本变更，作者始终可以审阅并决定哪些内容进入正式事实源。
 
-### 从工作区开始，而不是从空聊天开始
+![My Novel Studio 世界地图](specs/assets/readme/novel-map-desktop.png)
 
-每个 Agent 都绑定真实工作区。对话不再漂浮在一个孤立输入框里，AI 可以围绕文件、命令、技能、工具和历史上下文持续工作。
+### 让剧情成为可以检查的工程
 
-![Workspace Agent](specs/assets/readme/02-workspace-agent.png)
+剧情工程支持线路、故事弧、卷篇组目录、章节计划、节和段。章节可以关联正文、人物、线路与故事弧，故事编排视图根据真实关联投影章节泳道，不额外保存一份容易失真的时间表。
 
-在一个会话里，MyAgents 同时提供：
+![My Novel Studio 剧情工程](specs/assets/readme/novel-narrative-desktop.png)
 
-- Chrome 风格多标签页，每个 Tab 独立运行一个 Agent。
-- 工作区文件树、文件预览、Git 分支、Skills 和命令入口。
-- 右侧分屏的内嵌终端和内嵌浏览器，方便边执行边验证。
-- `@` 引用文件、`/` 调用技能、MCP 工具调用、定时任务入口和模型选择。
+### 在连续性约束下写正文
 
-### 把想法收束成任务
+正文工作台提供章节树、章节目标、关键节拍、来源线路和章节上下文。写作时可以回看前文、人物、设定、剧情和时间线，正文 Markdown 仍是唯一事实源，规划数据不会偷偷改写正文文件。
 
-MyAgents 内置「想法 + 任务中心」。你可以先把零散念头记下来，再和 AI 讨论、对齐目标、沉淀成可执行任务。长期任务不需要留在聊天记录里翻找，而是进入可追踪的状态机。
+![My Novel Studio 正文工作台](specs/assets/readme/novel-manuscript-desktop.png)
 
-![Thoughts and Tasks](specs/assets/readme/03-thought-task.png)
+### 用推演和提案辅助判断
 
-任务中心支持：
+世界推演可以在明确的起止章节、规则边界和候选 Agent 配置下生成事件路径；AI 设计、批量生产和审查都先形成可比较、可拒绝、可采纳的提案，再由作者写入正式项目数据。
 
-- 想法速记、标签归类和归档。
-- 一次性任务、周期任务和 Cron 表达式。
-- 可选的本地命令感知器：低成本检查，只有命中条件才唤醒 AI。
-- 任务状态、运行次数、执行日志和异常恢复。
-- Chat、AI 工具、IM Bot、后台任务共享同一套调度能力。
+![My Novel Studio 世界推演](specs/assets/readme/novel-simulation-desktop.png)
 
-### 模型、工具和能力由你选择
+![My Novel Studio AI 提案审阅](specs/assets/readme/novel-ai-review.png)
 
-MyAgents 不把用户锁死在单一模型或单一供应商里。你可以使用 Anthropic 订阅或 API，也可以配置 DeepSeek、Moonshot、智谱、MiniMax、Google Gemini、火山方舟、硅基流动、ZenMux、OpenRouter、小米 MiMo、阿里云百炼等供应商。实际模型列表以应用内「模型供应商」页为准。
+## 工作台能力
 
-![Model Providers](specs/assets/readme/04-model-providers.png)
+| 模块             | 用途                                              |
+| ---------------- | ------------------------------------------------- |
+| 总览             | 查看项目状态、创作进度、诊断和最近编辑内容        |
+| 世界架构         | 管理设定库、地点、势力、物品、地图和空间层级      |
+| 修行体系         | 维护本源、理论、资源、方法、能力、阵法和进阶关系  |
+| 人物与势力       | 管理人物小传、角色弧光、灵魂、种族、组织与关联    |
+| 时间线           | 管理日历、时期、事件、分支和可视化时间关系        |
+| 剧情工程         | 组织线路、故事弧、目录、章节、节与段              |
+| 正文             | 编写章节，核对章节上下文与连续性状态              |
+| 灵感与资料       | 保存灵感、研究笔记和可供 AI 按需读取的资料        |
+| 知识库           | 管理实体、关系和事实，支持跨模块引用与诊断        |
+| 世界推演         | 在约束下生成事件候选并审阅故事路径                |
+| 提示词与模型场景 | 管理 My Novel Studio 的默认提示词包和场景模型绑定 |
 
-除了模型，MyAgents 还支持：
+## AI 如何参与创作
 
-- **MCP**：STDIO / HTTP / SSE 三种接入方式，连接外部工具和数据源。
-- **Skills**：把稳定流程沉淀成可复用能力，支持内置技能和用户自定义技能。
-- **自定义 Agent**：为不同工作区配置不同 Prompt、模型、工具和权限。
-- **外部 Runtime（实验室）**：除内置 Claude Agent SDK 外，可选择 Claude Code CLI、OpenAI Codex CLI、Google Gemini CLI 驱动会话。
-- **插件与 Channel**：内置 Telegram / 钉钉，更多 IM 平台可通过 OpenClaw 插件接入。
+My Novel Studio 复用宿主的 Agent Session，但小说领域的事实读取和写入由工作台协议约束：
 
-### AI 不只活在主窗口里
+- Agent 先按需读取项目事实，不把整部小说快照塞进启动消息。
+- AI 设计结果先保存为草稿或提案，作者可以逐项比较差异、拒绝或采纳。
+- 正式写入由对应领域 Repository 完成，并使用版本快照防止覆盖作者刚刚修改的内容。
+- AI 可以协助世界构建、剧情规划、人物设计、时间线检查、灵感共创和正文方案，但不会绕过工作台直接改写事实源。
 
-桌面 AI 不应该只在你打开主应用时才存在。MyAgents 提供小助理、桌面宠物/浮窗、IM Bot 和定时任务，让 Agent 能在不同入口里承接同一个工作上下文。
+## 项目数据模型
 
-![Floating Agent](specs/assets/readme/05-floating-agent.png)
+每部小说都是独立目录，核心事实分层保存：
 
-你可以在主窗口里做长对话，也可以在桌面浮窗里快速发问；可以让 Agent 在 IM 里处理消息，也可以让它按计划自动执行任务。MyAgents 关注的不是「多一个聊天入口」，而是让 AI 能进入真实的工作节奏。
+```text
+<novel-root>/
+|-- novel.json
+|-- manuscript/       正文、章节索引、连续性状态与审阅记录
+|-- narrative/        线路、故事弧、目录、章节计划与提案
+|-- characters/       人物库、角色弧光与灵魂
+|-- world/             世界架构、地图、物品与修行体系
+|-- timeline/          日历、时期、分支与事件
+|-- inspiration/       灵感记录
+|-- research/          研究资料
+|-- knowledge/         实体、关系与事实
+|-- prompts/           提示词包与安装记录
+`-- assets/            图片等二进制素材
+```
 
-## 产品理念与思考
-
-### Agent 不应该只是聊天记录
-
-过去很多 AI 产品把「对话」当成唯一形态。对话很自然，但它不适合承载长期工作：上下文会散、任务会丢、结果难复盘，最后用户又回到手工整理。
-
-我更希望 MyAgents 把 Agent 看成一个持续工作的系统。聊天只是入口，真正重要的是工作区、文件、工具、任务、状态和记忆。一个 Agent 应该能知道自己在哪个项目里、正在做什么、上次做到哪里、下一步该验证什么。
-
-### 人的注意力应该收束到判断和验收
-
-AI 最有价值的地方不是替人多生成几段文字，而是把混乱信息整理成可判断、可执行、可沉淀的东西。
-
-所以 MyAgents 里有想法和任务中心。想法用于收集不成熟的判断，任务用于承载已经确认的目标。中间的讨论、计划、执行、验证都可以交给 Agent，但最后的方向感和验收标准仍然留给人。
-
-### 好的桌面 Agent 应该贴近电脑本身
-
-一个桌面 Agent 不应该只复制网页聊天体验。它应该能接触本地文件、终端、浏览器、通知、定时任务、IM 和系统环境，同时保持边界清晰、权限可控、数据本地优先。
-
-MyAgents 的很多设计都来自这个判断：本地工作区是一等公民，Sidecar 按 Session 隔离，所有文件能力走 Tauri/Rust，AI Runtime 可以切换，模型供应商可以替换，工具和 Skills 可以扩展。
-
-### 开放比封闭更适合 Agent 时代
-
-Agent 产品不可能预设所有人的工作流。开发者、创作者、研究者、产品经理、教育工作者和行业专家需要的能力都不一样。与其做一个「什么都内置但什么都固定」的应用，不如提供一个稳定的底座，让用户把自己的工具、模型、技能和自动化流程接进来。
-
-这也是 MyAgents 坚持开源、支持 MCP、Skills、插件和多供应商的原因。
-
-## 功能概览
-
-| 能力             | 说明                                                                 |
-| ---------------- | -------------------------------------------------------------------- |
-| 多标签 Agent     | 每个 Tab 独立会话和 Sidecar，适合并行工作                            |
-| 工作区系统       | 文件树、预览、搜索、Git 分支、Skills 和命令统一入口                  |
-| 多模型供应商     | Anthropic 订阅/API、多家国内外 API、OpenRouter/ZenMux 等聚合服务     |
-| 多 Agent Runtime | 内置 Claude Agent SDK，可选 Claude Code CLI / Codex CLI / Gemini CLI |
-| MCP 工具         | 支持 STDIO / HTTP / SSE，内置和外部 MCP 可并存                       |
-| Skills           | 内置技能、用户技能、工作区技能，适合沉淀固定流程                     |
-| 任务中心         | 想法、任务、周期调度、状态追踪和执行审计                             |
-| IM Bot / Channel | Telegram、钉钉、OpenClaw 插件 Channel                                |
-| 内嵌终端         | xterm.js + portable-pty，绑定当前工作区                              |
-| 内嵌浏览器       | Tauri 多 Webview 子视图，方便预览链接和本地 HTML                     |
-| 本地全文搜索     | Tantivy + jieba，检索会话历史和工作区文件                            |
-| 本地优先         | 会话、任务、配置和生成产物默认保存在本机                             |
+项目目录中的文本统一使用 UTF-8，JSON 使用 2 空格缩进并以换行结尾，项目内路径使用 `/` 分隔。派生索引和向量缓存不属于小说事实源，可以删除并重建。
 
 ## 研发指引
 
-MyAgents 是一个桌面端 AI Agent 产品，不是单纯的前端项目。改动前建议先判断你碰到的是 UI、Rust 桌面层、Node Sidecar、Agent Runtime、MCP、任务中心还是插件桥接。
+My Novel Studio 是建立在 Workbench Platform 上的官方小说工作台。小说领域代码只能通过 Workbench SDK 使用宿主能力；工作区文件操作统一经过绑定项目根目录的 `WorkbenchStorage`，不能直接导入宿主 App、Chat、Config Store、Sidecar 或 Tauri API。
 
 ### 技术栈
 
-| 层级         | 技术                                                                       |
-| ------------ | -------------------------------------------------------------------------- |
-| 桌面框架     | Tauri v2 + Rust                                                            |
-| 前端         | React 19 + TypeScript + Vite + TailwindCSS                                 |
-| 后端 Sidecar | Node.js v24 + Claude Agent SDK                                             |
-| 通信         | Rust HTTP/SSE Proxy，前端通过 Tauri invoke 代理到 Sidecar                  |
-| Runtime      | 内置 Claude Agent SDK，实验室支持 Claude Code CLI / Codex CLI / Gemini CLI |
-| 工具生态     | MCP、Skills、OpenClaw Plugin Bridge、`myagents` CLI                        |
-| 搜索         | Tantivy + tantivy-jieba                                                    |
-| 终端         | portable-pty + xterm.js                                                    |
+| 层级       | 技术                                         |
+| ---------- | -------------------------------------------- |
+| 桌面框架   | Tauri v2 + Rust                              |
+| 前端       | React 19 + TypeScript + Vite + TailwindCSS   |
+| 工作台     | Workbench SDK 1.11，内置 `io.myagents.novel` |
+| Agent 会话 | 宿主 Agent Session 与小说工作台内置工具      |
+| 事实存储   | UTF-8 Markdown + JSON                        |
+| 测试       | Vitest、Testing Library、Rust 测试           |
 
 ### 环境要求
-
-最终用户：
-
-- macOS 13.0 Ventura 或更高版本，支持 Apple Silicon 和 Intel。
-- Windows 10 或更高版本。
-
-开发者：
 
 - Node.js `>=22.0.0`，推荐 Node.js 24。
 - npm，仓库当前声明 `npm@11.13.0`。
 - Rust 通过 [rustup](https://rustup.rs) 安装，实际 toolchain 由 [rust-toolchain.toml](rust-toolchain.toml) 固定。
-- macOS 13+ / Windows 10+ / Linux Ubuntu 22.04+ 或 Debian 12+。
+- macOS 13+、Windows 10+ 或 Linux Ubuntu 22.04+ / Debian 12+。
 
 ### 本地开发
 
 macOS / Linux：
 
 ```bash
-git clone https://github.com/hAcKlyc/MyAgents.git
+git clone <repository-url>
 cd MyAgents
 ./setup.sh
 ./start_dev.sh
@@ -169,13 +133,23 @@ cd MyAgents
 Windows：
 
 ```powershell
-git clone https://github.com/hAcKlyc/MyAgents.git
+git clone <repository-url>
 cd MyAgents
 .\setup_windows.ps1
 .\build_windows.ps1
 ```
 
-`setup.sh` 会准备内置 Node.js runtime、安装依赖并缓存离线文档转换资源；重复运行会复用已校验的文档资源缓存。默认 Mino 工作区模板已经提交在 `bundled-workspaces/mino/`，构建和初始化不需要额外的 GitHub SSH 或模板下载。
+Windows 日常测试打包统一使用根目录入口：
+
+```powershell
+$env:MYAGENTS_PACKAGE_NO_PAUSE='1'; & .\Package-MyAgents-Test.cmd
+```
+
+只检查打包环境而不构建：
+
+```powershell
+$env:MYAGENTS_PACKAGE_NO_PAUSE='1'; & .\Package-MyAgents-Test.cmd -ValidateOnly
+```
 
 ### 常用命令
 
@@ -186,68 +160,37 @@ cd MyAgents
 # 类型检查
 npm run typecheck
 
-# Lint，包含 ESLint 和 dependency-cruiser 架构边界检查
+# Lint 与架构边界检查
 npm run lint
 
 # 测试分层
-npm run test:classification  # server 测试命名/分层 guard
-npm run test:unit            # 纯逻辑快池
-npm run test:dom             # React/jsdom 组件与 hook
-npm run test:integration     # CI-safe 后端集成池，无真实网络/密钥
-npm test                     # classification + unit + dom + integration
-npm run test:credentialed    # 真实 Provider/SDK smoke，显式本地运行
-
-# Debug 构建，含 DevTools
-./build_dev.sh
-
-# macOS 生产构建
-./build_macos.sh
-
-# Linux AppImage + deb 构建
-./build_linux.sh
-```
-
-Linux 构建机需要 Tauri/WebKit 相关系统依赖，Ubuntu/Debian 可参考：
-
-```bash
-sudo apt-get install -y \
-  build-essential libssl-dev libgtk-3-dev libayatana-appindicator3-dev \
-  librsvg2-dev libwebkit2gtk-4.1-dev patchelf
+npm run test:classification
+npm run test:unit
+npm run test:dom
+npm run test:integration
+npm test
 ```
 
 ### 项目结构
 
 ```text
-src/renderer/                 React 前端
-src/server/                   Node.js Sidecar
-src/server/plugin-bridge/     OpenClaw Plugin Bridge
-src/cli/                      myagents CLI
-src/shared/                   前后端共享类型
-src-tauri/                    Tauri Rust 层
-bundled-agents/               内置 Agent
-bundled-skills/               内置 Skills
-specs/                        架构、设计、技术文档
+src/renderer/workbenches/novel/  My Novel Studio 工作台
+src/renderer/workbench-sdk/      Workbench 宿主接口
+src/shared/workbenches/novel/    小说领域共享逻辑
+src/server/tools/                小说工作台内置工具
+src-tauri/                       Tauri Rust 层
+specs/                           架构、设计、技术文档与截图资源
 ```
 
-### 关键架构原则
+### 设计文档
 
-- **Session : Sidecar = 1 : 1**：每个会话最多一个 Sidecar，Tab、CronTask、BackgroundCompletion、Agent 通过 Owner 模型共享生命周期。
-- **Tab-Scoped 隔离**：Chat Tab 内使用 tab-scoped API；Settings 和 Launcher 使用 Global Sidecar。
-- **控制面 HTTP/SSE 走 Rust 代理**：普通 API 不由 WebView 直连 Sidecar；仅 `/refs/:id`、`/attachment/*` 大载荷数据面在 CORS/CSP/路径安全约束下原生 fetch。
-- **工作区文件 IO 走 Tauri/Rust**：文件树、读写、搜索、打开、watcher 不走 Sidecar HTTP。
-- **配置写盘 disk-first**：多进程共享配置必须读磁盘最新值再合并写入。
-- **Runtime 分流明确**：Session 操作统一走 `src/server/session-engine/` facade，由 selector 选择 builtin 或 external adapter；不能让 builtin SDK resume 外部会话。
+- [小说工作台关键设计](Novel-Design.md)
+- [Workbench Platform](specs/tech_docs/workbench_platform.md)
+- [小说灵感模块](specs/tech_docs/novel_inspiration.md)
+- [世界推演设计方案](世界推演设计方案.md)
+- [架构总览](specs/ARCHITECTURE.md)
 
-完整架构请读 [specs/ARCHITECTURE.md](specs/ARCHITECTURE.md)。具体模块请按需阅读：
-
-- [Sidecar 冷启动](specs/tech_docs/sidecar_cold_start.md)
-- [Session 架构](specs/tech_docs/session_architecture.md)
-- [Multi-Agent Runtime](specs/tech_docs/multi_agent_runtime.md)
-- [任务中心](specs/tech_docs/task_center.md)
-- [Plugin Bridge](specs/tech_docs/plugin_bridge_architecture.md)
-- [MCP / Pit-of-Success](specs/tech_docs/pit_of_success.md)
-- [CLI 架构](specs/tech_docs/cli_architecture.md)
-- [设计系统](specs/DESIGN.md)
+修改小说工作台前，应先阅读与目标模块匹配的设计文档，确认事实源、Repository、Agent 协议和宿主边界，再开始编码。
 
 ### 贡献前检查
 
@@ -258,11 +201,10 @@ npm run typecheck
 npm run lint
 npm run test:classification
 npm run test:unit
+npm run test:dom
 ```
 
-后端 Session、Runtime、IO 或安全边界改动还应跑 `npm run test:integration`；真实 Provider / SDK 链路只在本机显式跑 `npm run test:credentialed`，不属于默认 CI。
-
-如果改动涉及 Rust、Tauri 命令、Sidecar 生命周期、Runtime、MCP、任务中心或插件桥接，请先阅读对应 `specs/tech_docs/` 文档，避免绕开已有架构。
+涉及 Rust、Tauri 命令、Agent Session、文件 IO 或跨进程边界的改动，还应运行对应的集成测试。
 
 提交信息遵循 Conventional Commits：
 
@@ -277,165 +219,122 @@ chore: bump ...
 
 ## 许可证
 
-MyAgents 采用 [GNU Affero General Public License v3.0](LICENSE)
-（`AGPL-3.0-only`）。个人和企业都可以免费使用，也可以商业使用；分发修改版、通过网络向
-用户提供修改版等场景需要完整履行 AGPL，包括在适用时提供对应源码。
+本项目采用 [GNU Affero General Public License v3.0](LICENSE)（`AGPL-3.0-only`）。分发修改版、通过网络向用户提供修改版等场景需要履行 AGPL，包括在适用时提供对应源码。
 
-如果你希望在不履行 AGPL 开源义务的情况下闭源修改、嵌入、OEM、分发或托管 MyAgents，
-需要取得单独的商业许可证。请联系
-[myagents.io@gmail.com](mailto:myagents.io@gmail.com)。
-
-完整说明见 [LICENSING.md](LICENSING.md)，商业许可概要见
-[COMMERCIAL-LICENSING.md](COMMERCIAL-LICENSING.md)。第三方组件继续适用各自许可证，详见
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+完整说明见 [LICENSING.md](LICENSING.md)，第三方组件继续适用各自许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 <a id="english"></a>
 
 ## English
 
-## What Is MyAgents
+## What Is My Novel Studio
 
-MyAgents is an open-source desktop workspace for personal AI Agents. It is not another chat window. It puts conversations, workspaces, files, tools, models, tasks, and long-term memory into one desktop system, so AI can become part of your real daily workflow.
+My Novel Studio is a local-first writing workspace for long-form and short-form fiction. It keeps the facts that make a novel coherent in one project directory: worldbuilding, characters, factions, timelines, narrative engineering, manuscript chapters, research notes, and a knowledge graph.
 
-You can think of it as three things in one:
+A novel project is more than an editor view. It is a durable creative archive that can be accumulated, checked, revised, backed up, moved, and versioned with Git. Markdown and JSON are the portable sources of truth, so the project can continue in another editor when needed.
 
-- **A local-first desktop Agent client**: multi-tab conversations, workspace file trees, embedded terminal, embedded browser, chat history, and local full-text search in one window.
-- **A task system for continuous work**: ideas can become tasks, tasks can be scheduled, and execution state can be tracked and reviewed.
-- **An open AI runtime environment**: multi-provider models, MCP, Skills, custom Agents, IM bots, plugins, and external runtimes.
+## From World To Manuscript
 
-The goal is simple: keep human attention on judgment, taste, and acceptance. Let the Agent handle context gathering, tool use, long-running execution, and repetitive work.
+### Build a world your chapters can depend on
 
-## Core Experience
+Settings, locations, factions, items, maps, and cultivation systems use stable IDs and structured relationships. Generated maps and design tasks produce reviewable proposals; authors decide which changes enter the formal project facts.
 
-### Start From A Workspace, Not An Empty Chat
+![My Novel Studio world map](specs/assets/readme/novel-map-desktop.png)
 
-Every Agent is tied to a real workspace. The conversation does not float inside an isolated input box. The AI can keep working around files, commands, skills, tools, and historical context.
+### Treat story planning as an inspectable system
 
-![Workspace Agent](specs/assets/readme/02-workspace-agent.png)
+Narrative engineering supports plot lines, story arcs, volume and section directories, chapter plans, scenes, and beats. The orchestration view is projected from real chapter relationships instead of storing a second, conflicting schedule.
 
-Inside one session, MyAgents gives you:
+![My Novel Studio narrative engineering](specs/assets/readme/novel-narrative-desktop.png)
 
-- Chrome-style tabs, with each Tab running an independent Agent.
-- Workspace file tree, file preview, Git branch, Skills, and command entry points.
-- Embedded terminal and embedded browser in the right split panel, so you can execute and verify in place.
-- `@` file references, `/` skill invocation, MCP tool calls, scheduled tasks, and model selection.
+### Write with continuity context
 
-### Turn Ideas Into Tasks
+The manuscript workspace combines a chapter tree, chapter goals, key beats, source lines, and chapter context. Writers can inspect prior chapters, characters, settings, narrative plans, and timelines without making the planning layer rewrite the manuscript Markdown.
 
-MyAgents includes an Ideas + Task Center workflow. You can first capture rough thoughts, then discuss them with AI, align on the goal, and turn them into executable tasks. Long-term work no longer has to be buried in chat history. It becomes part of a trackable state machine.
+![My Novel Studio manuscript workspace](specs/assets/readme/novel-manuscript-desktop.png)
 
-![Thoughts and Tasks](specs/assets/readme/03-thought-task.png)
+### Use simulation and proposals to support judgment
 
-Task Center supports:
+World simulation generates event paths within explicit chapter ranges, rules, and Agent configurations. AI design, batch creation, and review produce comparable proposals first; authors approve or reject each change before it becomes project data.
 
-- Idea capture, tagging, and archiving.
-- One-shot tasks, recurring tasks, and Cron expressions.
-- Optional local-command sensors that wake the AI only when a condition matches.
-- Task status, run count, execution logs, and failure recovery.
-- One shared scheduler across Chat, AI tools, IM bots, and background tasks.
+![My Novel Studio world simulation](specs/assets/readme/novel-simulation-desktop.png)
 
-### Choose Your Models, Tools, And Capabilities
+![My Novel Studio proposal review](specs/assets/readme/novel-ai-review.png)
 
-MyAgents does not lock users into one model or one provider. You can use Anthropic subscription or API, and you can also configure DeepSeek, Moonshot, Zhipu, MiniMax, Google Gemini, Volcengine, SiliconFlow, ZenMux, OpenRouter, Xiaomi MiMo, Alibaba Cloud Bailian, and more. The actual model list is shown inside the in-app Model Providers page.
+## Workbench Areas
 
-![Model Providers](specs/assets/readme/04-model-providers.png)
+| Area                     | Purpose                                                                     |
+| ------------------------ | --------------------------------------------------------------------------- |
+| Overview                 | Project status, progress, diagnostics, and recent edits                     |
+| World architecture       | Settings library, locations, factions, items, maps, and spatial hierarchy   |
+| Cultivation systems      | Origins, theory, resources, methods, abilities, formations, and progression |
+| Characters and factions  | Character profiles, arcs, souls, groups, and relationships                  |
+| Timeline                 | Calendars, periods, events, branches, and timeline views                    |
+| Narrative engineering    | Plot lines, arcs, directories, chapters, scenes, and beats                  |
+| Manuscript               | Chapter writing, goals, context, and continuity checks                      |
+| Inspiration and research | Ideas, notes, and source material for creative work                         |
+| Knowledge graph          | Entities, relations, facts, cross-module references, and diagnostics        |
+| World simulation         | Constrained event candidates and story paths                                |
+| Prompts and model scenes | My Novel Studio prompt packs and per-scene model bindings                   |
 
-Beyond models, MyAgents supports:
+## AI In The Writing Loop
 
-- **MCP**: STDIO / HTTP / SSE integrations for external tools and data sources.
-- **Skills**: reusable workflows as built-in, user-level, or workspace-level capabilities.
-- **Custom Agents**: different prompts, models, tools, and permission settings per workspace.
-- **External runtimes (Lab)**: in addition to the built-in Claude Agent SDK, sessions can be driven by Claude Code CLI, OpenAI Codex CLI, or Google Gemini CLI.
-- **Plugins and Channels**: built-in Telegram / DingTalk, with more IM platforms available through OpenClaw plugins.
+My Novel Studio reuses the host Agent Session while keeping novel facts and writes under workbench protocols:
 
-### AI Does Not Only Live In The Main Window
+- Agents read project facts on demand instead of serializing an entire novel into the launch message.
+- AI output becomes a draft or proposal first, so authors can compare, reject, or adopt changes item by item.
+- Domain repositories perform formal writes using revision snapshots to avoid overwriting a recent author edit.
+- AI can assist with worldbuilding, narrative planning, character design, timeline checks, inspiration, and manuscript plans without bypassing the project fact model.
 
-Desktop AI should not exist only when the main app is open. MyAgents provides the helper agent, desktop pet/floating panel, IM bots, and scheduled tasks, so the Agent can carry the same work context across different entry points.
+## Project Data Model
 
-![Floating Agent](specs/assets/readme/05-floating-agent.png)
+Each novel is an independent directory:
 
-You can have long conversations in the main window, ask quick questions from a floating desktop panel, let an Agent handle messages in IM, or have it execute tasks on a schedule. MyAgents is not trying to add one more chat surface. It is trying to put AI into the real rhythm of work.
+```text
+<novel-root>/
+|-- novel.json
+|-- manuscript/       chapters, indexes, continuity state, and review records
+|-- narrative/        lines, arcs, directories, chapter plans, and proposals
+|-- characters/       character library, arcs, and souls
+|-- world/             settings, maps, items, and cultivation systems
+|-- timeline/          calendars, periods, branches, and events
+|-- inspiration/       inspiration records
+|-- research/          research notes
+|-- knowledge/         entities, relations, and facts
+|-- prompts/           prompt packs and installations
+`-- assets/            binary creative assets
+```
 
-## Product Philosophy
-
-### Agents Should Not Just Be Chat Logs
-
-Many AI products treat conversation as the only shape of interaction. Conversation is natural, but it is a poor container for long-running work: context scatters, tasks disappear, results are hard to review, and users eventually return to manual organization.
-
-I want MyAgents to treat an Agent as a continuous working system. Chat is only the entry point. What matters more is the workspace, files, tools, tasks, state, and memory. An Agent should know which project it is in, what it is doing, where it stopped last time, and what should be verified next.
-
-### Human Attention Should Converge On Judgment And Acceptance
-
-The most valuable part of AI is not generating a few more paragraphs. It is turning messy information into something that can be judged, executed, and preserved.
-
-That is why MyAgents has Ideas and Task Center. Ideas capture immature thoughts. Tasks carry confirmed goals. The discussion, planning, execution, and verification can be delegated to the Agent, while direction and acceptance criteria remain with the human.
-
-### A Good Desktop Agent Should Stay Close To The Computer
-
-A desktop Agent should not merely copy the web chat experience. It should be able to work with local files, terminal, browser, notifications, scheduled tasks, IM, and the system environment, while keeping clear boundaries, controllable permissions, and local-first data.
-
-Many MyAgents design choices come from this belief: local workspaces are first-class, Sidecars are isolated by Session, file operations go through Tauri/Rust, AI runtimes can be switched, model providers can be replaced, and tools and Skills can be extended.
-
-### Openness Fits The Agent Era Better Than Lock-In
-
-No Agent product can predefine every workflow. Developers, creators, researchers, product managers, educators, and domain experts all need different capabilities. Instead of building an app where everything is built in and fixed, MyAgents provides a stable base that lets users plug in their own tools, models, skills, and automations.
-
-This is why MyAgents is open source and supports MCP, Skills, plugins, and multiple model providers.
-
-## Feature Overview
-
-| Capability          | Description                                                                         |
-| ------------------- | ----------------------------------------------------------------------------------- |
-| Multi-tab Agents    | Each Tab has its own session and Sidecar, suitable for parallel work                |
-| Workspace system    | File tree, preview, search, Git branch, Skills, and commands in one place           |
-| Model providers     | Anthropic subscription/API, many API providers, OpenRouter/ZenMux aggregators       |
-| Multi-Agent Runtime | Built-in Claude Agent SDK, optional Claude Code CLI / Codex CLI / Gemini CLI        |
-| MCP tools           | STDIO / HTTP / SSE support, built-in and external MCP servers can coexist           |
-| Skills              | Built-in, user-level, and workspace-level Skills for reusable workflows             |
-| Task Center         | Ideas, tasks, recurring schedules, state tracking, and execution audit              |
-| IM Bot / Channel    | Telegram, DingTalk, and OpenClaw plugin channels                                    |
-| Embedded terminal   | xterm.js + portable-pty, bound to the current workspace                             |
-| Embedded browser    | Tauri multi-Webview child view for previewing links and local HTML                  |
-| Local search        | Tantivy + jieba for searching session history and workspace files                   |
-| Local-first data    | Conversations, tasks, config, and generated artifacts are stored locally by default |
+Project text is UTF-8, JSON uses two-space indentation and a trailing newline, and project paths use `/`. Derived indexes and vector caches are rebuildable and are not part of the novel's source of truth.
 
 ## Development Guide
 
-MyAgents is a desktop AI Agent product, not a plain frontend project. Before making changes, identify whether you are touching the UI, Rust desktop layer, Node Sidecar, Agent Runtime, MCP, Task Center, or Plugin Bridge.
+My Novel Studio is the official novel workbench built on the Workbench Platform. Novel code uses host capabilities through the Workbench SDK; project file operations go through `WorkbenchStorage` bound to the current novel root. The workbench does not import host App, Chat, Config Store, Sidecar, or Tauri internals directly.
 
-### Tech Stack
+### Stack
 
-| Layer           | Technology                                                                          |
-| --------------- | ----------------------------------------------------------------------------------- |
-| Desktop         | Tauri v2 + Rust                                                                     |
-| Frontend        | React 19 + TypeScript + Vite + TailwindCSS                                          |
-| Backend Sidecar | Node.js v24 + Claude Agent SDK                                                      |
-| Communication   | Rust HTTP/SSE Proxy, with the frontend reaching Sidecar through Tauri invoke        |
-| Runtime         | Built-in Claude Agent SDK, Lab support for Claude Code CLI / Codex CLI / Gemini CLI |
-| Tool ecosystem  | MCP, Skills, OpenClaw Plugin Bridge, `myagents` CLI                                 |
-| Search          | Tantivy + tantivy-jieba                                                             |
-| Terminal        | portable-pty + xterm.js                                                             |
+| Layer           | Technology                                       |
+| --------------- | ------------------------------------------------ |
+| Desktop shell   | Tauri v2 + Rust                                  |
+| Renderer        | React 19 + TypeScript + Vite + TailwindCSS       |
+| Workbench       | Workbench SDK 1.11, built-in `io.myagents.novel` |
+| Agent sessions  | Host Agent Session and novel workbench tools     |
+| Source of truth | UTF-8 Markdown + JSON                            |
+| Tests           | Vitest, Testing Library, and Rust tests          |
 
 ### Requirements
 
-End users:
-
-- macOS 13.0 Ventura or later, Apple Silicon and Intel supported.
-- Windows 10 or later.
-
-Developers:
-
 - Node.js `>=22.0.0`, Node.js 24 recommended.
-- npm. The repository currently declares `npm@11.13.0`.
-- Rust installed through [rustup](https://rustup.rs). The actual toolchain is pinned by [rust-toolchain.toml](rust-toolchain.toml).
-- macOS 13+ / Windows 10+ / Linux Ubuntu 22.04+ or Debian 12+.
+- npm, with `npm@11.13.0` declared by the repository.
+- Rust installed through [rustup](https://rustup.rs), with the toolchain pinned by [rust-toolchain.toml](rust-toolchain.toml).
+- macOS 13+, Windows 10+, or Linux Ubuntu 22.04+ / Debian 12+.
 
-### Local Development
+### Local development
 
 macOS / Linux:
 
 ```bash
-git clone https://github.com/hAcKlyc/MyAgents.git
+git clone <repository-url>
 cd MyAgents
 ./setup.sh
 ./start_dev.sh
@@ -444,102 +343,73 @@ cd MyAgents
 Windows:
 
 ```powershell
-git clone https://github.com/hAcKlyc/MyAgents.git
+git clone <repository-url>
 cd MyAgents
 .\setup_windows.ps1
 .\build_windows.ps1
 ```
 
-`setup.sh` prepares the bundled Node.js runtime, installs dependencies, and caches the offline document-processing resources. Repeated runs reuse the verified document-resource cache. The default Mino workspace template is committed under `bundled-workspaces/mino/`, so builds and initialization require no extra GitHub SSH access or template download.
+For the daily Windows test package:
 
-### Common Commands
+```powershell
+$env:MYAGENTS_PACKAGE_NO_PAUSE='1'; & .\Package-MyAgents-Test.cmd
+```
+
+Validate the packaging environment without building:
+
+```powershell
+$env:MYAGENTS_PACKAGE_NO_PAUSE='1'; & .\Package-MyAgents-Test.cmd -ValidateOnly
+```
+
+### Common commands
 
 ```bash
-# Start development environment
 ./start_dev.sh
-
-# Type check
 npm run typecheck
-
-# Lint, including ESLint and dependency-cruiser architecture boundary checks
 npm run lint
-
-# Test layers
-npm run test:classification  # server test naming / classification guard
-npm run test:unit            # pure logic fast pool
-npm run test:dom             # React/jsdom components and hooks
-npm run test:integration     # CI-safe backend integration, no real network/secrets
-npm test                     # classification + unit + dom + integration
-npm run test:credentialed    # real provider / SDK smoke, explicit local run
-
-# Debug build with DevTools
-./build_dev.sh
-
-# macOS production build
-./build_macos.sh
-
-# Linux AppImage + deb build
-./build_linux.sh
+npm run test:classification
+npm run test:unit
+npm run test:dom
+npm run test:integration
+npm test
 ```
 
-Linux build machines need Tauri/WebKit system dependencies. On Ubuntu/Debian:
-
-```bash
-sudo apt-get install -y \
-  build-essential libssl-dev libgtk-3-dev libayatana-appindicator3-dev \
-  librsvg2-dev libwebkit2gtk-4.1-dev patchelf
-```
-
-### Project Structure
+### Repository layout
 
 ```text
-src/renderer/                 React frontend
-src/server/                   Node.js Sidecar
-src/server/plugin-bridge/     OpenClaw Plugin Bridge
-src/cli/                      myagents CLI
-src/shared/                   Shared frontend/backend types
-src-tauri/                    Tauri Rust layer
-bundled-agents/               Built-in Agents
-bundled-skills/               Built-in Skills
-specs/                        Architecture, design, and technical docs
+src/renderer/workbenches/novel/  My Novel Studio workbench
+src/renderer/workbench-sdk/      Workbench host interfaces
+src/shared/workbenches/novel/    Shared novel-domain logic
+src/server/tools/                Novel workbench built-in tools
+src-tauri/                       Tauri Rust layer
+specs/                           Architecture, design, docs, and screenshots
 ```
 
-### Key Architecture Principles
+### Design references
 
-- **Session : Sidecar = 1 : 1**: each session has at most one Sidecar. Tabs, CronTasks, BackgroundCompletion, and Agents share lifecycle through the Owner model.
-- **Tab-scoped isolation**: Chat Tabs use tab-scoped APIs. Settings and Launcher use the Global Sidecar.
-- **Control-plane HTTP/SSE goes through the Rust proxy**: ordinary APIs never connect from the WebView to a Sidecar; only the `/refs/:id` and `/attachment/*` large-payload data plane uses native fetch under CORS, CSP, and path-safety constraints.
-- **Workspace file IO goes through Tauri/Rust**: file tree, reads/writes, search, open, and watcher do not use Sidecar HTTP.
-- **Config writes are disk-first**: shared multi-process config must load the latest disk state before merging and writing.
-- **Runtime routing must be explicit**: session operations go through the `src/server/session-engine/` facade, whose selector chooses the builtin or external adapter; the builtin SDK must not resume external-runtime sessions.
+- [Novel Workbench Design](Novel-Design.md)
+- [Workbench Platform](specs/tech_docs/workbench_platform.md)
+- [Novel Inspiration](specs/tech_docs/novel_inspiration.md)
+- [World Simulation Design](世界推演设计方案.md)
+- [Architecture](specs/ARCHITECTURE.md)
 
-Read [specs/ARCHITECTURE.md](specs/ARCHITECTURE.md) for the full architecture. Module-specific docs:
+Read the design document for the target module before coding. Confirm the source of truth, repository owner, Agent protocol, and host boundary before making changes.
 
-- [Sidecar cold start](specs/tech_docs/sidecar_cold_start.md)
-- [Session architecture](specs/tech_docs/session_architecture.md)
-- [Multi-Agent Runtime](specs/tech_docs/multi_agent_runtime.md)
-- [Task Center](specs/tech_docs/task_center.md)
-- [Plugin Bridge](specs/tech_docs/plugin_bridge_architecture.md)
-- [MCP / Pit-of-Success](specs/tech_docs/pit_of_success.md)
-- [CLI architecture](specs/tech_docs/cli_architecture.md)
-- [Design system](specs/DESIGN.md)
+### Pre-commit checks
 
-### Before Contributing
-
-Run at least:
+At minimum:
 
 ```bash
 npm run typecheck
 npm run lint
 npm run test:classification
 npm run test:unit
+npm run test:dom
 ```
 
-For backend Session, Runtime, IO, or security-boundary changes, also run `npm run test:integration`. Real provider / SDK smoke tests live under `npm run test:credentialed` and are explicit local checks, not default CI.
+Changes involving Rust, Tauri commands, Agent sessions, file IO, or process boundaries should also run the matching integration tests.
 
-If your change touches Rust, Tauri commands, Sidecar lifecycle, Runtime, MCP, Task Center, or Plugin Bridge, read the matching `specs/tech_docs/` document first so the change grows from the existing architecture.
-
-Commit messages follow Conventional Commits:
+Commit messages use Conventional Commits:
 
 ```text
 feat: add ...
@@ -552,16 +422,6 @@ chore: bump ...
 
 ## License
 
-MyAgents is available under the
-[GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
-Individuals and companies may use it for free, including commercially, when
-they comply with the AGPL. A separate commercial license is required for
-closed-source modification, embedding, OEM distribution, proprietary
-distribution, or hosted offerings that do not comply with the AGPL. Contact
-[myagents.io@gmail.com](mailto:myagents.io@gmail.com).
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`). Modified distributions and network services based on modified versions must comply with the AGPL, including providing corresponding source where applicable.
 
-See [LICENSING.md](LICENSING.md) for details,
-[COMMERCIAL-LICENSING.md](COMMERCIAL-LICENSING.md) for a commercial licensing
-overview, and
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for independently licensed
-components.
+See [LICENSING.md](LICENSING.md) for the full terms and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party licenses.

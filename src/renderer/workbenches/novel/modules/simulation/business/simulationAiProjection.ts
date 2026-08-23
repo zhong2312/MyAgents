@@ -265,6 +265,48 @@ function parseJsonOutput(output: string): unknown {
   }
 }
 
+/**
+ * The narrative is the primary result. Some providers ignore the JSON wrapper
+ * but still return a usable story, so keep that story instead of sending it
+ * through a second formatting request. Refusals and transport errors are not
+ * narrative and must remain errors.
+ */
+function extractNarrativeFallback(output: string): string | null {
+  const narrative = output.replace(/^\uFEFF/u, "").trim();
+  if (!narrative || narrative.length < 8) return null;
+  if (
+    narrative.startsWith("{") ||
+    narrative.startsWith("[") ||
+    narrative.startsWith("```") ||
+    (/^"[\s\S]*"$/u.test(narrative) && !/[“”]/u.test(narrative))
+  ) {
+    return null;
+  }
+  if (/(?:"(?:narrative|events|entityRefs|stateChanges)"\s*:)/u.test(narrative)) {
+    return null;
+  }
+
+  const compact = narrative.replace(/\s+/gu, " ");
+  const refusalOrError = [
+    /^(?:我|本模型|作为(?:AI|模型))(?:无法|不能|没法|不具备)/u,
+    /^(?:抱歉|很抱歉|对不起)[，,:：\s]*(?:我|本模型|无法|不能|暂时)/u,
+    /^(?:无法|不能|没法)(?:直接)?(?:读取|访问|完成|生成|处理)/u,
+    /^(?:the model returned no text|the model returned an empty response)\.?$/iu,
+    /^(?:sorry|i(?:'m| am) sorry|i cannot|i can't|unable to|cannot)\b/iu,
+    /^(?:error|failed|failure|请求失败|模型错误|AI 推演失败)[:：\s]/iu,
+  ];
+  if (refusalOrError.some((pattern) => pattern.test(compact))) return null;
+
+  const meaningfulLength = narrative.replace(/[\s`*_#>\-]/gu, "").length;
+  if (meaningfulLength < 8) return null;
+  const hasNarrativeSignal =
+    /[。！？；，：]/u.test(narrative) ||
+    /(?:他|她|他们|人物|势力|城|镇|村|世界|随后|后来|于是|决定|发现|开始|最终|一日|那天)/u.test(
+      narrative,
+    );
+  return hasNarrativeSignal || meaningfulLength >= 24 ? narrative : null;
+}
+
 function parsePayload(
   output: string,
   input: SimulationAiProjectionInput,
@@ -272,7 +314,19 @@ function parsePayload(
   readonly payload: z.infer<typeof aiPayloadSchema>;
   readonly droppedEventCount: number;
 } {
-  const parsed = parseJsonOutput(output);
+  let parsed: unknown;
+  try {
+    parsed = parseJsonOutput(output);
+  } catch (cause) {
+    const narrative = extractNarrativeFallback(output);
+    if (narrative) {
+      return {
+        payload: { narrative, events: [] },
+        droppedEventCount: 0,
+      };
+    }
+    throw cause;
+  }
   const record = asRecord(parsed);
   if (!record) {
     throw new SimulationAiFormatError(
@@ -317,6 +371,18 @@ function parsePayload(
       `AI 推演结果格式无效：${result.error.issues
         .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
         .join("；")}`,
+      output,
+    );
+  }
+  // 没有正文且没有任何候选是模型空响应；如果模型确实返回了候选，
+  // 但候选因越界或无法确认主体全部被丢弃，则保留空投影交给工作流层决定是否重试。
+  if (
+    !result.data.narrative.trim() &&
+    result.data.events.length === 0 &&
+    rawEvents.length === 0
+  ) {
+    throw new SimulationAiFormatError(
+      "AI 推演结果没有故事正文或可用事件候选",
       output,
     );
   }
@@ -713,9 +779,9 @@ export function buildSimulationAiPrompt(
   return [
     "你是小说工作台的 AI 故事生成层。请依据小说工作台内置工具读取正式人物、势力、世界、时间线和修行事实，再为当前轮次生成事件候选。",
     "时间调度只提供当前轮次的时间窗口和硬约束事实；你不能改写时间、创建未被资料支持的稳定实体，也不能把推测写成 confirmed。",
-    '只返回 JSON，不要 Markdown、解释或代码围栏。格式必须是 {"narrative":"故事正文","events":[...]}，events 最多 8 项。',
+    '优先返回 JSON 包装 {"narrative":"故事正文","events":[...]}，events 最多 8 项；如果无法可靠构造事件数组，直接返回连续的中文故事正文也可以，不能因为结构化字段困难而拒答或返回空文本。',
     "narrative 是给作者直接阅读的中文故事，不是字段清单：按时间顺序连贯叙述人物发生了什么、冲突如何出现、人物做了什么决策、势力如何反应、世界过程如何变化、是否诞生了新人物或新势力、他们接下来可能如何行动，以及当地人民的生活状态变化。只写本轮窗口内有依据的结果；没有依据的内容使用‘可能’‘尚未确认’，即使某个候选没有可引用的正式触发事实也可以保留，但必须让故事语气保持不确定，不要把事件数组逐条机械复述。",
-    "只读工具最多调用 10 次；工具达到调用上限、返回空结果或调用失败时，不要向作者解释原因，立即依据已经取得的资料返回 JSON。资料不足以形成结构化事件时，仍要根据已经读取到的正式事实返回 narrative；此时 events 可以为空，但 narrative 必须说明当前人物、势力、世界过程或民生正在发生的、可被事实支持的变化。只有完全没有可用事实时，才返回 narrative 为空且 events 为空。不得输出拒绝说明或自然语言。",
+    "只读工具最多调用 10 次；工具达到调用上限、返回空结果或调用失败时，不要向作者解释工具原因，立即依据已经取得的资料返回故事正文。资料不足以形成结构化事件时，events 可以为空，但 narrative 必须说明当前人物、势力、世界过程或民生正在发生的、可被事实支持的变化。只有完全没有可用事实时才报告无法形成故事，不要伪造事件。",
     "每个事件必须包含 kind、title、summary、time、certainty、source、entityRefs、actorRefs、locationRef、targetRefs、triggerFacts、decision、action、stateChanges、uncertainty、causeEventIds、propagations、ruleIds。每条非诊断事件至少要有一个真实 actorRef 或 world/location 引用，并且 summary 要写出具体主体、地点和行动；没有真实主体时返回空 events。certainty 只能使用 inferred、uncertain、blocked、aggregated；没有证据时使用 uncertain。triggerFacts 可以为空：有正式事实时填写 {id,label,value,sourcePath}，没有可引用事实时保持空数组，不得为了通过校验虚构事实；此时 certainty 使用 uncertain，并在 uncertainty 中说明事实缺口。",
     "time 必须位于当前轮次 startTime 和 endTime（含边界）之间。entityRefs、actorRefs、targetRefs、locationRef 和 stateChanges.entityRef 只能使用上下文提供的 allowedEntityRefs；不确定主体请留空，不要伪造 ID。causeEventIds 只能引用 hardEvents 或 recentEvents 中列出的 ID；ruleIds 只能引用 hardEvents 中列出的规则 ID。",
     "propagations 可以为空；若填写，只写 targetSpaceId、channel、arrivesAt、status、summary，arrivesAt 必须落在本轮时间窗口内。",

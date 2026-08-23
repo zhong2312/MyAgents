@@ -27,7 +27,7 @@ import { parseSessionHistoryGroupPath } from "../../../shared/session-history";
 interface WorkspaceSessionHistoryProps {
   readonly agentDir: string;
   readonly currentSessionId?: string | null;
-  readonly onSelectSession?: (sessionId: string) => void;
+  readonly onSelectSession?: (sessionId: string, title: string) => void;
   /** Controls the initial accordion state without changing generic workspace history defaults. */
   readonly defaultExpanded?: boolean;
 }
@@ -225,7 +225,7 @@ export default function WorkspaceSessionHistory({
         aria-current={current ? "page" : undefined}
         title={getSessionDisplayText(session)}
         onClick={() => {
-          if (!current) onSelectSession?.(session.id);
+          if (!current) onSelectSession?.(session.id, getSessionDisplayText(session));
         }}
         className={`flex h-8 w-full items-center gap-2 pr-3 text-left text-xs transition-colors ${
           current

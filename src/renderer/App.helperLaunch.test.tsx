@@ -993,6 +993,54 @@ describe('App helper launch', () => {
     });
   });
 
+  it('opens workbench history in the current Chat tab instead of creating a top-level tab', async () => {
+    render(<App />);
+    const sourceSession = {
+      id: 'workbench-history-source',
+      agentDir: mocks.project.path,
+      title: '当前工作台会话',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    };
+    await act(async () => {
+      await latestSidebarProps().onOpenSession(sourceSession, mocks.project);
+    });
+
+    const chatProps = mocks.chatProps.at(-1) as {
+      onOpenSessionInCurrentTab: (
+        sessionId: string,
+        title: string,
+        source: string,
+      ) => Promise<boolean>;
+    };
+    let opened = false;
+    await act(async () => {
+      opened = await chatProps.onOpenSessionInCurrentTab(
+        'workbench-history-target',
+        '历史目标会话',
+        'workspace_history',
+      );
+    });
+
+    expect(opened).toBe(true);
+    const tabs = mocks.tabbarProps.at(-1)?.tabs as Array<{
+      sessionId?: string;
+      title?: string;
+    }>;
+    expect(tabs).toHaveLength(2);
+    expect(tabs.filter((tab) => tab.sessionId === 'workbench-history-target')).toHaveLength(1);
+    expect(tabs.find((tab) => tab.sessionId === 'workbench-history-target')).toMatchObject({
+      title: '历史目标会话',
+    });
+    expect(mocks.track).toHaveBeenLastCalledWith(
+      'history_open',
+      expect.objectContaining({
+        session_id: 'workbench-history-target',
+        entry_source: 'workspace_history',
+      }),
+    );
+  });
+
   it('activates a new sidebar Session tab before its Sidecar is ready', async () => {
     let resolveEnsure!: (result: { port: number; isNew: boolean }) => void;
     mocks.ensureSessionSidecar.mockReturnValueOnce(new Promise((resolve) => {

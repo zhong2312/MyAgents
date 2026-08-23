@@ -219,6 +219,11 @@ describe("WorldSimulationWorkbench", () => {
     const cancelButton = await screen.findByRole("button", {
       name: "取消推演",
     });
+    expect(cancelButton).toHaveAttribute("aria-label", "取消推演");
+    expect(cancelButton).toHaveAttribute(
+      "title",
+      "停止当前 AI 推演；未完成的本轮不会保存",
+    );
     fireEvent.click(cancelButton);
 
     await waitFor(() => expect(onCancelAiRun).toHaveBeenCalledOnce());
@@ -337,7 +342,10 @@ describe("WorldSimulationWorkbench", () => {
   it("支持在运行操作中配置 AI 请求超时并持久化", async () => {
     const storage = createStorage();
     const onAiRun = vi.fn(async (_request: SimulationAiRunRequest) =>
-      JSON.stringify({ narrative: "", events: [] }),
+      JSON.stringify({
+        narrative: "北山的风雪暂时平息，村民开始恢复日常耕作。",
+        events: [],
+      }),
     );
     render(
       <WorldSimulationWorkbench
@@ -470,6 +478,147 @@ describe("WorldSimulationWorkbench", () => {
         "本轮 AI 尚未生成该类可审计变化，故事正文仍以 AI 叙事为准。",
       ),
     ).toHaveLength(4);
+  });
+
+  it("模型只返回故事正文时只请求一次 AI 并保存本轮", async () => {
+    const storage = createStorage();
+    const narrative =
+      "北山的风雪提前压过山口。沈照夜决定先护住山村，再追查灵脉异动。";
+    const onAiRun = vi.fn(async (_request: SimulationAiRunRequest) => narrative);
+
+    render(
+      <WorldSimulationWorkbench
+        storage={storage}
+        projectTitle="测试小说"
+        isActive
+        onAiRun={onAiRun}
+        registerNavigationGuard={() => () => undefined}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "创建并进入舞台" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "AI 推演 1 轮" }),
+    );
+
+    expect(await screen.findByText(narrative)).toBeInTheDocument();
+    expect(onAiRun).toHaveBeenCalledOnce();
+    expect(screen.queryByText("AI 推演结果格式整理失败，请重试")).toBeNull();
+  });
+
+  it("读取旧版内嵌人物资料并把目标与地点带入 AI 上下文", async () => {
+    const storage = new NovelMemoryStorage({
+      "characters/index.json": `${JSON.stringify({
+        characters: [
+          {
+            id: "hero",
+            name: "沈照夜",
+            goals: "护住北山镇",
+            motivation: "不让村民卷入灵脉灾变",
+            currentLocationId: "north",
+            currentLocation: "北山镇",
+            status: "活跃",
+            inventory: [{ name: "护身符" }],
+          },
+        ],
+      })}\n`,
+      "world/factions/index.json": '{"factions":[]}\n',
+      "world/locations/index.json": `${JSON.stringify({
+        locations: [
+          {
+            id: "north",
+            nodeId: "world-root",
+            parentLocationId: null,
+            name: "北山镇",
+            type: "城镇",
+            status: "appeared",
+            summary: "边境城镇",
+            aliases: [],
+            appearanceNote: "",
+            description: "",
+            order: 0,
+          },
+        ],
+      })}\n`,
+      "timeline/index.json": '{"events":[]}\n',
+      "world/setting-library/spatial-tree.json":
+        '{"nodes":[{"id":"world-root","name":"测试世界","parentId":null}]}\n',
+    });
+    let request: SimulationAiRunRequest | undefined;
+    const onAiRun = vi.fn(async (next: SimulationAiRunRequest) => {
+      request = next;
+      return "沈照夜在北山镇守住了第一道防线。";
+    });
+
+    render(
+      <WorldSimulationWorkbench
+        storage={storage}
+        projectTitle="测试小说"
+        isActive
+        onAiRun={onAiRun}
+        registerNavigationGuard={() => () => undefined}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "创建并进入舞台" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "AI 推演 1 轮" }),
+    );
+
+    await screen.findByText("沈照夜在北山镇守住了第一道防线。");
+    expect(request?.prompt).toContain("护住北山镇");
+    expect(request?.prompt).toContain("不让村民卷入灵脉灾变");
+    expect(request?.prompt).toContain("北山镇");
+  });
+
+  it("读取独立时间线事件记录并把正式事实交给时间调度", async () => {
+    const storage = new NovelMemoryStorage({
+      "characters/index.json": '{"characters":[{"id":"hero","name":"沈照夜"}]}\n',
+      "world/factions/index.json": '{"factions":[]}\n',
+      "world/locations/index.json": '{"locations":[]}\n',
+      "timeline/index.json": `${JSON.stringify({
+        events: [{ id: "fact-north", path: "timeline/events/records/fact-north.json" }],
+      })}\n`,
+      "timeline/events/records/fact-north.json": `${JSON.stringify({
+        id: "fact-north",
+        title: "北山封印松动",
+        summary: "北山封印在正式时间线上出现松动。",
+        sortKey: 30,
+        characterIds: ["hero"],
+        factionIds: [],
+        locationIds: [],
+      })}\n`,
+      "world/setting-library/spatial-tree.json":
+        '{"nodes":[{"id":"world-root","name":"测试世界","parentId":null}]}\n',
+    });
+    let request: SimulationAiRunRequest | undefined;
+    const onAiRun = vi.fn(async (next: SimulationAiRunRequest) => {
+      request = next;
+      return "北山封印松动后，沈照夜开始重新布置守阵路线。";
+    });
+
+    render(
+      <WorldSimulationWorkbench
+        storage={storage}
+        projectTitle="测试小说"
+        isActive
+        onAiRun={onAiRun}
+        registerNavigationGuard={() => () => undefined}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "创建并进入舞台" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "AI 推演 1 轮" }),
+    );
+
+    await screen.findByText("北山封印松动后，沈照夜开始重新布置守阵路线。");
+    expect(request?.prompt).toContain("北山封印松动");
+    expect(request?.prompt).toContain("北山封印在正式时间线上出现松动");
   });
 
   it("支持多选观察对象并从万章章节快速定位", async () => {

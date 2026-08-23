@@ -444,7 +444,7 @@
             <div class="workspace-shell">
               <div class="workspace-head">
                 <div class="workspace-context"><div class="workspace-title"><h1><button class="simulation-switcher" id="simulationSwitcher" data-action="toggle-run-switcher" aria-haspopup="true" aria-expanded="false"><span id="workspaceTitle">北境灵脉演化</span><span class="switcher-caret" aria-hidden="true">⌄</span></button></h1><p id="workspaceSubtitle">主推演分支 · 基线：卷一北山封印事件之后</p><div class="run-switcher" id="runSwitcher" aria-label="推演运行列表"><div class="run-switcher-head"><strong>推演运行</strong><span id="runSwitcherCount">3 个运行</span></div><div class="run-switcher-list" id="runSwitcherList"></div><div class="run-switcher-footer"><button class="btn btn-quiet" data-action="open-setup">＋ 新建推演</button></div></div></div><div class="round-meta"><div class="meta-block"><small>当前时间</small><strong id="currentTime">第 7 年 · 秋末</strong></div><div class="meta-block"><small>轮次跨度</small><strong id="workspaceSpan">三个月</strong></div></div></div>
-                 <div class="workspace-actions"><button class="btn btn-primary" data-action="advance" title="依据正式资料与时间边界生成一轮 AI 故事">AI 推演 1 轮</button><button class="btn btn-danger" id="cancelAdvance" data-action="cancel" hidden>■ 取消推演</button><button class="btn" data-action="continuous">连续 AI 推演</button><input class="round-count" id="roundCount" type="number" min="1" max="9" value="3" aria-label="连续推演轮数" /><button class="btn btn-icon" aria-label="运行操作" title="运行操作" data-action="more">⋯</button><div class="popover" id="continuousPopover"><strong>连续 AI 推演</strong><p>本原型使用当前正式资料和时间边界模拟 AI 推演结果；接入小说工作台后可请求真实模型。</p><div class="popover-row"><input id="continuousCount" type="number" min="1" max="9" value="3" aria-label="连续推演轮数" /><span>轮</span><button class="btn btn-primary" data-action="confirm-continuous">开始</button></div></div></div>
+                 <div class="workspace-actions"><button class="btn btn-primary" data-action="advance" title="依据正式资料与时间边界生成一轮 AI 故事">AI 推演 1 轮</button><button class="btn btn-danger" id="cancelAdvance" data-action="cancel" aria-label="取消当前 AI 推演" title="停止当前 AI 推演；未完成的本轮不会保存" hidden>■ 取消推演</button><button class="btn" data-action="continuous">连续 AI 推演</button><input class="round-count" id="roundCount" type="number" min="1" max="9" value="3" aria-label="连续推演轮数" /><button class="btn btn-icon" aria-label="运行操作" title="运行操作" data-action="more">⋯</button><div class="popover" id="continuousPopover"><strong>连续 AI 推演</strong><p>本原型使用当前正式资料和时间边界模拟 AI 推演结果；接入小说工作台后可请求真实模型。</p><div class="popover-row"><input id="continuousCount" type="number" min="1" max="9" value="3" aria-label="连续推演轮数" /><span>轮</span><button class="btn btn-primary" data-action="confirm-continuous">开始</button></div></div></div>
                </div>
                <div class="workspace-ribbon" aria-label="运行上下文">
                  <span class="ribbon-item"><i></i><span>基线</span><strong>已冻结</strong></span>
@@ -702,6 +702,8 @@
         cancelButton.hidden = !isSettling;
         cancelButton.disabled = cancelRequested;
         cancelButton.textContent = cancelRequested ? "正在取消" : "■ 取消推演";
+        cancelButton.setAttribute("aria-busy", cancelRequested ? "true" : "false");
+        cancelButton.setAttribute("aria-label", cancelRequested ? "正在取消" : "取消推演");
       }
       function typeForEvent(event) {
         if (!event) return "world";

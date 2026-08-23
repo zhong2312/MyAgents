@@ -195,12 +195,31 @@ function numberValue(value: unknown): number | null {
     : null;
 }
 
+function timelineTimeValue(value: unknown): number | null {
+  if (typeof value === "number") return numberValue(value);
+  if (typeof value !== "string" || !/^\d+$/u.test(value.trim())) return null;
+  const parsed = Number(value.trim());
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function stringList(value: unknown): readonly string[] {
   return Array.isArray(value)
     ? value.filter(
         (item): item is string =>
           typeof item === "string" && item.trim().length > 0,
       )
+    : [];
+}
+
+function namedStringList(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.flatMap((item) => {
+        if (typeof item === "string" && item.trim()) return [item.trim()];
+        if (!item || typeof item !== "object") return [];
+        const record = item as Record<string, unknown>;
+        const label = stringValue(record.name ?? record.label ?? record.id);
+        return label ? [label] : [];
+      })
     : [];
 }
 
@@ -214,6 +233,7 @@ async function readSimulationInputs(
     "timeline/index.json",
     "world/setting-library/spatial-tree.json",
     "manuscript/index.json",
+    "timeline/events.json",
   ] as const;
   const contents = await Promise.all(
     paths.map((path) => optionalText(storage, path)),
@@ -231,8 +251,12 @@ async function readSimulationInputs(
   const locationEntries = Array.isArray(locationIndex.locations)
     ? locationIndex.locations
     : [];
-  const timelineEntries = Array.isArray(timelineIndex.events)
+  const aggregateTimeline = parseObject(contents[6], paths[6]);
+  const indexedTimelineEntries = Array.isArray(timelineIndex.events)
     ? timelineIndex.events
+    : [];
+  const aggregateTimelineEntries = Array.isArray(aggregateTimeline.events)
+    ? aggregateTimeline.events
     : [];
   const recordPaths = [
     ...characterEntries.map((entry) =>
@@ -246,6 +270,11 @@ async function readSimulationInputs(
         : null,
     ),
     ...locationEntries.map((entry) =>
+      entry && typeof entry === "object"
+        ? (entry as Record<string, unknown>).path
+        : null,
+    ),
+    ...indexedTimelineEntries.map((entry) =>
       entry && typeof entry === "object"
         ? (entry as Record<string, unknown>).path
         : null,
@@ -268,7 +297,12 @@ async function readSimulationInputs(
       const indexEntry = entry as Record<string, unknown>;
       const id = stringValue(indexEntry.id);
       if (!id) return [];
-      const record = records.get(stringValue(indexEntry.recordPath));
+      // 新版索引只保留摘要和 recordPath；旧版项目则把完整记录直接内嵌
+      // 在 index.json。两种来源必须合并，独立记录优先覆盖旧摘要字段。
+      const record = {
+        ...indexEntry,
+        ...(records.get(stringValue(indexEntry.recordPath)) ?? {}),
+      };
       return [
         {
           id,
@@ -284,7 +318,7 @@ async function readSimulationInputs(
           goals: stringValue(record?.goals, ""),
           motivation: stringValue(record?.motivation, ""),
           factionId: stringValue(record?.factionId, "") || null,
-          resources: stringList(record?.inventory),
+          resources: namedStringList(record?.inventory),
           nextActionTime: numberValue(
             record?.nextActionTime ?? record?.actionCompletesAt,
           ),
@@ -302,7 +336,10 @@ async function readSimulationInputs(
       const indexEntry = entry as Record<string, unknown>;
       const id = stringValue(indexEntry.id);
       if (!id) return [];
-      const record = records.get(stringValue(indexEntry.path));
+      const record = {
+        ...indexEntry,
+        ...(records.get(stringValue(indexEntry.path)) ?? {}),
+      };
       const territories = Array.isArray(record?.territories)
         ? record.territories
         : [];
@@ -356,7 +393,10 @@ async function readSimulationInputs(
       const indexEntry = entry as Record<string, unknown>;
       const id = stringValue(indexEntry.id);
       if (!id) return [];
-      const record = records.get(stringValue(indexEntry.path));
+      const record = {
+        ...indexEntry,
+        ...(records.get(stringValue(indexEntry.path)) ?? {}),
+      };
       return [
         {
           id,
@@ -367,11 +407,22 @@ async function readSimulationInputs(
       ];
     },
   );
-  const timelineEvents: SimulationTimelineSnapshot[] = timelineEntries.flatMap(
+  const timelineCandidates = [
+    ...indexedTimelineEntries,
+    ...aggregateTimelineEntries,
+  ];
+  const seenTimelineIds = new Set<string>();
+  const timelineEvents: SimulationTimelineSnapshot[] = timelineCandidates.flatMap(
     (entry) => {
       if (!entry || typeof entry !== "object") return [];
-      const item = entry as Record<string, unknown>;
+      const indexEntry = entry as Record<string, unknown>;
+      const item = {
+        ...indexEntry,
+        ...(records.get(stringValue(indexEntry.path)) ?? {}),
+      };
       const id = stringValue(item.id);
+      if (!id || seenTimelineIds.has(id)) return [];
+      seenTimelineIds.add(id);
       return id
         ? [
             {
@@ -379,8 +430,8 @@ async function readSimulationInputs(
               title: stringValue(item.title, id),
               summary: stringValue(item.summary, ""),
               timeLabel: stringValue(item.timeLabel, ""),
-              time: numberValue(
-                item.time ?? item.worldTime ?? item.worldSortKey,
+              time: timelineTimeValue(
+                item.time ?? item.worldTime ?? item.sortKey ?? item.worldSortKey,
               ),
               characterIds: stringList(item.characterIds),
               factionIds: stringList(item.factionIds),
@@ -1573,15 +1624,26 @@ export default function WorldSimulationWorkbench({
       label: `世界推演 · ${run.name} · 第 ${result.round.index} 轮`,
       prompt: buildSimulationAiPrompt(aiInput),
       systemPrompt:
-        "你是世界推演的 AI 故事生成层。时间调度只提供时间窗口和约束事实；本轮所有故事、人物行动、势力策略、生命代际、资源传播与世界变化都必须由 AI 依据已取得资料生成。只输出当前轮次的故事正文与事件候选 JSON，不要直接写入任何正式事实。narrative 是作者的主阅读内容，events 是辅助审计账本；没有可落盘事件时仍要保留故事；候选缺少正式触发事实时可以保留，但必须使用 uncertain 并说明事实缺口，不得虚构证据。",
+        "你是世界推演的 AI 故事生成层。时间调度只提供时间窗口和约束事实；本轮所有故事、人物行动、势力策略、生命代际、资源传播与世界变化都必须由 AI 依据已取得资料生成。narrative 是作者的主阅读内容，events 只是辅助审计账本；优先返回当前轮次的连续中文故事和可选事件 JSON，无法可靠构造事件字段时直接返回故事正文，不要因为 JSON 格式困难而拒答或返回空文本。不要直接写入任何正式事实；候选缺少正式触发事实时可以保留，但必须使用 uncertain 并说明事实缺口，不得虚构证据。",
       timeoutMs: aiTimeoutMinutes(run) * 60_000,
       streamOutput: true,
       usesNovelContextTools: true,
     });
     setAiProgress("正在校验 AI 事件候选");
     let projected: ReturnType<typeof projectSimulationAiEvents>;
+    const assertUsableProjection = (
+      candidate: ReturnType<typeof projectSimulationAiEvents>,
+      rawOutput: string,
+    ) => {
+      if (candidate.narrative.trim() || candidate.events.length > 0) return;
+      throw new SimulationAiFormatError(
+        "AI 推演结果没有故事正文或可用事件候选",
+        rawOutput,
+      );
+    };
     try {
       projected = projectSimulationAiEvents(aiOutput, aiInput);
+      assertUsableProjection(projected, aiOutput);
     } catch (cause) {
       if (
         !(cause instanceof SimulationAiJsonParseError) &&
@@ -1607,6 +1669,7 @@ export default function WorldSimulationWorkbench({
       setAiProgress("正在校验格式整理结果");
       try {
         projected = projectSimulationAiEvents(repairedOutput, aiInput);
+        assertUsableProjection(projected, repairedOutput);
       } catch (repairCause) {
         if (
           repairCause instanceof SimulationAiJsonParseError ||
@@ -1718,9 +1781,8 @@ export default function WorldSimulationWorkbench({
       runIds.map((runId) => onCancelAiRun(runId)),
     );
     if (results.some((result) => result.status === "rejected")) {
-      aiCancelRequestedRef.current = false;
       setIsCancelling(false);
-      setError("取消请求未能送达；AI 推演仍在运行，请稍后重试。");
+      setError("取消请求未能送达；本地结果仍会丢弃，可再次尝试取消。");
     }
   };
   const switchRun = async (runId: string) => {
@@ -2029,6 +2091,9 @@ export default function WorldSimulationWorkbench({
                 type="button"
                 className="ws-btn ws-btn-danger"
                 disabled={isCancelling}
+                aria-label={isCancelling ? "正在取消" : "取消推演"}
+                aria-busy={isCancelling}
+                title="停止当前 AI 推演；未完成的本轮不会保存"
                 onClick={() => void cancelAdvance()}
               >
                 {isCancelling ? (

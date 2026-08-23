@@ -816,6 +816,14 @@ export const MemoizedTabContent = memo(
                       historyEntrySource,
                     )
                   }
+                  onOpenSessionInCurrentTab={(sessionId, title, historyEntrySource) =>
+                    onOpenHistorySessionInCurrentTab(
+                      tab.id,
+                      sessionId,
+                      title,
+                      historyEntrySource,
+                    )
+                  }
                   onOpenSessionInNewTab={(sessionId, title) =>
                     onOpenHistorySession(
                       tab.id,
@@ -3636,9 +3644,11 @@ export default function App() {
           title,
           sidecarConfigDisposition: "pending",
         });
-        setTabs((current) =>
-          current.map((tab) => (tab.id === tabId ? patch : tab)),
-        );
+        flushSync(() => {
+          setTabs((current) =>
+            current.map((tab) => (tab.id === tabId ? patch : tab)),
+          );
+        });
         return await materializeExistingSessionTab(tabId, sessionId, agentDir);
       } finally {
         releaseTransition();
@@ -5687,6 +5697,7 @@ export default function App() {
           <div className="flex min-w-0 flex-1 flex-col" data-tab-workspace>
             {/* Chrome-style titlebar with tabs */}
             <CustomTitleBar
+              onOpenSettings={handleOpenGeneralSettings}
               updateReady={updateReady}
               updateVersion={updateVersion}
               updateInstalling={updateInstalling}
