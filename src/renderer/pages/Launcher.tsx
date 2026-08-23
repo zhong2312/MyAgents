@@ -38,7 +38,7 @@ import {
     resolveProvider,
     pairBuiltinSelection,
 } from '@/config/configService';
-import { patchAgentConfig, patchAgentProjectConfig, getAgentById, disableAgentAndStopChannels, enableAgentAndStartChannels } from '@/config/services/agentConfigService';
+import { patchAgentConfig, patchAgentProjectConfig, getAgentById, setAgentEnabledForLifecycle, stopAgentChannelsForLifecycle } from '@/config/services/agentConfigService';
 import { archiveProject, unarchiveProject } from '@/config/services/projectService';
 import { persistInputOptionChange } from '@/api/persistInputOption';
 import { createCronTask, startCronTask } from '@/api/cronTaskClient';
@@ -1090,7 +1090,10 @@ export default function Launcher({ onLaunchProject, onOpenHistorySession, isStar
             const wasProactive = agent?.enabled === true;
             const archivedProject = await archiveProject(currentProject.id, { agentEnabledBeforeArchive: wasProactive });
             if (!archivedProject) throw new Error(`Project ${currentProject.id} not found`);
-            if (agent && wasProactive) await disableAgentAndStopChannels(agent);
+            if (agent && wasProactive) {
+                await stopAgentChannelsForLifecycle(agent);
+                await setAgentEnabledForLifecycle(agent.id, false);
+            }
             await refreshConfig();
             toastRef.current.success(t('toasts.workspaceArchived'));
         } catch (err) {
@@ -1111,7 +1114,7 @@ export default function Launcher({ onLaunchProject, onOpenHistorySession, isStar
             if (!unarchivedProject) throw new Error(`Project ${currentProject.id} not found`);
             if (shouldRestoreAgent && currentProject.agentId) {
                 try {
-                    await enableAgentAndStartChannels(currentProject.agentId);
+                    await setAgentEnabledForLifecycle(currentProject.agentId, true);
                 } catch (err) {
                     await archiveProject(currentProject.id, {
                         archivedAtIso: currentProject.archivedAt,
@@ -1339,7 +1342,6 @@ export default function Launcher({ onLaunchProject, onOpenHistorySession, isStar
                         onOpenSession={handleOverlayOpenTask}
                         onClose={handleCloseOverlay}
                         taskCenterData={taskCenterData}
-                        initialMode={overlayMode}
                     />
                 </Suspense>
             )}

@@ -79,7 +79,7 @@ const aiEventSchema = z
 const aiPayloadSchema = z
   .object({
     narrative: z.string().default(""),
-    events: z.array(aiEventSchema).max(8),
+    events: z.array(aiEventSchema).max(8).default([]),
   })
   .strict();
 
@@ -95,6 +95,8 @@ export interface SimulationAiProjectionResult {
   readonly events: readonly SimulationEvent[];
   readonly narrative: string;
   readonly rawOutput: string;
+  /** 被兼容归一化丢弃的事件数量；故事正文仍可独立保存。 */
+  readonly droppedEventCount: number;
 }
 
 export class SimulationAiJsonParseError extends Error {
@@ -115,6 +117,78 @@ export class SimulationAiFormatError extends Error {
     this.name = "SimulationAiFormatError";
     this.rawOutput = rawOutput;
   }
+}
+
+const missingTriggerFactsUncertainty =
+  "缺少可引用的正式触发事实，本事件仅作为 AI 候选，仍需后续资料或剧情确认。";
+
+type RawRecord = Record<string, unknown>;
+type EntityRefType = SimulationEntityRef["type"];
+type EventSource = SimulationEvent["source"];
+
+const eventKindAliases: Readonly<Record<string, SimulationEvent["kind"]>> = {
+  world: "world-process",
+  "world-process": "world-process",
+  character: "character-action",
+  "character-action": "character-action",
+  faction: "faction-strategy",
+  "faction-strategy": "faction-strategy",
+  life: "life-cycle",
+  lifecycle: "life-cycle",
+  "life-cycle": "life-cycle",
+  propagation: "propagation",
+  resource: "resource",
+  diagnostic: "diagnostic",
+};
+
+const eventSourceAliases: Readonly<Record<string, EventSource>> = {
+  character: "character",
+  "character-action": "character",
+  person: "character",
+  faction: "faction",
+  "faction-strategy": "faction",
+  organization: "faction",
+  world: "world",
+  "world-process": "world",
+  rule: "system",
+  system: "system",
+};
+
+const entityTypeAliases: Readonly<Record<string, EntityRefType>> = {
+  character: "character",
+  person: "character",
+  faction: "faction",
+  organization: "faction",
+  location: "location",
+  place: "location",
+  world: "world",
+  "world-process": "world",
+};
+
+const certaintyAliases: Readonly<
+  Record<string, "inferred" | "uncertain" | "blocked" | "aggregated">
+> = {
+  confirmed: "inferred",
+  inferred: "inferred",
+  likely: "inferred",
+  uncertain: "uncertain",
+  possible: "uncertain",
+  blocked: "blocked",
+  aggregated: "aggregated",
+};
+
+function asRecord(value: unknown): RawRecord | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as RawRecord)
+    : null;
+}
+
+function textField(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function arrayField(value: unknown): readonly unknown[] {
+  return Array.isArray(value) ? value : [];
 }
 
 function extractJsonObject(value: string): string | null {
@@ -191,9 +265,53 @@ function parseJsonOutput(output: string): unknown {
   }
 }
 
-function parsePayload(output: string): z.infer<typeof aiPayloadSchema> {
+function parsePayload(
+  output: string,
+  input: SimulationAiProjectionInput,
+): {
+  readonly payload: z.infer<typeof aiPayloadSchema>;
+  readonly droppedEventCount: number;
+} {
   const parsed = parseJsonOutput(output);
-  const result = aiPayloadSchema.safeParse(parsed);
+  const record = asRecord(parsed);
+  if (!record) {
+    throw new SimulationAiFormatError(
+      "AI 推演结果格式无效：root: 必须是对象",
+      output,
+    );
+  }
+  const refs = allowedEntityRefs(input);
+  const knownFacts = new Map<string, SimulationEvent["triggerFacts"][number]>();
+  [...input.hardEvents, ...input.historicalEvents].forEach((event) => {
+    event.triggerFacts.forEach((fact) => {
+      if (!knownFacts.has(fact.id)) knownFacts.set(fact.id, fact);
+    });
+  });
+  const knownEventIds = new Set([
+    ...input.hardEvents.map((event) => event.id),
+    ...input.historicalEvents.map((event) => event.id),
+  ]);
+  const knownRuleIds = new Set(input.hardEvents.flatMap((event) => event.ruleIds));
+  const rawEvents = arrayField(record.events);
+  const eventsToNormalize = rawEvents.slice(0, 8);
+  let droppedEventCount = Math.max(0, rawEvents.length - eventsToNormalize.length);
+  const events = eventsToNormalize.flatMap((event) => {
+    const normalized = normalizeAiEvent(event, {
+      refs,
+      knownFacts,
+      knownEventIds,
+      knownRuleIds,
+      round: input.round,
+    });
+    if (!normalized) droppedEventCount += 1;
+    return normalized ? [normalized] : [];
+  });
+  const narrative =
+    textField(record.narrative) ||
+    textField(record.story) ||
+    textField(record.content);
+  const normalizedPayload = { narrative, events };
+  const result = aiPayloadSchema.safeParse(normalizedPayload);
   if (!result.success) {
     throw new SimulationAiFormatError(
       `AI 推演结果格式无效：${result.error.issues
@@ -202,38 +320,307 @@ function parsePayload(output: string): z.infer<typeof aiPayloadSchema> {
       output,
     );
   }
-  return result.data;
+  return { payload: result.data, droppedEventCount };
+}
+
+function allowedEntityRefs(
+  input: SimulationAiProjectionInput,
+): ReadonlyMap<EntityRefType, ReadonlyMap<string, SimulationEntityRef>> {
+  const characters = new Map<string, SimulationEntityRef>();
+  (input.source.characters ?? []).forEach((item) => {
+    characters.set(item.id, {
+      type: "character",
+      id: item.id,
+      label: item.name,
+    });
+  });
+  if (!characters.size) {
+    characters.set("active-characters", {
+      type: "character",
+      id: "active-characters",
+      label: "当前人物集合",
+    });
+  }
+
+  const factions = new Map<string, SimulationEntityRef>();
+  (input.source.factions ?? []).forEach((item) => {
+    factions.set(item.id, {
+      type: "faction",
+      id: item.id,
+      label: item.name,
+    });
+  });
+  if (!factions.size) {
+    factions.set("active-factions", {
+      type: "faction",
+      id: "active-factions",
+      label: "当前势力集合",
+    });
+  }
+
+  const locations = new Map<string, SimulationEntityRef>();
+  (input.source.locations ?? []).forEach((item) => {
+    locations.set(item.id, {
+      type: "location",
+      id: item.id,
+      label: item.name,
+    });
+  });
+  (input.source.factions ?? []).forEach((faction) => {
+    (faction.territoryIds ?? []).forEach((id, index) => {
+      if (!locations.has(id)) {
+        locations.set(id, {
+          type: "location",
+          id,
+          label: faction.territoryLabels?.[index] ?? id,
+        });
+      }
+    });
+  });
+  if (input.source.observationSpaceId && !locations.has(input.source.observationSpaceId)) {
+    locations.set(input.source.observationSpaceId, {
+      type: "location",
+      id: input.source.observationSpaceId,
+      label: input.source.observationSpaceLabel ?? input.source.observationSpaceId,
+    });
+  }
+  if (!locations.size) {
+    locations.set("observed-space", {
+      type: "location",
+      id: "observed-space",
+      label: input.source.observationSpaceLabel ?? "观测空间",
+    });
+  }
+
+  const world = new Map<string, SimulationEntityRef>([
+    ["world-process", { type: "world", id: "world-process", label: "世界过程" }],
+    ["annual-cycle", { type: "world", id: "annual-cycle", label: "年度周期" }],
+  ]);
+  return new Map([
+    ["character", characters],
+    ["faction", factions],
+    ["location", locations],
+    ["world", world],
+  ]);
 }
 
 function allowedEntityIds(
   input: SimulationAiProjectionInput,
-): ReadonlyMap<SimulationEntityRef["type"], ReadonlySet<string>> {
-  const characterIds = input.source.characters?.map((item) => item.id) ?? [];
-  const factionIds = input.source.factions?.map((item) => item.id) ?? [];
-  const locationIds = [
-    ...(input.source.locations?.map((item) => item.id) ?? []),
-    ...(input.source.factions?.flatMap((item) => item.territoryIds ?? []) ??
-      []),
-    ...(input.source.observationSpaceId
-      ? [input.source.observationSpaceId]
-      : []),
+): ReadonlyMap<EntityRefType, ReadonlySet<string>> {
+  return new Map(
+    [...allowedEntityRefs(input)].map(([type, refs]) => [
+      type,
+      new Set(refs.keys()),
+    ]),
+  );
+}
+
+function normalizeEntityType(value: unknown): EntityRefType | null {
+  const type = textField(value);
+  return entityTypeAliases[type] ?? null;
+}
+
+function resolveEntityRef(
+  value: unknown,
+  refs: ReadonlyMap<EntityRefType, ReadonlyMap<string, SimulationEntityRef>>,
+  preferredTypes: readonly EntityRefType[] = [],
+): SimulationEntityRef | null {
+  const record = asRecord(value);
+  const id = textField(typeof value === "string" ? value : record?.id);
+  if (!id) return null;
+  const explicitType = normalizeEntityType(record?.type);
+  const types: EntityRefType[] = [
+    ...(explicitType ? [explicitType] : []),
+    ...preferredTypes,
+    "character",
+    "faction",
+    "location",
+    "world",
   ];
-  return new Map([
-    [
-      "character",
-      new Set(characterIds.length ? characterIds : ["active-characters"]),
-    ],
-    ["faction", new Set(factionIds.length ? factionIds : ["active-factions"])],
-    [
-      "location",
-      new Set(
-        locationIds.length
-          ? locationIds
-          : [input.source.observationSpaceId ?? "observed-space"],
-      ),
-    ],
-    ["world", new Set(["world-process", "annual-cycle"])],
-  ]);
+  const seen = new Set<EntityRefType>();
+  for (const type of types) {
+    if (seen.has(type)) continue;
+    seen.add(type);
+    const resolved = refs.get(type)?.get(id);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+function normalizeRefs(
+  value: unknown,
+  refs: ReadonlyMap<EntityRefType, ReadonlyMap<string, SimulationEntityRef>>,
+  preferredTypes: readonly EntityRefType[] = [],
+): SimulationEntityRef[] {
+  return arrayField(value).flatMap((item) => {
+    const resolved = resolveEntityRef(item, refs, preferredTypes);
+    return resolved ? [resolved] : [];
+  });
+}
+
+function normalizeFacts(
+  value: unknown,
+  knownFacts: ReadonlyMap<string, SimulationEvent["triggerFacts"][number]>,
+): SimulationEvent["triggerFacts"] {
+  return arrayField(value).flatMap((item) => {
+    if (typeof item === "string") {
+      const known = knownFacts.get(item.trim());
+      return known ? [known] : [];
+    }
+    const record = asRecord(item);
+    if (!record) return [];
+    const id = textField(record.id);
+    const label = textField(record.label);
+    if (!id || !label) return [];
+    const sourcePath =
+      record.sourcePath === null || record.sourcePath === undefined
+        ? null
+        : textField(record.sourcePath) || null;
+    return [
+      {
+        id,
+        label,
+        value: typeof record.value === "string" ? record.value : "",
+        sourcePath,
+      },
+    ];
+  });
+}
+
+function normalizeStateChanges(
+  value: unknown,
+  refs: ReadonlyMap<EntityRefType, ReadonlyMap<string, SimulationEntityRef>>,
+): SimulationEvent["stateChanges"] {
+  return arrayField(value).flatMap((item) => {
+    const record = asRecord(item);
+    if (!record) return [];
+    const entityRef = resolveEntityRef(
+      record.entityRef ?? record.entity,
+      refs,
+    );
+    const field = textField(record.field);
+    const before = typeof record.before === "string" ? record.before : record.from;
+    const after = typeof record.after === "string" ? record.after : record.to;
+    if (!entityRef || !field || typeof before !== "string" || typeof after !== "string") {
+      return [];
+    }
+    return [{ entityRef, field, before, after }];
+  });
+}
+
+function normalizePropagations(
+  value: unknown,
+  refs: ReadonlyMap<EntityRefType, ReadonlyMap<string, SimulationEntityRef>>,
+  round: SimulationRound,
+): z.infer<typeof aiPropagationSchema>[] {
+  const channels = new Set(["message", "travel", "trade", "politics", "ecology"]);
+  const statuses = new Set(["pending", "arrived", "blocked"]);
+  return arrayField(value).flatMap((item) => {
+    const record = asRecord(item);
+    if (!record) return [];
+    const targetSpaceId = textField(record.targetSpaceId);
+    const channel = textField(record.channel);
+    const status = textField(record.status);
+    const arrivesAt = record.arrivesAt;
+    if (
+      !targetSpaceId ||
+      !refs.get("location")?.has(targetSpaceId) ||
+      !channels.has(channel) ||
+      !statuses.has(status) ||
+      typeof arrivesAt !== "number" ||
+      !Number.isInteger(arrivesAt) ||
+      arrivesAt < round.startTime ||
+      arrivesAt > round.endTime
+    ) {
+      return [];
+    }
+    return [
+      {
+        targetSpaceId,
+        channel: channel as z.infer<typeof aiPropagationSchema>["channel"],
+        arrivesAt,
+        status: status as z.infer<typeof aiPropagationSchema>["status"],
+        summary: typeof record.summary === "string" ? record.summary : "",
+      },
+    ];
+  });
+}
+
+function normalizeAiEvent(
+  value: unknown,
+  context: {
+    readonly refs: ReadonlyMap<
+      EntityRefType,
+      ReadonlyMap<string, SimulationEntityRef>
+    >;
+    readonly knownFacts: ReadonlyMap<
+      string,
+      SimulationEvent["triggerFacts"][number]
+    >;
+    readonly knownEventIds: ReadonlySet<string>;
+    readonly knownRuleIds: ReadonlySet<string>;
+    readonly round: SimulationRound;
+  },
+): z.infer<typeof aiEventSchema> | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const kind = eventKindAliases[textField(record.kind)];
+  const source = eventSourceAliases[textField(record.source)];
+  const title = textField(record.title);
+  const time = record.time;
+  if (
+    !kind ||
+    !source ||
+    !title ||
+    typeof time !== "number" ||
+    !Number.isInteger(time) ||
+    time < context.round.startTime ||
+    time > context.round.endTime
+  ) {
+    return null;
+  }
+  const preferredActorTypes: EntityRefType[] =
+    source === "character"
+      ? ["character"]
+      : source === "faction"
+        ? ["faction"]
+        : source === "world"
+          ? ["world", "location"]
+          : ["world", "location"];
+  const certainty = certaintyAliases[textField(record.certainty)] ?? "uncertain";
+  const normalized = {
+    kind,
+    title,
+    summary: typeof record.summary === "string" ? record.summary : "",
+    time,
+    certainty,
+    source,
+    entityRefs: normalizeRefs(record.entityRefs, context.refs, preferredActorTypes),
+    actorRefs: normalizeRefs(record.actorRefs, context.refs, preferredActorTypes),
+    locationRef: resolveEntityRef(record.locationRef, context.refs, ["location"]),
+    targetRefs: normalizeRefs(record.targetRefs, context.refs),
+    triggerFacts: normalizeFacts(record.triggerFacts, context.knownFacts),
+    decision: typeof record.decision === "string" ? record.decision : "",
+    action: typeof record.action === "string" ? record.action : "",
+    stateChanges: normalizeStateChanges(record.stateChanges, context.refs),
+    uncertainty:
+      typeof record.uncertainty === "string" ? record.uncertainty : "",
+    causeEventIds: arrayField(record.causeEventIds).filter(
+      (id): id is string =>
+        typeof id === "string" && context.knownEventIds.has(id.trim()),
+    ),
+    propagations: normalizePropagations(
+      record.propagations,
+      context.refs,
+      context.round,
+    ),
+    ruleIds: arrayField(record.ruleIds).filter(
+      (id): id is string =>
+        typeof id === "string" && context.knownRuleIds.has(id.trim()),
+    ),
+  };
+  const result = aiEventSchema.safeParse(normalized);
+  return result.success ? result.data : null;
 }
 
 function projectionPromptContext(input: SimulationAiProjectionInput): string {
@@ -324,12 +711,12 @@ export function buildSimulationAiPrompt(
   input: SimulationAiProjectionInput,
 ): string {
   return [
-    "你是小说工作台的世界推演裁定层。请依据小说工作台内置工具读取正式人物、势力、世界、时间线和修行事实，再为当前轮次生成事件候选。",
-    "规则内核已经裁定时间窗口和硬事件；你不能改写时间、创建未被资料支持的稳定实体，也不能把推测写成 confirmed。",
+    "你是小说工作台的 AI 故事生成层。请依据小说工作台内置工具读取正式人物、势力、世界、时间线和修行事实，再为当前轮次生成事件候选。",
+    "时间调度只提供当前轮次的时间窗口和硬约束事实；你不能改写时间、创建未被资料支持的稳定实体，也不能把推测写成 confirmed。",
     '只返回 JSON，不要 Markdown、解释或代码围栏。格式必须是 {"narrative":"故事正文","events":[...]}，events 最多 8 项。',
-    "narrative 是给作者直接阅读的中文故事，不是字段清单：按时间顺序连贯叙述人物发生了什么、冲突如何出现、人物做了什么决策、势力如何反应、世界过程如何变化、是否诞生了新人物或新势力、他们接下来可能如何行动，以及当地人民的生活状态变化。只写本轮窗口内有依据的结果；没有依据的内容使用‘可能’‘尚未确认’，不要把事件数组逐条机械复述。",
+    "narrative 是给作者直接阅读的中文故事，不是字段清单：按时间顺序连贯叙述人物发生了什么、冲突如何出现、人物做了什么决策、势力如何反应、世界过程如何变化、是否诞生了新人物或新势力、他们接下来可能如何行动，以及当地人民的生活状态变化。只写本轮窗口内有依据的结果；没有依据的内容使用‘可能’‘尚未确认’，即使某个候选没有可引用的正式触发事实也可以保留，但必须让故事语气保持不确定，不要把事件数组逐条机械复述。",
     "只读工具最多调用 10 次；工具达到调用上限、返回空结果或调用失败时，不要向作者解释原因，立即依据已经取得的资料返回 JSON。资料不足以形成结构化事件时，仍要根据已经读取到的正式事实返回 narrative；此时 events 可以为空，但 narrative 必须说明当前人物、势力、世界过程或民生正在发生的、可被事实支持的变化。只有完全没有可用事实时，才返回 narrative 为空且 events 为空。不得输出拒绝说明或自然语言。",
-    "每个事件必须包含 kind、title、summary、time、certainty、source、entityRefs、actorRefs、locationRef、targetRefs、triggerFacts、decision、action、stateChanges、uncertainty、causeEventIds、propagations、ruleIds。每条非诊断事件至少要有一个真实 actorRef 或 world/location 引用，并且 summary 要写出具体主体、地点和行动；没有真实主体时返回空 events。certainty 只能使用 inferred、uncertain、blocked、aggregated；没有证据时使用 uncertain。",
+    "每个事件必须包含 kind、title、summary、time、certainty、source、entityRefs、actorRefs、locationRef、targetRefs、triggerFacts、decision、action、stateChanges、uncertainty、causeEventIds、propagations、ruleIds。每条非诊断事件至少要有一个真实 actorRef 或 world/location 引用，并且 summary 要写出具体主体、地点和行动；没有真实主体时返回空 events。certainty 只能使用 inferred、uncertain、blocked、aggregated；没有证据时使用 uncertain。triggerFacts 可以为空：有正式事实时填写 {id,label,value,sourcePath}，没有可引用事实时保持空数组，不得为了通过校验虚构事实；此时 certainty 使用 uncertain，并在 uncertainty 中说明事实缺口。",
     "time 必须位于当前轮次 startTime 和 endTime（含边界）之间。entityRefs、actorRefs、targetRefs、locationRef 和 stateChanges.entityRef 只能使用上下文提供的 allowedEntityRefs；不确定主体请留空，不要伪造 ID。causeEventIds 只能引用 hardEvents 或 recentEvents 中列出的 ID；ruleIds 只能引用 hardEvents 中列出的规则 ID。",
     "propagations 可以为空；若填写，只写 targetSpaceId、channel、arrivesAt、status、summary，arrivesAt 必须落在本轮时间窗口内。",
     "以下是本轮最小上下文：",
@@ -407,9 +794,9 @@ export function buildSimulationAiRepairPrompt(
     allowedRuleIds: input.hardEvents.flatMap((event) => event.ruleIds),
   };
   return [
-    "你是世界推演结果的 JSON 格式整理器。不要调用任何工具，不要读取新资料，不要补造原始输出没有表达的事实。只保留能够使用下方允许引用和当前契约完整校验的事件；无法安全转换的事件直接丢弃，不要为了保留它而编造 ID。",
+    "你是世界推演结果的 JSON 格式整理器。不要调用任何工具，不要读取新资料，不要补造原始输出没有表达的事实。只保留能够使用下方允许引用和当前契约完整校验的事件；缺少 triggerFacts 不是格式错误，应保留事件并使用 certainty=uncertain，在 uncertainty 中说明事实缺口；真正无法安全转换的事件才直接丢弃，不要为了保留它而编造 ID。",
     '只返回一个 JSON 对象，格式必须是 {"narrative":"故事正文","events":[...]}；如果原始输出包含基于已取得事实的连续故事，即使没有明确事件字段，也要把故事原文放入 narrative 并令 events 为空；只有原始输出是拒绝、说明、道歉或没有任何可用事实时，才返回 {"narrative":"","events":[]}。不要 Markdown、代码围栏或解释。',
-    `当前轮次时间窗口：${input.round.startTime} 至 ${input.round.endTime}。每个事件必须使用当前契约：kind 只能是 world-process、character-action、faction-strategy、life-cycle、propagation、resource、diagnostic；source 只能是 character、faction、world、system；entityRefs、actorRefs、targetRefs、locationRef 和 stateChanges.entityRef 必须是下方允许的 {type,id,label} 对象，不能是字符串；triggerFacts 必须是 {id,label,value,sourcePath} 对象；stateChanges 必须是 {entityRef,field,before,after}，把 from/to 改为 before/after，把 entity 改为 entityRef。旧 kind 如 world、character、faction、life 分别转换为 world-process、character-action、faction-strategy、life-cycle；旧 source world-process、character-action、faction-strategy 转换为 world、character、faction。事件时间和传播到达时间必须在窗口内；causeEventIds、ruleIds 只能使用允许列表。若事件无法满足这些约束，就不要输出该事件。`,
+    `当前轮次时间窗口：${input.round.startTime} 至 ${input.round.endTime}。每个事件必须使用当前契约：kind 只能是 world-process、character-action、faction-strategy、life-cycle、propagation、resource、diagnostic；source 只能是 character、faction、world、system；entityRefs、actorRefs、targetRefs、locationRef 和 stateChanges.entityRef 必须是下方允许的 {type,id,label} 对象，不能是字符串；triggerFacts 可以为空，有事实时每项必须是 {id,label,value,sourcePath} 对象，没有事实时保持 []，不要虚构；无事实事件使用 certainty=uncertain，并在 uncertainty 说明事实缺口；stateChanges 必须是 {entityRef,field,before,after}，把 from/to 改为 before/after，把 entity 改为 entityRef。旧 kind 如 world、character、faction、life 分别转换为 world-process、character-action、faction-strategy、life-cycle；旧 source world-process、character-action、faction-strategy 转换为 world、character、faction。事件时间和传播到达时间必须在窗口内；causeEventIds、ruleIds 只能使用允许列表。真正无法满足这些约束的事件才不要输出。`,
     `允许使用的引用和 ID：\n${JSON.stringify(referenceContext, null, 2)}`,
     validationError
       ? `上一次本地校验失败，必须修复这些问题：${validationError}`
@@ -433,8 +820,11 @@ export function projectSimulationAiEvents(
   input: SimulationAiProjectionInput,
 ): SimulationAiProjectionResult {
   let payload: z.infer<typeof aiPayloadSchema>;
+  let droppedEventCount = 0;
   try {
-    payload = parsePayload(output);
+    const parsed = parsePayload(output, input);
+    payload = parsed.payload;
+    droppedEventCount = parsed.droppedEventCount;
   } catch (cause) {
     if (cause instanceof Error && cause.message.includes("不是有效 JSON")) {
       throw new SimulationAiJsonParseError(cause.message, output);
@@ -442,13 +832,6 @@ export function projectSimulationAiEvents(
     throw cause;
   }
   const allowedRefs = allowedEntityIds(input);
-  const knownEventIds = new Set([
-    ...input.historicalEvents.map((event) => event.id),
-    ...input.hardEvents.map((event) => event.id),
-  ]);
-  const knownRuleIds = new Set(
-    input.hardEvents.flatMap((event) => event.ruleIds),
-  );
   const hasConcreteEntityFacts = [
     ...(input.source.characters ?? []).map(
       (item) =>
@@ -465,43 +848,20 @@ export function projectSimulationAiEvents(
     ),
     ...(input.source.locations ?? []).map((item) => item.name !== item.id),
   ].some(Boolean);
-  const events = payload.events.map((candidate, position) => {
-    if (
-      candidate.time < input.round.startTime ||
-      candidate.time > input.round.endTime
-    ) {
-      throw new Error(
-        `AI 推演事件“${candidate.title}”的时间超出本轮窗口：${candidate.time}`,
-      );
-    }
-    candidate.entityRefs.forEach((ref) => assertKnownRef(ref, allowedRefs));
-    candidate.actorRefs.forEach((ref) => assertKnownRef(ref, allowedRefs));
-    candidate.targetRefs.forEach((ref) => assertKnownRef(ref, allowedRefs));
-    if (candidate.locationRef && candidate.locationRef.type !== "location") {
-      throw new Error(
-        `AI 推演事件“${candidate.title}”的 locationRef 必须是地点实体`,
-      );
-    }
-    if (candidate.locationRef)
-      assertKnownRef(candidate.locationRef, allowedRefs);
-    candidate.stateChanges.forEach((change) =>
-      assertKnownRef(change.entityRef, allowedRefs),
-    );
+  const events = payload.events.flatMap((candidate, position) => {
+    // 归一化已经过滤了未知引用、越界时间和非法传播边。剩余的业务
+    // 约束如果仍不满足，只丢弃该候选，避免让一条坏事件阻断故事正文。
+    const hasSubject =
+      candidate.actorRefs.length > 0 ||
+      candidate.entityRefs.length > 0 ||
+      Boolean(candidate.locationRef);
     if (
       candidate.kind !== "diagnostic" &&
-      candidate.actorRefs.length === 0 &&
-      candidate.entityRefs.length === 0 &&
-      !candidate.locationRef &&
+      !hasSubject &&
       hasConcreteEntityFacts
     ) {
-      throw new Error(`AI 推演事件“${candidate.title}”缺少真实主体引用`);
-    }
-    if (
-      candidate.kind !== "diagnostic" &&
-      hasConcreteEntityFacts &&
-      candidate.triggerFacts.length === 0
-    ) {
-      throw new Error(`AI 推演事件“${candidate.title}”缺少触发事实`);
+      droppedEventCount += 1;
+      return [];
     }
     if (
       (candidate.kind === "character-action" ||
@@ -509,52 +869,41 @@ export function projectSimulationAiEvents(
       hasConcreteEntityFacts &&
       candidate.actorRefs.length === 0
     ) {
-      throw new Error(`AI 推演事件“${candidate.title}”缺少行动主体`);
+      droppedEventCount += 1;
+      return [];
     }
     if (
       candidate.kind === "propagation" &&
       (candidate.causeEventIds.length === 0 ||
         candidate.propagations.length === 0)
     ) {
-      throw new Error(`AI 推演传播事件“${candidate.title}”缺少源事件或传播边`);
+      droppedEventCount += 1;
+      return [];
     }
-    candidate.causeEventIds.forEach((id) => {
-      if (!knownEventIds.has(id)) {
-        throw new Error(
-          `AI 推演事件“${candidate.title}”引用了未知因果事件：${id}`,
-        );
-      }
-    });
-    candidate.ruleIds.forEach((id) => {
-      if (!knownRuleIds.has(id)) {
-        throw new Error(
-          `AI 推演事件“${candidate.title}”引用了未命中规则：${id}`,
-        );
-      }
-    });
-    candidate.propagations.forEach((propagation) => {
-      if (
-        propagation.arrivesAt < input.round.startTime ||
-        propagation.arrivesAt > input.round.endTime
-      ) {
-        throw new Error(
-          `AI 推演事件“${candidate.title}”的传播到达时间超出本轮窗口：${propagation.arrivesAt}`,
-        );
-      }
-      if (!allowedRefs.get("location")?.has(propagation.targetSpaceId)) {
-        throw new Error(
-          `AI 推演事件“${candidate.title}”引用了未授权传播空间：${propagation.targetSpaceId}`,
-        );
-      }
-    });
+    candidate.entityRefs.forEach((ref) => assertKnownRef(ref, allowedRefs));
+    candidate.actorRefs.forEach((ref) => assertKnownRef(ref, allowedRefs));
+    candidate.targetRefs.forEach((ref) => assertKnownRef(ref, allowedRefs));
+    if (candidate.locationRef) assertKnownRef(candidate.locationRef, allowedRefs);
+    candidate.stateChanges.forEach((change) =>
+      assertKnownRef(change.entityRef, allowedRefs),
+    );
     const id = `${input.run.id}-r${input.round.index}-ai${position}`;
+    const hasTriggerFacts = candidate.triggerFacts.length > 0;
+    const certainty =
+      !hasTriggerFacts && candidate.certainty === "inferred"
+        ? "uncertain"
+        : candidate.certainty;
+    const uncertainty =
+      !hasTriggerFacts && !candidate.uncertainty.trim()
+        ? missingTriggerFactsUncertainty
+        : candidate.uncertainty;
     const event = simulationEventSchema.parse({
       id,
       kind: candidate.kind,
       title: candidate.title,
       summary: candidate.summary,
       time: candidate.time,
-      certainty: candidate.certainty,
+      certainty,
       source: candidate.source,
       entityRefs: candidate.entityRefs,
       actorRefs: candidate.actorRefs,
@@ -564,7 +913,7 @@ export function projectSimulationAiEvents(
       decision: candidate.decision,
       action: candidate.action,
       stateChanges: candidate.stateChanges,
-      uncertainty: candidate.uncertainty,
+      uncertainty,
       causeEventIds: candidate.causeEventIds,
       propagations: candidate.propagations.map(
         (propagation, propagationIndex) =>
@@ -577,9 +926,14 @@ export function projectSimulationAiEvents(
       ),
       ruleIds: candidate.ruleIds,
     });
-    return event;
+    return [event];
   });
-  return { events, narrative: payload.narrative.trim(), rawOutput: output };
+  return {
+    events,
+    narrative: payload.narrative.trim(),
+    rawOutput: output,
+    droppedEventCount,
+  };
 }
 
 export function describeSimulationAiInput(input: SimulationAiProjectionInput): {

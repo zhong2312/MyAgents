@@ -187,6 +187,100 @@ describe("WorldSimulationWorkbench", () => {
     ).toBeInTheDocument();
   });
 
+  it("可取消正在进行的 AI 推演，且不会保存未完成轮次", async () => {
+    const storage = createStorage();
+    let rejectAiRun: ((reason?: unknown) => void) | undefined;
+    const onAiRun = vi.fn(
+      (_request: SimulationAiRunRequest) =>
+        new Promise<string>((_resolve, reject) => {
+          rejectAiRun = reject;
+        }),
+    );
+    const onCancelAiRun = vi.fn(async () => {
+      rejectAiRun?.(new Error("本次 AI 生成已取消"));
+    });
+    render(
+      <WorldSimulationWorkbench
+        storage={storage}
+        projectTitle="测试小说"
+        isActive
+        onAiRun={onAiRun}
+        onCancelAiRun={onCancelAiRun}
+        registerNavigationGuard={() => () => undefined}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "创建并进入舞台" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "AI 推演 1 轮" }),
+    );
+    const cancelButton = await screen.findByRole("button", {
+      name: "取消推演",
+    });
+    fireEvent.click(cancelButton);
+
+    await waitFor(() => expect(onCancelAiRun).toHaveBeenCalledOnce());
+    expect(onCancelAiRun).toHaveBeenCalledWith(
+      expect.stringMatching(/^simulation-/u),
+    );
+    expect(
+      await screen.findByText("AI 推演已取消，未完成的本轮没有保存。"),
+    ).toBeInTheDocument();
+    const index = JSON.parse(
+      storage.getText("world/simulations/index.json") ?? "{}",
+    ) as { runs?: Array<{ path: string }> };
+    const manifest = JSON.parse(
+      storage.getText(index.runs?.[0]?.path ?? "") ?? "{}",
+    ) as { roundsCompleted?: number };
+    expect(manifest.roundsCompleted).toBe(0);
+    expect(screen.queryByRole("button", { name: "取消推演" })).toBeNull();
+  });
+
+  it("宿主暂未提供取消接口时仍显示取消按钮，并丢弃本地结果", async () => {
+    const storage = createStorage();
+    let resolveAiRun!: (value: string) => void;
+    const onAiRun = vi.fn(
+      (_request: SimulationAiRunRequest) =>
+        new Promise<string>((resolve) => {
+          resolveAiRun = resolve;
+        }),
+    );
+    render(
+      <WorldSimulationWorkbench
+        storage={storage}
+        projectTitle="测试小说"
+        isActive
+        onAiRun={onAiRun}
+        registerNavigationGuard={() => () => undefined}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "创建并进入舞台" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "AI 推演 1 轮" }),
+    );
+    await waitFor(() => expect(onAiRun).toHaveBeenCalledOnce());
+    fireEvent.click(
+      await screen.findByRole("button", { name: "取消推演" }),
+    );
+    resolveAiRun(JSON.stringify({ narrative: "被取消的故事", events: [] }));
+
+    expect(
+      await screen.findByText("AI 推演已取消，未完成的本轮没有保存。"),
+    ).toBeInTheDocument();
+    const index = JSON.parse(
+      storage.getText("world/simulations/index.json") ?? "{}",
+    ) as { runs?: Array<{ path: string }> };
+    const manifest = JSON.parse(
+      storage.getText(index.runs?.[0]?.path ?? "") ?? "{}",
+    ) as { roundsCompleted?: number };
+    expect(manifest.roundsCompleted).toBe(0);
+  });
+
   it("模型返回非 JSON 时只用无工具请求整理一次再保存", async () => {
     const storage = createStorage();
     const repairOutput = JSON.stringify({
@@ -285,7 +379,7 @@ describe("WorldSimulationWorkbench", () => {
     });
   });
 
-  it("模型返回旧事件字段时，会先整理为当前契约再保存", async () => {
+  it("模型返回旧事件字段时，本地直接兼容并保存故事", async () => {
     const storage = createStorage();
     const legacyOutput = JSON.stringify({
       narrative: "旧格式结果仍然表达了北山的一次世界变化。",
@@ -320,45 +414,7 @@ describe("WorldSimulationWorkbench", () => {
         },
       ],
     });
-    const repairOutput = JSON.stringify({
-      narrative: "格式整理后，北山的灵气潮汐出现了短暂变化。",
-      events: [
-        {
-          kind: "world-process",
-          title: "整理后的世界事件",
-          summary: "北山的世界过程出现短暂变化。",
-          time: 30,
-          certainty: "uncertain",
-          source: "world",
-          entityRefs: [
-            { type: "world", id: "world-process", label: "世界过程" },
-          ],
-          actorRefs: [],
-          locationRef: { type: "location", id: "north", label: "北山" },
-          targetRefs: [],
-          triggerFacts: [
-            {
-              id: "annual-cycle",
-              label: "年度周期",
-              value: "本轮时间边界",
-              sourcePath: null,
-            },
-          ],
-          decision: "",
-          action: "",
-          stateChanges: [],
-          uncertainty: "",
-          causeEventIds: [],
-          propagations: [],
-          ruleIds: [],
-        },
-      ],
-    });
-    const outputs = [legacyOutput, repairOutput];
-    const onAiRun = vi.fn(
-      async (_request: SimulationAiRunRequest) =>
-        outputs.shift() ?? repairOutput,
-    );
+    const onAiRun = vi.fn(async (_request: SimulationAiRunRequest) => legacyOutput);
     render(
       <WorldSimulationWorkbench
         storage={storage}
@@ -376,15 +432,10 @@ describe("WorldSimulationWorkbench", () => {
       await screen.findByRole("button", { name: "AI 推演 1 轮" }),
     );
 
-    await waitFor(() => expect(onAiRun).toHaveBeenCalledTimes(2));
-    expect(onAiRun.mock.calls[1]?.[0]).toMatchObject({
-      usesNovelContextTools: false,
-      maxTurns: 1,
-      streamOutput: false,
-    });
-    expect(await screen.findByText("整理后的世界事件")).toBeInTheDocument();
+    await waitFor(() => expect(onAiRun).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("旧格式世界事件")).toBeInTheDocument();
     expect(
-      await screen.findByText("格式整理后，北山的灵气潮汐出现了短暂变化。"),
+      await screen.findByText("旧格式结果仍然表达了北山的一次世界变化。"),
     ).toBeInTheDocument();
   });
 

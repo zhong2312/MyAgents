@@ -1465,7 +1465,7 @@ export default function NovelWorkbenchRenderer({
 
 执行协议：
 1. 首先调用 novel_world_get_context，读取已保存的世界架构空间树、设定索引、Markdown 正文、词条、地点和势力，并取得 sourceHash。确认稳定 ID ${request.worldNodeId} 对应“${request.worldNodeName}”，只将该节点及其后代视为本次地图的生成范围。不得根据本提示词臆造设定，也不得跳过这一步。
-2. 依据该范围内的地理、气候、文明、地点、势力与设定正文，先提交完整的 generationPlan。规划必须使用 schemaVersion=1、styleId=xuanhuan-zh，并把空间层级、正式实体 entityRef、区域锚点、山脉与龙脉、水系流向、城池/宗门/关隘、秘境/禁地/遗迹、实体关系和视觉规则全部写入。调用 novel_maps_prepare_generation_plan，传入 title、description 和完整 generationPlan；工具返回后必须把规划摘要、实体、空间层级、关系、视觉规则和 Azgaar 参数展示给作者，然后立即停止本次执行，明确等待作者确认。未收到作者明确确认前，严禁调用 novel_maps_confirm_generation_plan、novel_maps_generate_fantasy_map 或任何后续地图写入工具。作者确认后，调用 novel_maps_confirm_generation_plan，再调用 novel_maps_generate_fantasy_map，并原样传入上一步 sourceHash 作为 worldSourceHash、相同 draftId、相同 generationPlan，以及 worldNodeId=${request.worldNodeId}、generationLevelTypeId=${request.generationLevelTypeId}、地图名称、画布尺寸、图层与种子。generationPlan.azgaar 中的高度图模板只能选：africa-centric、arabia、atlantics、britain、caribbean、east-asia、eurasia、europe-accented、europe-and-central-asia、europe-central、europe-north、europe、greenland、hellenica、iceland、indian-ocean、mediterranean-sea、middle-east、north-america、us-centric、us-mainland、world-from-pacific 或 world。陆块意图通过模板落实：群岛优先 caribbean，冰雪极地优先 iceland，荒漠优先 arabia，内海优先 mediterranean-sea，多陆块优先 world-from-pacific；国家、文化、宗教和降水是 Azgaar 的实际原生参数。规划不能只提供数量和模板，必须说明“哪个实体位于哪里、与哪些山河势力相连”。
+2. 依据该范围内的地理、气候、文明、地点、势力与设定正文，先提交完整的 generationPlan。规划必须使用 schemaVersion=1、styleId=xuanhuan-zh，并把空间层级、正式实体 entityRef、区域锚点、山脉与龙脉、水系流向、城池/宗门/关隘、秘境/禁地/遗迹、实体关系和视觉规则全部写入。generationPlan.azgaar 还必须显式填写 landmassCount、azgaarTemplate、azgaarPrecipitation 等 Azgaar 参数，不能只给数量或自然语言描述。调用 novel_maps_prepare_generation_plan，传入 title、description 和完整 generationPlan；工具返回后必须把规划摘要、实体、空间层级、关系、视觉规则和 Azgaar 参数展示给作者，然后立即停止本次执行，明确等待作者确认。未收到作者明确确认前，严禁调用 novel_maps_confirm_generation_plan、novel_maps_generate_fantasy_map 或任何后续地图写入工具。作者确认后，调用 novel_maps_confirm_generation_plan，再调用 novel_maps_generate_fantasy_map，并原样传入上一步 sourceHash 作为 worldSourceHash、相同 draftId、相同 generationPlan，以及 worldNodeId=${request.worldNodeId}、generationLevelTypeId=${request.generationLevelTypeId}、地图名称、画布尺寸、图层与种子。generationPlan.azgaar 中的高度图模板只能选：africa-centric、arabia、atlantics、britain、caribbean、east-asia、eurasia、europe-accented、europe-and-central-asia、europe-central、europe-north、europe、greenland、hellenica、iceland、indian-ocean、mediterranean-sea、middle-east、north-america、us-centric、us-mainland、world-from-pacific 或 world。陆块意图通过模板落实：群岛优先 caribbean，冰雪极地优先 iceland，荒漠优先 arabia，内海优先 mediterranean-sea，多陆块优先 world-from-pacific；国家、文化、宗教和降水是 Azgaar 的实际原生参数。规划不能只提供数量和模板，必须说明“哪个实体位于哪里、与哪些山河势力相连”。
 3. 检查工具返回的 runtime 和 generatorAdapter。只有 runtime=azgaar-http 时才可称为 Azgaar 核心生成；若返回 compatibility-adapter，必须明确说明本次已降级，不能伪称使用了 Azgaar。无论运行时是哪一种，都要确认结果采用 xuanhuan-zh，并且地图文字为中文。
 4. 使用生成工具返回的 draftId 调用 novel_maps_validate_draft；校验失败时，先调用 novel_maps_query_draft_features 找到真实要素，再修正同一草稿，不得猜测 featureId、绕过校验或直接修改正式地图文件。
 5. 校验通过后，使用 validationToken 调用 novel_maps_submit_draft。只有工具返回 submitted=true 才算完成。
@@ -2302,6 +2302,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
                 }
               : undefined
           }
+          onCancelAiRun={context.aiRuns.cancel}
           registerNavigationGuard={context.registerNavigationGuard}
         />
       );

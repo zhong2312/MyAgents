@@ -8,7 +8,11 @@ import type {
 import type { OpenAIResponse, OpenAIToolCall } from "../types/openai";
 import { translateToolCalls } from "./tools";
 import { generateMessageId } from "../utils/id";
-import { fromOpenAIUsage, toAnthropicUsage } from "./usage";
+import {
+  fromOpenAIUsage,
+  toAnthropicUsage,
+  type UsageWarningLogger,
+} from "./usage";
 import {
   DSML_PARSE_ERROR_TEXT,
   excludeEquivalentToolCalls,

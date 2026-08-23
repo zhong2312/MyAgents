@@ -157,6 +157,15 @@
 .world-simulation .ws-btn-primary:disabled {
   color: #fff;
 }
+.world-simulation .ws-btn-danger {
+  border-color: var(--ws-warn);
+  color: #8a5715;
+}
+.world-simulation .ws-btn-danger:hover {
+  border-color: var(--ws-warn);
+  background: var(--ws-warn-soft);
+  color: #73470e;
+}
 .ws-btn-quiet {
   border-color: transparent;
   color: var(--ws-ink-2);

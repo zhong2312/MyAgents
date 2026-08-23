@@ -17,6 +17,7 @@ import {
   mergeUsage,
   toAnthropicUsage,
   type UsageSnapshot,
+  type UsageWarningLogger,
 } from "./usage";
 import {
   DSML_PARSE_ERROR_TEXT,
@@ -43,6 +44,7 @@ export class StreamTranslator {
   private hasFinished = false;
   private stopReason: AnthropicStopReason | null = null;
   private translateReasoning: boolean;
+  private usageWarning: UsageWarningLogger | undefined;
   private contentMode: "pending" | "text" | "dsml" = "pending";
   private bufferedContent = "";
   private hasStandardToolCalls = false;

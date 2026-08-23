@@ -132,6 +132,7 @@ import {
 import { sanitizeFolderName, isWindowsReservedName } from "../shared/utils";
 import {
   isRequiredSystemSkill,
+  type RequiredSystemSkill,
   withoutRequiredSystemSkills,
 } from "../shared/systemSkills";
 import {
@@ -344,7 +345,6 @@ import {
   buildMemoryUpdateReminder,
   MEMORY_UPDATE_COMPLETION_MARKER,
 } from "./utils/memory-update-reminder";
-import { assertOfficialSystemSkillExposed } from "./utils/system-skill-readiness";
 import { setImCronContext } from "./tools/im-cron-tool";
 // admin-api module (~2900 lines, depends on zod + full config/session/cron surface)
 // is lazy-loaded on first /api/admin/* hit to shave ~150ms off sidecar cold
@@ -566,14 +566,16 @@ import {
   getSessionModel,
   getSessionProviderEnv,
   syncProjectUserConfig,
+  requireCurrentBuiltinSkill,
   initSocksBridgeFromEnv,
   getHistoricalSessionMessages,
   ensureSdkMcpInSync,
+  getCurrentImBridgeTurnContext,
   isCurrentImBridgeToolSurfaceInstalled,
   setBackgroundAgentPermissionMode,
 } from "./agent-session";
 import type { ProviderEnv } from "./provider-types";
-import { getHomeDirOrNull, isSkillBlockedOnPlatform } from "./utils/platform";
+import { getHomeDirOrNull } from "./utils/platform";
 import { getScriptDir } from "./utils/runtime";
 import {
   createSession,
@@ -631,7 +633,8 @@ import {
 import {
   buildGateResponseBody,
   buildReadyResponseBody,
-  runDeferredInit,
+  markDeferredInitFailed,
+  markDeferredInitReady,
   setDeferredInitPhase,
 } from "./readiness-state";
 import {
@@ -990,7 +993,6 @@ function createRequiredSystemSkillDispatchGuard(
       };
     }
     try {
-      assertOfficialSystemSkillExposed({ workspacePath, skillName });
       if (getSessionEngine().kind === "builtin") {
         await requireCurrentBuiltinSkill(skillName);
       }
@@ -1136,7 +1138,7 @@ function writeSkillsConfig(config: SkillsConfig): void {
  * Bump skills generation counter without changing seeded/disabled lists.
  * Called after skill CRUD operations (create/update/delete/upload/import)
  * that don't go through writeSkillsConfig but DO change the available skill set.
- * Sessions observe the generation through their next capability resolution.
+ * Tab Sidecars detect this change and re-sync symlinks on next /api/commands fetch.
  */
 function bumpSkillsGeneration(): void {
   const config = readSkillsConfig();
@@ -1144,11 +1146,19 @@ function bumpSkillsGeneration(): void {
 }
 
 /**
- * Capability reads are side-effect free. Each Session reconciles the latest
- * AgentConfig selection at its next turn boundary; shared disk inventory is
- * maintained independently for runtime compatibility.
+ * Lazy skill sync: Track the last generation we synced to avoid redundant sync work.
+ * When a Tab Sidecar's /api/commands or /api/skills is called, we compare the current
+ * generation in skills-config.json against this value. Only if they differ do we run
+ * syncProjectUserConfig(). This covers the case where the Global Sidecar modified
+ * global skills (create/toggle/delete) without the Tab Sidecar knowing.
  */
-// Phase E (PRD 0.2.7): the old generation-cached fast path remains removed.
+// Phase E (PRD 0.2.7): the `syncSkillsIfNeeded` wrapper + generation-tracking
+// optimization is gone. Rust `cmd_list_slash_commands` is the canonical UI
+// path and runs `sync_workspace_skills` (idempotent) every call. The sidecar
+// only syncs as a side-effect of skill/command CRUD via direct
+// `syncProjectUserConfig(...)` calls; CRUD-time correctness is what matters
+// (the picker UI lives in Rust now). `markSkillsSynced` is also gone — there's
+// no longer a generation-cached fast-path to invalidate.
 
 /**
  * Resolve bundled-skills directory.
@@ -1222,10 +1232,6 @@ const SYSTEM_SKILLS: readonly string[] = [
   "prompt-writer",
 ];
 
-function isSystemSkillName(name: string): boolean {
-  return SYSTEM_SKILLS.includes(name.toLowerCase());
-}
-
 /**
  * Seed bundled skills to ~/.myagents/skills/ on first launch.
  * Only copies skills that haven't been seeded before (tracked in skills-config.json).
@@ -1258,14 +1264,8 @@ function seedBundledSkills(): void {
 
     let changed = false;
     for (const folder of bundledFolders) {
-      if (isSystemSkillName(folder)) {
+      if (SYSTEM_SKILLS.includes(folder)) {
         // Owned by Rust version gate — skip silently.
-        continue;
-      }
-      if (isSkillBlockedOnPlatform(folder)) {
-        console.log(
-          `[seed] Skipping ${folder} on ${process.platform} (platform blocked)`,
-        );
         continue;
       }
       const dst = join(userSkillsDir, folder);
@@ -1381,6 +1381,7 @@ function ensurePluginsDirs(): void {
 /**
  * Clean up stale Playwright MCP profile lock files left by a crashed Chromium.
  *
+ * Independent of the agent-browser bundle removal — this exists because
  * Chromium leaves SingletonLock / SingletonSocket / SingletonCookie files in
  * the user-data-dir when the process crashes (or the OS kills it on app exit
  * without a clean shutdown). Subsequent Chromium launches with the same
@@ -2348,12 +2349,12 @@ async function main() {
   //      debounce outlasting the few µs between these two calls.
   setSidecarPort(port);
 
-  // ── Deferred init state ─────────────────────────────────────────────────
+  // ── Deferred init gate ──────────────────────────────────────────────────
   // Everything heavy (skill seed, socks bridge, initializeAgent, external
   // runtime restore) moves to AFTER
   // honoServe() binds, so Rust's TCP health check unblocks in < 100ms
-  // instead of waiting ~2s for this work to complete. Routes consult the
-  // readiness state machine before entering handlers that need agent state.
+  // instead of waiting ~2s for this work to complete. Routes that need
+  // agent state `await deferredInit` at the top of the fetch handler.
   //
   // /health is exempt so the sidecar becomes "healthy" from Rust's
   // perspective the moment the HTTP server accepts TCP connections —
@@ -5440,8 +5441,6 @@ async function main() {
             }
 
             try {
-              const { resolveRemoteMcpTransportConfig } = await import('./session-core/mcp-template-resolution');
-              const remote = resolveRemoteMcpTransportConfig(server);
               const controller = new AbortController();
               const timeout = setTimeout(() => controller.abort(), 15000);
 
@@ -6221,7 +6220,7 @@ async function main() {
                   unknown
                 >);
 
-          const result = await routeAdminApi(pathname, payload, request.signal);
+          const result = await routeAdminApi(pathname, payload);
           return jsonResponse(result, result.success ? 200 : 400);
         } catch (error) {
           console.error(`[admin] ${pathname} error:`, error);
@@ -6644,83 +6643,6 @@ async function main() {
         ? join(currentAgentDir, ".claude", "commands")
         : "";
 
-      // GET /api/project-capabilities - authoritative candidate + effective set
-      // for the current workspace. Unlike the legacy per-directory endpoints,
-      // this resolves MyAgents-managed symlinks back to their global origin,
-      // applies project-over-global winner semantics, and keeps disabled cards.
-      if (pathname === '/api/project-capabilities' && request.method === 'GET') {
-        try {
-          const queryAgentDir = url.searchParams.get('agentDir');
-          if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
-            return jsonResponse({ success: false, error: 'Invalid workspace path' }, 400);
-          }
-          const workspacePath = queryAgentDir || currentAgentDir;
-          if (!workspacePath) {
-            return jsonResponse({ success: false, error: 'Workspace is unavailable' }, 409);
-          }
-          const globalSkillInventory = createGlobalSkillInventorySnapshot();
-          return jsonResponse(projectCapabilitySnapshotForWire(
-            resolveEffectiveProjectCapabilities(workspacePath, {
-              globalSkillInventory,
-            }),
-          ));
-        } catch (error) {
-          console.error('[api/project-capabilities] Error:', error);
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to resolve project capabilities',
-          }, 500);
-        }
-      }
-
-      // POST /api/project-capability/toggle - persist one disabled override on
-      // the exact AgentConfig selected by Project.agentId. Runtime replacement
-      // intentionally waits for each Session's next turn.
-      if (pathname === '/api/project-capability/toggle' && request.method === 'POST') {
-        try {
-          const body = await request.json() as {
-            capabilityId?: unknown;
-            enabled?: unknown;
-            agentDir?: unknown;
-          };
-          if (typeof body.capabilityId !== 'string' || typeof body.enabled !== 'boolean') {
-            return jsonResponse({ success: false, error: 'Invalid capability toggle request' }, 400);
-          }
-          const queryAgentDir = typeof body.agentDir === 'string' ? body.agentDir : null;
-          if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
-            return jsonResponse({ success: false, error: 'Invalid workspace path' }, 400);
-          }
-          const workspacePath = queryAgentDir || currentAgentDir;
-          if (!workspacePath) {
-            return jsonResponse({ success: false, error: 'Workspace is unavailable' }, 409);
-          }
-          const snapshot = await setProjectCapabilityEnabled({
-            workspacePath,
-            capabilityId: body.capabilityId,
-            enabled: body.enabled,
-          });
-          broadcast('config:changed', {
-            section: 'agent',
-            action: 'project-capability-toggle',
-            id: snapshot.agentId,
-          });
-          // App-wide invalidation is advisory here: every Session resolves the
-          // disk authority again at its own turn admission, so a renderer fanout
-          // outage must not turn a committed save into a false rollback.
-          if (process.env.MYAGENTS_MANAGEMENT_PORT) {
-            void managementApi('/api/app/config-changed', 'POST', {}, { timeoutMs: 2_000 })
-              .catch(error => console.warn('[api/project-capability/toggle] app refresh failed:', error));
-          }
-          return jsonResponse(projectCapabilitySnapshotForWire(snapshot));
-        } catch (error) {
-          console.error('[api/project-capability/toggle] Error:', error);
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to save project capability',
-          }, 500);
-        }
-      }
-
       // GET /api/skills - List all skills (with scope filter)
       // Supports ?agentDir= for listing skills from a specific workspace (e.g. from Launcher)
       if (pathname === "/api/skills" && request.method === "GET") {
@@ -6734,9 +6656,6 @@ async function main() {
           const { skillsDir: effectiveSkillsDir } =
             getProjectBaseDirs(queryAgentDir);
           const skillsConfigForList = readSkillsConfig();
-          const globalSkillInventory = (scope === 'all' || scope === 'user')
-            ? createGlobalSkillInventorySnapshot({ rootPath: userSkillsBaseDir })
-            : null;
           const skills: Array<{
             name: string;
             description: string;
@@ -6754,13 +6673,8 @@ async function main() {
             try {
               const folders = readdirSync(dir, { withFileTypes: true });
               for (const folder of folders) {
-                const folderPath = join(dir, folder.name);
-                if (scopeType === 'project' && isManagedSymlink(folderPath, userSkillsBaseDir)) {
-                  continue;
-                }
                 // isDirEntry follows symlinks + Windows junctions (issue #104).
                 if (!isDirEntry(folder, join(dir, folder.name))) continue;
-                if (isSkillBlockedOnPlatform(folder.name)) continue;
                 const skillMdPath = join(dir, folder.name, "SKILL.md");
                 if (!existsSync(skillMdPath)) continue;
 
@@ -6806,13 +6720,7 @@ async function main() {
             scanSkills(userSkillsBaseDir, "user");
           }
 
-          return jsonResponse({
-            success: true,
-            skills,
-            ...(globalSkillInventory
-              ? { integrityIssues: globalSkillInventory.integrityIssues }
-              : {}),
-          });
+          return jsonResponse({ success: true, skills });
         } catch (error) {
           console.error("[api/skills] Error:", error);
           return jsonResponse(
@@ -7157,8 +7065,6 @@ async function main() {
 
           const content = readFileSync(skillPath, "utf-8");
           const { frontmatter, body } = parseFullSkillContent(content);
-          const systemOwned = scope === 'user' && isSystemSkillName(skillName);
-          const required = scope === 'user' && isRequiredSystemSkill(skillName.toLowerCase());
 
           return jsonResponse({
             success: true,
@@ -7167,8 +7073,6 @@ async function main() {
               folderName: skillName,
               path: skillPath,
               scope,
-              systemOwned,
-              required,
               frontmatter,
               body,
             },
@@ -7214,13 +7118,6 @@ async function main() {
           let skillDir = join(baseDir, currentFolderName);
           let skillPath = join(skillDir, "SKILL.md");
 
-          if (payload.scope === 'user' && isSystemSkillName(skillName)) {
-            return jsonResponse({
-              success: false,
-              code: 'SYSTEM_SKILL_READ_ONLY',
-              error: 'System Skill is read-only',
-            }, 409);
-          }
           if (!existsSync(skillPath)) {
             return jsonResponse(
               { success: false, error: "Skill not found" },
@@ -7335,13 +7232,6 @@ async function main() {
           const baseDir = scope === "user" ? userSkillsBaseDir : skillsDir;
           const skillDir = join(baseDir, skillName);
 
-          if (scope === 'user' && isSystemSkillName(skillName)) {
-            return jsonResponse({
-              success: false,
-              code: 'SYSTEM_SKILL_READ_ONLY',
-              error: 'System Skill is read-only',
-            }, 409);
-          }
           if (!existsSync(skillDir)) {
             return jsonResponse(
               { success: false, error: "Skill not found" },
@@ -12077,9 +11967,9 @@ description: >
   // ── Deferred heavy init ─────────────────────────────────────────────────
   // Runs AFTER honoServe has bound the port. Rust's TCP health check now
   // passes within ~50ms instead of waiting ~2s for all this work to finish.
-  // Routes (except /health) consult DeferredInitState before running, so
-  // anything that needs agent state (MCP, model, file watcher, bridge) is
-  // admitted only after this block finishes.
+  // Routes (except /health) `await __myagentsDeferredInit` before running,
+  // so correctness is preserved: anything that needs agent state (MCP,
+  // model, file watcher, bridge) waits for this block to finish.
   //
   // Order within this block still matters:
   //   1. migrations/cleanup — best-effort, can interleave
@@ -12108,8 +11998,8 @@ description: >
     status: "ok",
     detail: { port, sessionId: initialSessionId ?? "new" },
   });
-  void runDeferredInit(
-    async () => {
+  (async () => {
+    try {
       await runSidecarBootstrap(sidecarComposition, [
         {
           capability: "global",
@@ -12243,6 +12133,8 @@ description: >
         },
       ]);
 
+      markDeferredInitReady();
+      resolveDeferredInit();
       emitPerfTrace({
         trace: "sidecar_boot",
         phase: "deferred_init_done",
@@ -12266,8 +12158,14 @@ description: >
           error: err instanceof Error ? err.message : String(err),
         },
       });
-    },
-  );
+      // Pattern 4: capture the phase for /health/ready's structured 503.
+      // retryable=false until we have a real re-runner (TODO above).
+      markDeferredInitFailed(currentInitPhase, err, false);
+      rejectDeferredInit(err);
+      // Don't re-throw — the server stays up so /health/* keeps responding
+      // and the renderer can render the failure state instead of timing out.
+    }
+  })();
 
   // Kick off interactive-shell PATH detection in the background.
   // `warmupShellPath()` uses async `execFile` so it never blocks the event loop

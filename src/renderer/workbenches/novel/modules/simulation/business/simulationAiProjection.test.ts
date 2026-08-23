@@ -4,7 +4,6 @@ import { advanceSimulationRun } from "./simulationEngine";
 import {
   buildSimulationAiRepairPrompt,
   projectSimulationAiEvents,
-  SimulationAiFormatError,
 } from "./simulationAiProjection";
 import type { SimulationRun } from "../entities/simulationSchema";
 
@@ -58,7 +57,7 @@ function input() {
 }
 
 describe("simulation AI projection", () => {
-  it("要求有真实主体的输入快照，事件必须携带可审计细节", () => {
+  it("有真实主体快照时丢弃缺少主体的候选，但保留故事正文", () => {
     const richSource = {
       ...source,
       characters: [
@@ -126,27 +125,29 @@ describe("simulation AI projection", () => {
       decision: "继续闭关",
     });
     expect(projected.narrative).toContain("村民开始减少夜间出行");
-    expect(() =>
-      projectSimulationAiEvents(
-        JSON.stringify({
-          events: [
-            {
-              kind: "character-action",
-              title: "泛化人物事件",
-              summary: "没有主体和依据。",
-              time: 30,
-              certainty: "uncertain",
-              source: "character",
-              entityRefs: [],
-              causeEventIds: [],
-              propagations: [],
-              ruleIds: [],
-            },
-          ],
-        }),
-        aiInput,
-      ),
-    ).toThrow("缺少真实主体引用");
+    const dropped = projectSimulationAiEvents(
+      JSON.stringify({
+        narrative: "没有主体引用的候选不会进入事件账本。",
+        events: [
+          {
+            kind: "character-action",
+            title: "泛化人物事件",
+            summary: "没有主体和依据。",
+            time: 30,
+            certainty: "uncertain",
+            source: "character",
+            entityRefs: [],
+            causeEventIds: [],
+            propagations: [],
+            ruleIds: [],
+          },
+        ],
+      }),
+      aiInput,
+    );
+    expect(dropped.events).toHaveLength(0);
+    expect(dropped.droppedEventCount).toBe(1);
+    expect(dropped.narrative).toContain("不会进入事件账本");
   });
 
   it("parses fenced JSON and assigns auditable event ids", () => {
@@ -181,6 +182,63 @@ describe("simulation AI projection", () => {
       certainty: "uncertain",
       source: "world",
     });
+  });
+
+  it("允许没有触发事实的 AI 候选，并自动标记不确定性", () => {
+    const richSource = {
+      ...source,
+      characters: [{ id: "hero", name: "沈照夜" }],
+      locations: [{ id: "world-root", name: "测试世界" }],
+    };
+    const result = advanceSimulationRun(
+      run,
+      richSource,
+      "2026-01-01T00:00:00.000Z",
+    );
+    const projected = projectSimulationAiEvents(
+      JSON.stringify({
+        events: [
+          {
+            kind: "character-action",
+            title: "测灵无根，石面异象",
+            summary: "沈照夜在测灵时得到无根结果，测灵石表面浮现异常纹路。",
+            time: 30,
+            certainty: "inferred",
+            source: "character",
+            entityRefs: [{ type: "character", id: "hero", label: "沈照夜" }],
+            actorRefs: [{ type: "character", id: "hero", label: "沈照夜" }],
+            locationRef: {
+              type: "location",
+              id: "world-root",
+              label: "测试世界",
+            },
+            targetRefs: [],
+            triggerFacts: [],
+            decision: "继续观察测灵石",
+            action: "接受测灵结果",
+            stateChanges: [],
+            uncertainty: "",
+            causeEventIds: [],
+            propagations: [],
+            ruleIds: [],
+          },
+        ],
+      }),
+      {
+        run: result.run,
+        round: result.round,
+        hardEvents: result.events,
+        historicalEvents: [],
+        source: richSource,
+      },
+    );
+
+    expect(projected.events[0]).toMatchObject({
+      title: "测灵无根，石面异象",
+      certainty: "uncertain",
+      triggerFacts: [],
+    });
+    expect(projected.events[0]?.uncertainty).toContain("缺少");
   });
 
   it("保留没有结构化事件的故事正文", () => {
@@ -259,41 +317,51 @@ describe("simulation AI projection", () => {
     expect(prompt).toContain("events.0.entityRefs: Invalid input");
   });
 
-  it("将 JSON 结构契约错误标记为可整理的格式错误", () => {
-    expect(() =>
-      projectSimulationAiEvents(
-        JSON.stringify({
-          events: [
-            {
-              kind: "world",
-              title: "旧格式事件",
-              summary: "旧版本输出使用了字符串引用。",
-              time: 30,
-              certainty: "uncertain",
-              source: "world-process",
-              entityRefs: ["world-process"],
-              actorRefs: [],
-              locationRef: "world-root",
-              targetRefs: [],
-              triggerFacts: ["annual-cycle"],
-              stateChanges: [
-                {
-                  entity: "world-process",
-                  field: "state",
-                  from: "旧",
-                  to: "新",
-                  certainty: "uncertain",
-                },
-              ],
-            },
-          ],
-        }),
-        input(),
-      ),
-    ).toThrow(SimulationAiFormatError);
+  it("兼容旧事件字段并丢弃无法安全映射的引用", () => {
+    const result = projectSimulationAiEvents(
+      JSON.stringify({
+        narrative: "旧格式事件仍然表达了世界变化。",
+        events: [
+          {
+            kind: "world",
+            title: "旧格式事件",
+            summary: "旧版本输出使用了字符串引用。",
+            time: 30,
+            certainty: "inferred",
+            source: "world-process",
+            entityRefs: ["world-process"],
+            actorRefs: [],
+            locationRef: "world-root",
+            targetRefs: [],
+            triggerFacts: ["annual-cycle"],
+            stateChanges: [
+              {
+                entity: "world-process",
+                field: "state",
+                from: "旧",
+                to: "新",
+                certainty: "uncertain",
+              },
+            ],
+          },
+        ],
+      }),
+      input(),
+    );
+
+    expect(result.events[0]).toMatchObject({
+      kind: "world-process",
+      source: "world",
+      entityRefs: [{ id: "world-process" }],
+      stateChanges: [
+        { entityRef: { id: "world-process" }, before: "旧", after: "新" },
+      ],
+      triggerFacts: [],
+    });
+    expect(result.narrative).toBe("旧格式事件仍然表达了世界变化。");
   });
 
-  it("rejects non-JSON, time overflow and fabricated entity references", () => {
+  it("拒绝非 JSON，并丢弃越界或无法确认主体的事件", () => {
     expect(() => projectSimulationAiEvents("模型自由文本", input())).toThrow(
       "不是有效 JSON",
     );
@@ -309,27 +377,40 @@ describe("simulation AI projection", () => {
       propagations: [],
       ruleIds: [],
     };
-    expect(() =>
-      projectSimulationAiEvents(
-        JSON.stringify({ events: [{ ...base, time: 31 }] }),
-        input(),
-      ),
-    ).toThrow("超出本轮窗口");
-    expect(() =>
-      projectSimulationAiEvents(
-        JSON.stringify({
-          events: [
-            {
-              ...base,
-              time: 30,
-              entityRefs: [
-                { type: "character", id: "invented", label: "伪造人物" },
-              ],
-            },
-          ],
-        }),
-        input(),
-      ),
-    ).toThrow("未授权实体");
+    const overflow = projectSimulationAiEvents(
+      JSON.stringify({ events: [{ ...base, time: 31 }] }),
+      input(),
+    );
+    expect(overflow.events).toHaveLength(0);
+    expect(overflow.droppedEventCount).toBe(1);
+
+    const richSource = { ...source, characters: [{ id: "hero", name: "沈照夜" }] };
+    const richResult = advanceSimulationRun(
+      run,
+      richSource,
+      "2026-01-01T00:00:00.000Z",
+    );
+    const fabricated = projectSimulationAiEvents(
+      JSON.stringify({
+        events: [
+          {
+            ...base,
+            time: 30,
+            entityRefs: [
+              { type: "character", id: "invented", label: "伪造人物" },
+            ],
+          },
+        ],
+      }),
+      {
+        run: richResult.run,
+        round: richResult.round,
+        hardEvents: richResult.events,
+        historicalEvents: [],
+        source: richSource,
+      },
+    );
+    expect(fabricated.events).toHaveLength(0);
+    expect(fabricated.droppedEventCount).toBe(1);
   });
 });

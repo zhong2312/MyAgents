@@ -57,6 +57,8 @@
       .btn:disabled { cursor: not-allowed; opacity: .5; transform: none; }
       .btn-primary { background: var(--accent); border-color: var(--accent); color: white; }
       .btn-primary:hover { background: #9e4e29; }
+      .btn-danger { border-color: #c98942; color: #8a5715; }
+      .btn-danger:hover { background: #fff2df; border-color: #b8752e; color: #73470e; }
       .btn-quiet { color: var(--ink-2); border-color: transparent; }
       .btn-icon { width: 34px; padding: 0; font-size: 18px; }
       .content-wrap { min-width: 0; min-height: 0; flex: 1; display: flex; flex-direction: column; }
@@ -442,7 +444,7 @@
             <div class="workspace-shell">
               <div class="workspace-head">
                 <div class="workspace-context"><div class="workspace-title"><h1><button class="simulation-switcher" id="simulationSwitcher" data-action="toggle-run-switcher" aria-haspopup="true" aria-expanded="false"><span id="workspaceTitle">北境灵脉演化</span><span class="switcher-caret" aria-hidden="true">⌄</span></button></h1><p id="workspaceSubtitle">主推演分支 · 基线：卷一北山封印事件之后</p><div class="run-switcher" id="runSwitcher" aria-label="推演运行列表"><div class="run-switcher-head"><strong>推演运行</strong><span id="runSwitcherCount">3 个运行</span></div><div class="run-switcher-list" id="runSwitcherList"></div><div class="run-switcher-footer"><button class="btn btn-quiet" data-action="open-setup">＋ 新建推演</button></div></div></div><div class="round-meta"><div class="meta-block"><small>当前时间</small><strong id="currentTime">第 7 年 · 秋末</strong></div><div class="meta-block"><small>轮次跨度</small><strong id="workspaceSpan">三个月</strong></div></div></div>
-                 <div class="workspace-actions"><button class="btn btn-primary" data-action="advance" title="依据正式资料与时间边界生成一轮 AI 故事">AI 推演 1 轮</button><button class="btn" data-action="continuous">连续 AI 推演</button><input class="round-count" id="roundCount" type="number" min="1" max="9" value="3" aria-label="连续推演轮数" /><button class="btn btn-icon" aria-label="运行操作" title="运行操作" data-action="more">⋯</button><div class="popover" id="continuousPopover"><strong>连续 AI 推演</strong><p>本原型使用当前正式资料和时间边界模拟 AI 推演结果；接入小说工作台后可请求真实模型。</p><div class="popover-row"><input id="continuousCount" type="number" min="1" max="9" value="3" /><span>轮</span><button class="btn btn-primary" data-action="confirm-continuous">开始</button></div></div></div>
+                 <div class="workspace-actions"><button class="btn btn-primary" data-action="advance" title="依据正式资料与时间边界生成一轮 AI 故事">AI 推演 1 轮</button><button class="btn btn-danger" id="cancelAdvance" data-action="cancel" hidden>■ 取消推演</button><button class="btn" data-action="continuous">连续 AI 推演</button><input class="round-count" id="roundCount" type="number" min="1" max="9" value="3" aria-label="连续推演轮数" /><button class="btn btn-icon" aria-label="运行操作" title="运行操作" data-action="more">⋯</button><div class="popover" id="continuousPopover"><strong>连续 AI 推演</strong><p>本原型使用当前正式资料和时间边界模拟 AI 推演结果；接入小说工作台后可请求真实模型。</p><div class="popover-row"><input id="continuousCount" type="number" min="1" max="9" value="3" aria-label="连续推演轮数" /><span>轮</span><button class="btn btn-primary" data-action="confirm-continuous">开始</button></div></div></div>
                </div>
                <div class="workspace-ribbon" aria-label="运行上下文">
                  <span class="ribbon-item"><i></i><span>基线</span><strong>已冻结</strong></span>
@@ -677,6 +679,7 @@
       let selectedEvent = 0;
       let selectedChoice = "";
       let isSettling = false;
+      let cancelRequested = false;
       const $ = (id) => document.getElementById(id);
       const toast = (message) => { $("toast").textContent = message; $("toast").classList.add("is-visible"); setTimeout(() => $("toast").classList.remove("is-visible"), 2200); };
       const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
@@ -695,6 +698,10 @@
           button.disabled = disabled;
           button.setAttribute("aria-busy", disabled ? "true" : "false");
         });
+        const cancelButton = $("cancelAdvance");
+        cancelButton.hidden = !isSettling;
+        cancelButton.disabled = cancelRequested;
+        cancelButton.textContent = cancelRequested ? "正在取消" : "■ 取消推演";
       }
       function typeForEvent(event) {
         if (!event) return "world";
@@ -1290,12 +1297,39 @@
         renderAll();
         toast(`第 ${round.index} 轮 AI 推演失败：${message}`);
       }
+      function cancelRoundSettlement(simulation, round, runtimeSnapshot, observerTerminalSnapshot, lastRoundReportSnapshot) {
+        simulation.runtime = runtimeSnapshot;
+        if (observerTerminalSnapshot) simulation.observerTerminal = observerTerminalSnapshot;
+        else delete simulation.observerTerminal;
+        if (lastRoundReportSnapshot) simulation.lastRoundReport = lastRoundReportSnapshot;
+        else delete simulation.lastRoundReport;
+        round.status = "待推演";
+        round.events = 0;
+        round.narrative = "";
+        simulation.eventSets[round.index] = [];
+        const previous = [...simulation.rounds]
+          .filter((item) => item.status === "已完成" || item.status === "基线")
+          .sort((left, right) => left.index - right.index)
+          .pop() || simulation.rounds[0];
+        selectedRound = previous.index;
+        simulation.selectedRound = selectedRound;
+        simulation.currentTime = previous.time;
+        selectedEvent = 0;
+        selectedChoice = "";
+        simulation.status = "已暂停";
+        simulation.statusLabel = "AI 推演已取消，本轮未保存";
+        isSettling = false;
+        cancelRequested = false;
+        renderAll();
+        toast("AI 推演已取消，本轮没有保存");
+      }
       function runRounds(count) {
         if (isSettling) { toast("当前运行正在进行 AI 推演，请等待这一轮检查点保存"); return; }
         const simulation = currentSimulation();
         const queue = collectPendingRounds(simulation, count);
         if (!queue.length) { toast("当前推演已到达设置的时间终点"); return; }
         isSettling = true;
+        cancelRequested = false;
         simulation.status = "运行中";
         const settleNext = (position) => {
           const round = queue[position];
@@ -1312,6 +1346,10 @@
           simulation.statusLabel = `AI 正在推演第 ${round.index} 轮（${position + 1} / ${queue.length}）`;
           renderAll();
           setTimeout(() => {
+            if (cancelRequested) {
+              cancelRoundSettlement(simulation, round, runtimeSnapshot, observerTerminalSnapshot, lastRoundReportSnapshot);
+              return;
+            }
             try {
               const results = generatedAiEventsFor(simulation, round);
               simulation.eventSets[round.index] = results;
@@ -1324,6 +1362,10 @@
               selectedType = typeForEvent(results[0]);
               updateEntitySnapshot(simulation, round);
               if (position + 1 < queue.length) {
+                if (cancelRequested) {
+                  cancelRoundSettlement(simulation, round, runtimeSnapshot, observerTerminalSnapshot, lastRoundReportSnapshot);
+                  return;
+                }
                 simulation.statusLabel = `第 ${round.index} 轮检查点已保存，继续推进`;
                 renderAll();
                 setTimeout(() => settleNext(position + 1), 220);
@@ -1335,6 +1377,10 @@
               renderAll();
               toast(`${queue.length} 轮 AI 推演已完成，故事与状态快照已保存`);
             } catch (error) {
+              if (cancelRequested) {
+                cancelRoundSettlement(simulation, round, runtimeSnapshot, observerTerminalSnapshot, lastRoundReportSnapshot);
+                return;
+              }
               simulation.runtime = runtimeSnapshot;
               if (observerTerminalSnapshot) simulation.observerTerminal = observerTerminalSnapshot;
               else delete simulation.observerTerminal;
@@ -1345,6 +1391,13 @@
           }, 760);
         };
         settleNext(0);
+      }
+      function cancelRounds() {
+        if (!isSettling || cancelRequested) return;
+        cancelRequested = true;
+        const simulation = currentSimulation();
+        simulation.statusLabel = "正在取消 AI 推演";
+        renderAll();
       }
       function advanceRound() { runRounds(1); }
       function createSimulation() {
@@ -1434,6 +1487,7 @@
         if (action === "close-setup") closeSetup();
         if (action === "create") createSimulation();
         if (action === "advance") advanceRound();
+        if (action === "cancel") cancelRounds();
         if (action === "continuous") { $("continuousCount").value = $("roundCount").value || 3; $("continuousPopover").classList.toggle("is-open"); }
         if (action === "confirm-continuous") { const count = Math.min(9, Math.max(1, Number($("continuousCount").value) || 1)); $("continuousPopover").classList.remove("is-open"); runRounds(count); }
          if (action === "more") openMoreDrawer();

@@ -623,8 +623,36 @@ function findProviderImageModel(
       ? record.inputModalities.filter(
           (value): value is string => typeof value === "string",
         )
-      : [];
-    return { model, inputModalities };
+      : undefined;
+    const explicitSupport = getExplicitImageInputSupport(record);
+    if (explicitSupport === false) return null;
+    const declaredSource = record.source === "preset"
+      || record.source === "custom"
+      || record.source === "discovered"
+      ? record.source
+      : "provider";
+    const fallback = explicitSupport === undefined
+      ? lookupModelModalitySupport(model, "image")
+      : undefined;
+    const inferred = fallback?.status === "supported" && fallback.source === "litellm";
+    return {
+      model,
+      modelName:
+        typeof record.modelName === "string" && record.modelName.trim()
+          ? record.modelName
+          : model,
+      inputModalities,
+      capabilityConfidence: explicitSupport === true
+        ? "declared"
+        : inferred
+          ? "inferred"
+          : "unknown",
+      capabilitySource: explicitSupport === true
+        ? declaredSource
+        : inferred
+          ? "litellm"
+          : undefined,
+    };
   }
   return null;
 }
@@ -702,7 +730,11 @@ export function resolveImageUnderstandingToolAvailability(
   }
 
   const modelEntry = findProviderImageModel(provider, model);
-  if (!modelEntry || !modelEntry.inputModalities.includes("image")) {
+  if (
+    !modelEntry
+    || (modelEntry.inputModalities !== undefined
+      && !modelEntry.inputModalities.includes("image"))
+  ) {
     return unavailableImageUnderstandingTool(
       "model-not-image-capable",
       `Model '${model}' is not registered as image-capable for provider '${providerId}'.`,

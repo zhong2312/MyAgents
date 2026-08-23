@@ -104,6 +104,8 @@ export const CUSTOM_EVENTS = {
   SESSION_TITLE_CHANGED: "session-title-changed",
   /** Fired when project-local Session history grouping changes. */
   SESSION_HISTORY_CHANGED: "session-history-changed",
+  /** Fired when project-scoped skills, commands, or tools change. */
+  PROJECT_CAPABILITIES_CHANGED: "project-capabilities-changed",
   /**
    * Fired to open a historical session in a new Chat tab.
    * Payload: `{ sessionId: string; workspacePath: string }`.

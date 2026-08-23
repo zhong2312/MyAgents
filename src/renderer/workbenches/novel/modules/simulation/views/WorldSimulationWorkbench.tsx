@@ -11,9 +11,10 @@ import {
   Play,
   Plus,
   Route,
+  Square,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   CustomSelect,
@@ -71,6 +72,7 @@ interface WorldSimulationWorkbenchProps {
     guard: WorkbenchNavigationGuard,
   ) => () => void;
   readonly onAiRun?: (request: SimulationAiRunRequest) => Promise<string>;
+  readonly onCancelAiRun?: (runId: string) => Promise<void>;
 }
 
 export interface SimulationAiRunRequest {
@@ -85,6 +87,12 @@ export interface SimulationAiRunRequest {
   readonly streamOutput: boolean;
   readonly usesNovelContextTools: boolean;
   readonly onProgress?: (progress: WorkbenchAiRunProgress) => void;
+}
+
+class SimulationAiRunCancelledError extends Error {
+  constructor() {
+    super("本次世界推演已取消");
+  }
 }
 
 interface SimulationSourceInputs extends SimulationEngineInputs {
@@ -1303,6 +1311,7 @@ export default function WorldSimulationWorkbench({
   isActive,
   registerNavigationGuard,
   onAiRun,
+  onCancelAiRun,
 }: WorldSimulationWorkbenchProps) {
   const repository = useMemo(
     () => createNovelSimulationRepository(storage),
@@ -1313,6 +1322,7 @@ export default function WorldSimulationWorkbench({
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [isSettling, setIsSettling] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [isSavingTimeout, setIsSavingTimeout] = useState(false);
   const [aiProgress, setAiProgress] = useState("准备本轮推演");
   const [setupOpen, setSetupOpen] = useState(false);
@@ -1327,6 +1337,8 @@ export default function WorldSimulationWorkbench({
   const [drawer, setDrawer] = useState<"causal" | "more" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const activeAiRunIdsRef = useRef(new Set<string>());
+  const aiCancelRequestedRef = useRef(false);
   const reload = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -1460,6 +1472,11 @@ export default function WorldSimulationWorkbench({
   const advanceOne = async (
     current: LoadedSimulationLibrary,
   ): Promise<LoadedSimulationLibrary> => {
+    const throwIfCancelled = () => {
+      if (aiCancelRequestedRef.current) {
+        throw new SimulationAiRunCancelledError();
+      }
+    };
     const run = current.index.activeRunId
       ? current.runs.get(current.index.activeRunId)?.manifest
       : undefined;
@@ -1474,11 +1491,13 @@ export default function WorldSimulationWorkbench({
     }
     setAiProgress("正在读取冻结的世界上下文");
     const currentSource = await readSimulationInputs(storage);
+    throwIfCancelled();
     const baselineChapter = await loadBaselineChapter(
       storage,
       currentSource,
       run.baselineChapterId,
     );
+    throwIfCancelled();
     if (
       buildBaselineSourceHash(
         currentSource,
@@ -1510,8 +1529,10 @@ export default function WorldSimulationWorkbench({
       readonly timeoutMs: number;
       readonly usesNovelContextTools: boolean;
       readonly streamOutput: boolean;
-    }) =>
-      onAiRun({
+    }) => {
+      throwIfCancelled();
+      activeAiRunIdsRef.current.add(request.runId);
+      return onAiRun({
         sceneId: "simulation.advance",
         runId: request.runId,
         label: request.label,
@@ -1523,15 +1544,36 @@ export default function WorldSimulationWorkbench({
         streamOutput: request.streamOutput,
         usesNovelContextTools: request.usesNovelContextTools,
         onProgress: (progress) => {
-          setAiProgress(progress.message);
+          if (
+            !aiCancelRequestedRef.current &&
+            activeAiRunIdsRef.current.has(progress.runId)
+          ) {
+            setAiProgress(progress.message);
+          }
         },
-      });
+      })
+        .then(
+          (output) => {
+            throwIfCancelled();
+            return output;
+          },
+          (cause) => {
+            if (aiCancelRequestedRef.current) {
+              throw new SimulationAiRunCancelledError();
+            }
+            throw cause;
+          },
+        )
+        .finally(() => {
+          activeAiRunIdsRef.current.delete(request.runId);
+        });
+    };
     const aiOutput = await requestAi({
       runId,
       label: `世界推演 · ${run.name} · 第 ${result.round.index} 轮`,
       prompt: buildSimulationAiPrompt(aiInput),
       systemPrompt:
-        "你是世界推演的 AI 故事生成层。时间调度只提供时间窗口和约束事实；本轮所有故事、人物行动、势力策略、生命代际、资源传播与世界变化都必须由 AI 依据正式资料生成。只输出当前轮次的故事正文与事件候选 JSON，不要直接写入任何正式事实。narrative 是作者的主阅读内容，events 是辅助审计账本；没有可落盘事件时仍要保留有事实依据的故事。",
+        "你是世界推演的 AI 故事生成层。时间调度只提供时间窗口和约束事实；本轮所有故事、人物行动、势力策略、生命代际、资源传播与世界变化都必须由 AI 依据已取得资料生成。只输出当前轮次的故事正文与事件候选 JSON，不要直接写入任何正式事实。narrative 是作者的主阅读内容，events 是辅助审计账本；没有可落盘事件时仍要保留故事；候选缺少正式触发事实时可以保留，但必须使用 uncertain 并说明事实缺口，不得虚构证据。",
       timeoutMs: aiTimeoutMinutes(run) * 60_000,
       streamOutput: true,
       usesNovelContextTools: true,
@@ -1575,12 +1617,15 @@ export default function WorldSimulationWorkbench({
         throw repairCause;
       }
     }
+    throwIfCancelled();
     const latestSource = await readSimulationInputs(storage);
+    throwIfCancelled();
     const latestChapter = await loadBaselineChapter(
       storage,
       latestSource,
       run.baselineChapterId,
     );
+    throwIfCancelled();
     if (
       buildBaselineSourceHash(latestSource, run.baselineMode, latestChapter) !==
       run.baselineSourceHash
@@ -1590,6 +1635,7 @@ export default function WorldSimulationWorkbench({
       );
     }
     setAiProgress("正在保存本轮账本");
+    throwIfCancelled();
     const events = [...result.events, ...projected.events];
     const round = {
       ...result.round,
@@ -1618,6 +1664,10 @@ export default function WorldSimulationWorkbench({
     if (!loaded || isSettling || !activeRun || activeRun.status === "completed")
       return;
     setIsSettling(true);
+    aiCancelRequestedRef.current = false;
+    activeAiRunIdsRef.current.clear();
+    setIsCancelling(false);
+    // 取消属于整轮推演，而不只是已发出的模型请求；上下文读取阶段也应可中止。
     setAiProgress("准备本轮推演");
     setError(null);
     setNotice(null);
@@ -1639,9 +1689,38 @@ export default function WorldSimulationWorkbench({
           : "AI 已完成本轮推演，检查点已保存",
       );
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (
+        aiCancelRequestedRef.current ||
+        cause instanceof SimulationAiRunCancelledError
+      ) {
+        setNotice("AI 推演已取消，未完成的本轮没有保存。");
+        setAiProgress("本轮推演已取消");
+      } else {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
     } finally {
+      activeAiRunIdsRef.current.clear();
+      aiCancelRequestedRef.current = false;
+      setIsCancelling(false);
       setIsSettling(false);
+    }
+  };
+  const cancelAdvance = async () => {
+    if (!isSettling || isCancelling) return;
+    const runIds = [...activeAiRunIdsRef.current];
+    aiCancelRequestedRef.current = true;
+    setIsCancelling(true);
+    setAiProgress("正在取消 AI 推演");
+    if (!runIds.length) return;
+    // 没有宿主取消接口时仍保留本地取消护栏，返回结果会在保存前被丢弃。
+    if (!onCancelAiRun) return;
+    const results = await Promise.allSettled(
+      runIds.map((runId) => onCancelAiRun(runId)),
+    );
+    if (results.some((result) => result.status === "rejected")) {
+      aiCancelRequestedRef.current = false;
+      setIsCancelling(false);
+      setError("取消请求未能送达；AI 推演仍在运行，请稍后重试。");
     }
   };
   const switchRun = async (runId: string) => {
@@ -1945,6 +2024,21 @@ export default function WorldSimulationWorkbench({
               )}
               {isSettling ? "AI 推演中" : "AI 推演 1 轮"}
             </button>
+            {isSettling && (
+              <button
+                type="button"
+                className="ws-btn ws-btn-danger"
+                disabled={isCancelling}
+                onClick={() => void cancelAdvance()}
+              >
+                {isCancelling ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Square className="h-4 w-4" />
+                )}
+                {isCancelling ? "正在取消" : "取消推演"}
+              </button>
+            )}
             <button
               type="button"
               className="ws-btn"
