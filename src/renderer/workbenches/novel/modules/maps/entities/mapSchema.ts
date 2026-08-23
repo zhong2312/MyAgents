@@ -98,6 +98,8 @@ export const mapFeatureSchema = z
       .nullable(),
     /** 图层 id。 */
     layerId: idSchema,
+    /** 对象级锁定状态；旧地图缺失时按未锁定兼容读取。 */
+    locked: z.boolean().optional(),
     /** 几何（按 kind 解释：marker/label=点坐标；route=点序列；其余=点序列围合）。 */
     points: z
       .array(z.object({ x: z.number().finite(), y: z.number().finite() }))
@@ -204,6 +206,8 @@ export const mapArtworkStampSchema = z
   .object({
     id: idSchema,
     layerId: idSchema,
+    /** 对象级锁定状态；旧地图缺失时按未锁定兼容读取。 */
+    locked: z.boolean().optional(),
     /** 素材清单中的稳定 id；素材本体不写进地图 JSON。 */
     assetId: z.string().trim().min(1).max(160),
     x: z.number().finite(),
@@ -388,6 +392,8 @@ export const mapSceneStrokeSchema = z
   .object({
     id: idSchema,
     layerId: idSchema,
+    /** 对象级锁定状态；旧地图缺失时按未锁定兼容读取。 */
+    locked: z.boolean().optional(),
     tool: z.enum(["paint", "erase"]),
     /** 笔刷素材 id；null 表示纯色地形笔触。 */
     brushAssetId: z.string().trim().min(1).max(160).nullable(),
@@ -425,6 +431,13 @@ export const mapSceneRegionSchema = z
   .object({
     id: idSchema,
     layerId: idSchema,
+    /** 对象级锁定状态；旧地图缺失时按未锁定兼容读取。 */
+    locked: z.boolean().optional(),
+    /**
+     * 生成地图的海陆区域由同一份 MapFeature 派生。保留来源可让编辑器
+     * 在作者改动该要素几何时同步更新最终可见地表，而不是留下旧底图。
+     */
+    sourceFeatureId: z.string().trim().min(1).max(160).optional(),
     kind: mapSceneRegionKindSchema,
     points: z.array(mapScenePointSchema).min(3).max(8192),
     fill: z.string().trim().min(1).max(32),

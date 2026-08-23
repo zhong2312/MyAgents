@@ -17,7 +17,7 @@ describe("promptLibraryResolver", () => {
 
     expect(selection.status).toBe("ready");
     if (selection.status === "ready") {
-      expect(selection.activation.pack.name).toBe("StoryForge 小说提示词库");
+      expect(selection.activation.pack.name).toBe("My Novel Studio 小说提示词库");
     }
   });
 
@@ -27,7 +27,7 @@ describe("promptLibraryResolver", () => {
     const duplicatePack = {
       ...model.packs[0]!,
       id: "storyforge.prompt-library#2",
-      name: "StoryForge 小说提示词库 · 副本 2",
+      name: "My Novel Studio 小说提示词库 · 副本 2",
       copyNumber: 2,
     };
     const duplicateRoot = {

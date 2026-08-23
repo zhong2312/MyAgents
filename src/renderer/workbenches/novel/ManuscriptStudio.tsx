@@ -91,6 +91,8 @@ import {
   createManuscriptTrackingRepository,
   hashManuscriptContent,
 } from "./manuscriptTrackingRepository";
+import { createManuscriptCommentRepository } from "./manuscriptCommentRepository";
+import type { ManuscriptComment } from "./manuscriptCommentSchema";
 import {
   isManuscriptTrackingEvidenceGrounded,
   partitionManuscriptTrackingChangesByEvidence,
@@ -285,6 +287,7 @@ type StudioView = "write" | "tracking";
 type InspectorView =
   | "plan"
   | "reference"
+  | "comments"
   | "ai"
   | "quality"
   | "sync"
@@ -10589,6 +10592,21 @@ export default function ManuscriptStudio({
   const [isApplyingCandidate, setIsApplyingCandidate] = useState(false);
   const [selectionAiLoading, setSelectionAiLoading] =
     useState<SelectionAiLoading | null>(null);
+  const [commentComposer, setCommentComposer] = useState<{
+    readonly quote: string;
+    readonly start: number;
+    readonly end: number;
+    readonly anchor: SelectionToolbarPosition;
+  } | null>(null);
+  const [commentDraft, setCommentDraft] = useState("");
+  const [commentSaving, setCommentSaving] = useState(false);
+  const [commentDeletingId, setCommentDeletingId] = useState<
+    string | "batch" | null
+  >(null);
+  const [comments, setComments] = useState<readonly ManuscriptComment[]>([]);
+  const [selectedCommentIds, setSelectedCommentIds] = useState<
+    ReadonlySet<string>
+  >(new Set());
   const [creativeBrief, setCreativeBrief] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const saveInFlightRef = useRef(false);
@@ -10670,6 +10688,10 @@ export default function ManuscriptStudio({
   const [brainstormBusy, setBrainstormBusy] = useState(false);
   const [brainstormPending, setBrainstormPending] = useState(false);
   const [fullGenerationOpen, setFullGenerationOpen] = useState(false);
+  const [fullGenerationStartAtGeneration, setFullGenerationStartAtGeneration] =
+    useState(false);
+  const [fullGenerationInitialNotes, setFullGenerationInitialNotes] =
+    useState("");
   const [fullGenerationBusy, setFullGenerationBusy] = useState(false);
   const [fullGenerationPending, setFullGenerationPending] = useState(false);
   const [simulationOpen, setSimulationOpen] = useState(false);
@@ -10690,6 +10712,10 @@ export default function ManuscriptStudio({
   savedDraftRef.current = savedDraft;
   const trackingRepository = useMemo(
     () => createManuscriptTrackingRepository(storage),
+    [storage],
+  );
+  const commentRepository = useMemo(
+    () => createManuscriptCommentRepository(storage),
     [storage],
   );
   const dirty = Boolean(selectedChapter && draft !== savedDraft);
@@ -10719,6 +10745,34 @@ export default function ManuscriptStudio({
     JSON.stringify(project.chapterIndex.typography);
   const structureLocked = project.chapterIndex.structureMode === "locked";
   const hydratedChapterIdRef = useRef<string | null | undefined>(undefined);
+  const selectedChapterIdForComments = selectedChapter?.id;
+
+  useEffect(() => {
+    let cancelled = false;
+    setCommentComposer(null);
+    setCommentDraft("");
+    setComments([]);
+    setSelectedCommentIds(new Set());
+    if (!selectedChapterIdForComments) return;
+    void commentRepository
+      .load()
+      .then((loaded) => {
+        if (cancelled) return;
+        const chapterComments = loaded.comments.filter(
+          (comment) => comment.chapterId === selectedChapterIdForComments,
+        );
+        setComments(chapterComments);
+        setSelectedCommentIds(
+          new Set(chapterComments.map((comment) => comment.id)),
+        );
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(`评论载入失败：${errorText(cause)}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [commentRepository, selectedChapterIdForComments]);
 
   useEffect(() => {
     setTypographyDraft(project.chapterIndex.typography);
@@ -11664,6 +11718,119 @@ export default function ManuscriptStudio({
     );
   };
 
+  const openCommentComposer = () => {
+    if (
+      !selectedChapter ||
+      selection.end <= selection.start ||
+      !selectionToolbarPosition
+    ) {
+      return;
+    }
+    const quote = draft.slice(selection.start, selection.end);
+    if (!quote.trim()) return;
+    setCommentDraft("");
+    setCommentComposer({
+      quote,
+      start: selection.start,
+      end: selection.end,
+      anchor: selectionToolbarPosition,
+    });
+  };
+
+  const saveComment = async () => {
+    if (
+      !selectedChapter ||
+      !commentComposer ||
+      !commentDraft.trim() ||
+      commentSaving
+    ) {
+      return;
+    }
+    setCommentSaving(true);
+    setError(null);
+    try {
+      const loaded = await commentRepository.load();
+      const next = await commentRepository.create(loaded, {
+        chapterId: selectedChapter.id,
+        quote: commentComposer.quote,
+        content: commentDraft.trim(),
+        start: commentComposer.start,
+        end: commentComposer.end,
+      });
+      const chapterComments = next.comments.filter(
+        (comment) => comment.chapterId === selectedChapter.id,
+      );
+      setComments(chapterComments);
+      setSelectedCommentIds(
+        new Set(chapterComments.map((comment) => comment.id)),
+      );
+      setCommentComposer(null);
+      setCommentDraft("");
+    } catch (cause) {
+      setError(`评论保存失败：${errorText(cause)}`);
+    } finally {
+      setCommentSaving(false);
+    }
+  };
+
+  const deleteComment = async (comment: ManuscriptComment) => {
+    if (!selectedChapter || commentDeletingId) return;
+    if (!window.confirm("删除这条评论？删除后无法恢复。")) return;
+    setCommentDeletingId(comment.id);
+    setError(null);
+    try {
+      const loaded = await commentRepository.load();
+      const next = await commentRepository.remove(loaded, comment.id);
+      const chapterComments = next.comments.filter(
+        (item) => item.chapterId === selectedChapter.id,
+      );
+      setComments(chapterComments);
+      setSelectedCommentIds(
+        (current) =>
+          new Set(
+            [...current].filter((id) =>
+              chapterComments.some((item) => item.id === id),
+            ),
+          ),
+      );
+    } catch (cause) {
+      setError(`评论删除失败：${errorText(cause)}`);
+    } finally {
+      setCommentDeletingId(null);
+    }
+  };
+
+  const deleteSelectedComments = async () => {
+    if (
+      !selectedChapter ||
+      commentDeletingId ||
+      selectedCommentIds.size === 0
+    ) {
+      return;
+    }
+    const count = selectedCommentIds.size;
+    if (!window.confirm(`删除已选中的 ${count} 条评论？删除后无法恢复。`)) {
+      return;
+    }
+    setCommentDeletingId("batch");
+    setError(null);
+    try {
+      const loaded = await commentRepository.load();
+      const next = await commentRepository.removeMany(loaded, [
+        ...selectedCommentIds,
+      ]);
+      const chapterComments = next.comments.filter(
+        (item) => item.chapterId === selectedChapter.id,
+      );
+      setComments(chapterComments);
+      setSelectedCommentIds(new Set());
+    } catch (cause) {
+      setError(`评论批量删除失败：${errorText(cause)}`);
+    } finally {
+      setCommentDeletingId(null);
+    }
+  };
+
   const runWritingAi = async (
     mode: WritingAiMode,
     instruction = "",
@@ -11944,8 +12111,7 @@ export default function ManuscriptStudio({
           id: event.id,
           title: event.title,
           timeLabel: event.timeLabel,
-          worldSortKey:
-            event.worldSortKey ?? String(Math.trunc(event.sortKey)),
+          worldSortKey: event.worldSortKey ?? String(Math.trunc(event.sortKey)),
           timePrecision: event.timePrecision,
           chapterIds: event.chapterIds,
         }));
@@ -12895,6 +13061,32 @@ export default function ManuscriptStudio({
   };
   const openFullGeneration = async () => {
     if (!(await preparePersistedManuscriptAiSource())) return;
+    setFullGenerationInitialNotes(creativeBrief);
+    setFullGenerationStartAtGeneration(false);
+    setFullGenerationBusy(false);
+    setFullGenerationPending(false);
+    setFullGenerationOpen(true);
+  };
+  const openCommentFullGeneration = async () => {
+    const selectedComments = comments.filter((comment) =>
+      selectedCommentIds.has(comment.id),
+    );
+    if (!selectedComments.length) {
+      setError("请至少选择一条评论后再发送 AI");
+      return;
+    }
+    if (!(await preparePersistedManuscriptAiSource())) return;
+    const commentNotes = [
+      "请根据以下作者评论修改整章正文。每条评论都针对其后的逐字引用；保留未被评论指出的事实、情节和人物关系。",
+      ...selectedComments.map(
+        (comment, index) =>
+          `${index + 1}. 评论：${comment.content}\n   引用：${comment.quote}`,
+      ),
+    ].join("\n\n");
+    setFullGenerationInitialNotes(
+      [creativeBrief, commentNotes].filter(Boolean).join("\n\n"),
+    );
+    setFullGenerationStartAtGeneration(true);
     setFullGenerationBusy(false);
     setFullGenerationPending(false);
     setFullGenerationOpen(true);
@@ -13076,15 +13268,17 @@ export default function ManuscriptStudio({
       )}
       {fullGenerationOpen && (
         <FullGenerationWorkflow
+          key={`full-generation-${selectedChapter?.id ?? "empty"}-${fullGenerationStartAtGeneration ? "comments" : "standard"}`}
           storage={storage}
           project={project}
           typography={typographyDraft}
           open
+          startAtGeneration={fullGenerationStartAtGeneration}
           chapter={selectedChapter}
           chapterPlan={selectedPlan}
           manuscriptContent={savedDraft}
           persistedManuscriptContent={savedDraft}
-          initialNotes={creativeBrief}
+          initialNotes={fullGenerationInitialNotes}
           generationContext={buildOptionalContext()}
           targetWordCount={project.metadata.chapterWordCount ?? undefined}
           onRun={onAiRun}
@@ -14015,8 +14209,64 @@ export default function ManuscriptStudio({
                       >
                         标为伏笔证据
                       </button>
+                      <i />
+                      <button
+                        type="button"
+                        onClick={openCommentComposer}
+                        disabled={manuscriptMutationBusy || commentSaving}
+                      >
+                        评论
+                      </button>
                     </div>
                   )}
+                {commentComposer && (
+                  <div
+                    className="ms-selection-comment-popover"
+                    role="dialog"
+                    aria-label="添加正文评论"
+                    style={{
+                      left: commentComposer.anchor.left,
+                      top: commentComposer.anchor.top + 12,
+                    }}
+                    onMouseDown={(event) => event.stopPropagation()}
+                  >
+                    <header>
+                      <strong>添加评论</strong>
+                      <button
+                        type="button"
+                        onClick={() => setCommentComposer(null)}
+                        aria-label="取消添加评论"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </header>
+                    <blockquote>{commentComposer.quote}</blockquote>
+                    <textarea
+                      value={commentDraft}
+                      onChange={(event) => setCommentDraft(event.target.value)}
+                      placeholder="写下希望 AI 修改的问题或要求……"
+                      aria-label="评论内容"
+                      autoFocus
+                    />
+                    <footer>
+                      <button
+                        type="button"
+                        onClick={() => setCommentComposer(null)}
+                        disabled={commentSaving}
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        className="is-primary"
+                        onClick={() => void saveComment()}
+                        disabled={commentSaving || !commentDraft.trim()}
+                      >
+                        {commentSaving ? "保存中" : "确认评论"}
+                      </button>
+                    </footer>
+                  </div>
+                )}
                 {selectionAiLoading && !candidate && (
                   <SelectionAiLoadingPopover loading={selectionAiLoading} />
                 )}
@@ -14237,6 +14487,7 @@ export default function ManuscriptStudio({
                 ["plan", "计划"],
                 ["chapter", "基本"],
                 ["reference", "资料"],
+                ["comments", "评论"],
                 ["ai", "AI"],
                 ["quality", "质量"],
                 ["sync", "同步"],
@@ -14254,6 +14505,9 @@ export default function ManuscriptStudio({
                 ) : null}
                 {tab === "sync" && latestProposedBatch ? (
                   <b>{latestProposedBatch.changes.length}</b>
+                ) : null}
+                {tab === "comments" && comments.length > 0 ? (
+                  <b>{comments.length}</b>
                 ) : null}
               </button>
             ))}
@@ -14438,6 +14692,122 @@ export default function ManuscriptStudio({
               {!activeTrackingChanges.length && (
                 <p className="ms-inspector-empty">尚无已应用的关联资料</p>
               )}
+            </div>
+          )}
+
+          {inspectorView === "comments" && (
+            <div className="ms-inspector-scroll ms-context-panel">
+              <section className="ms-comments-summary">
+                <div>
+                  <strong>正文评论</strong>
+                  <span>
+                    {comments.length
+                      ? `已选 ${selectedCommentIds.size} / ${comments.length} 条`
+                      : "选中正文后添加评论"}
+                  </span>
+                </div>
+                <div className="ms-comments-actions">
+                  {comments.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedCommentIds(
+                          selectedCommentIds.size === comments.length
+                            ? new Set()
+                            : new Set(comments.map((comment) => comment.id)),
+                        )
+                      }
+                    >
+                      {selectedCommentIds.size === comments.length
+                        ? "取消全选"
+                        : "全选"}
+                    </button>
+                  )}
+                  {comments.length > 0 && (
+                    <button
+                      type="button"
+                      className="ns-button is-danger"
+                      onClick={() => void deleteSelectedComments()}
+                      disabled={
+                        commentDeletingId !== null ||
+                        selectedCommentIds.size === 0
+                      }
+                    >
+                      {commentDeletingId === "batch" ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                      删除
+                    </button>
+                  )}
+                  {comments.length > 0 && (
+                    <button
+                      type="button"
+                      className="ns-button is-primary"
+                      onClick={() => void openCommentFullGeneration()}
+                      disabled={
+                        !selectedChapter ||
+                        !onAiRun ||
+                        manuscriptMutationBusy ||
+                        fullGenerationBusy ||
+                        selectedCommentIds.size === 0
+                      }
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      发送 AI
+                    </button>
+                  )}
+                </div>
+              </section>
+              <div className="ms-comment-list">
+                {comments.map((comment) => (
+                  <article className="ms-comment-item" key={comment.id}>
+                    <header>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={selectedCommentIds.has(comment.id)}
+                          onChange={(event) =>
+                            setSelectedCommentIds((current) => {
+                              const next = new Set(current);
+                              if (event.target.checked) next.add(comment.id);
+                              else next.delete(comment.id);
+                              return next;
+                            })
+                          }
+                          aria-label={`选择评论：${comment.content}`}
+                        />
+                        <span>发送</span>
+                      </label>
+                      <button
+                        type="button"
+                        className="ms-comment-delete"
+                        onClick={() => void deleteComment(comment)}
+                        disabled={commentDeletingId !== null}
+                        title="删除评论"
+                        aria-label={`删除评论：${comment.content}`}
+                      >
+                        {commentDeletingId === comment.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                    </header>
+                    <blockquote>{comment.quote}</blockquote>
+                    <p>{comment.content}</p>
+                    <small>
+                      {new Date(comment.createdAt).toLocaleString("zh-CN")}
+                    </small>
+                  </article>
+                ))}
+                {!comments.length && (
+                  <p className="ms-inspector-empty">
+                    当前章节还没有评论。选中正文后点击工具条中的“评论”。
+                  </p>
+                )}
+              </div>
             </div>
           )}
 

@@ -49,6 +49,30 @@ describe("novel manuscript workbench context", () => {
     ).toBe(false);
   });
 
+  it("keeps the simulation scene read-only while using world context", () => {
+    configureNovelWorkbenchRequest(
+      {
+        mode: "world",
+        promptId: "novel.simulation.advance",
+        promptVersion: "1.0.0",
+      },
+      { sessionId: "simulation-1", workspace: "F:/novels/test" },
+    );
+
+    expect(
+      isNovelWorkbenchToolAllowed("world", "novel_world_get_context"),
+    ).toBe(true);
+    expect(
+      isNovelWorkbenchToolAllowed(
+        "world",
+        "mcp__novel-workbench__novel_factions_submit_draft",
+      ),
+    ).toBe(false);
+    expect(
+      isNovelWorkbenchToolAllowed("world", "novel_simulation_write_run"),
+    ).toBe(false);
+  });
+
   it("allows ordinary command and file tools in a novel workbench session", () => {
     configureNovelWorkbenchRequest(
       {

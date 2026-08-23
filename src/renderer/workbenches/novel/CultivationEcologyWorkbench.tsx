@@ -4632,58 +4632,78 @@ function AbilityDirectory({
   return (
     <>
       <div className="ce-content-toolbar ce-content-toolbar-filters">
-        <div className="ce-filter-tabs">
-          <button
-            type="button"
-            className={filter === "all" ? "is-active" : ""}
-            onClick={() => setFilter("all")}
+        <div className="ce-ability-filter-groups">
+          <div
+            className="ce-ability-filter-group"
+            role="group"
+            aria-label="获取方式"
           >
-            全部 <small>{system.abilities.length}</small>
-          </button>
-          <button
-            type="button"
-            className={filter === "natural" ? "is-active" : ""}
-            onClick={() => setFilter("natural")}
+            <span className="ce-ability-filter-label">获取方式</span>
+            <div className="ce-filter-tabs">
+              <button
+                type="button"
+                className={filter === "all" ? "is-active" : ""}
+                onClick={() => setFilter("all")}
+              >
+                全部 <small>{system.abilities.length}</small>
+              </button>
+              <button
+                type="button"
+                className={filter === "natural" ? "is-active" : ""}
+                onClick={() => setFilter("natural")}
+              >
+                境界自动获得{" "}
+                <small>
+                  {
+                    system.abilities.filter(
+                      (item) => item.acquisitionType === "natural",
+                    ).length
+                  }
+                </small>
+              </button>
+              <button
+                type="button"
+                className={filter === "scripture" ? "is-active" : ""}
+                onClick={() => setFilter("scripture")}
+              >
+                秘籍修炼获得{" "}
+                <small>
+                  {
+                    system.abilities.filter(
+                      (item) => item.acquisitionType === "scripture",
+                    ).length
+                  }
+                </small>
+              </button>
+            </div>
+          </div>
+          <div
+            className="ce-ability-filter-group"
+            role="group"
+            aria-label="功能类型"
           >
-            境界自动获得{" "}
-            <small>
-              {
-                system.abilities.filter(
-                  (item) => item.acquisitionType === "natural",
-                ).length
-              }
-            </small>
-          </button>
-          <button
-            type="button"
-            className={filter === "scripture" ? "is-active" : ""}
-            onClick={() => setFilter("scripture")}
-          >
-            秘籍修炼获得{" "}
-            <small>
-              {
-                system.abilities.filter(
-                  (item) => item.acquisitionType === "scripture",
-                ).length
-              }
-            </small>
-          </button>
-          {(["all", "support", "mental", "offensive"] as const).map((value) => (
-            <button
-              type="button"
-              key={value}
-              className={functionFilter === value ? "is-active" : ""}
-              onClick={() => setFunctionFilter(value)}
-            >
-              {value === "all"
-                ? "全部功能"
-                : value === "support"
-                  ? "辅助类"
-                  : value === "mental"
-                    ? "精神类"
-                    : "进攻类"}
-            </button>
-          ))}
+            <span className="ce-ability-filter-label">功能类型</span>
+            <div className="ce-filter-tabs">
+              {(["all", "support", "mental", "offensive"] as const).map(
+                (value) => (
+                  <button
+                    type="button"
+                    key={value}
+                    className={functionFilter === value ? "is-active" : ""}
+                    onClick={() => setFunctionFilter(value)}
+                  >
+                    {value === "all"
+                      ? "全部"
+                      : value === "support"
+                        ? "辅助类"
+                        : value === "mental"
+                          ? "精神类"
+                          : "进攻类"}
+                  </button>
+                ),
+              )}
+            </div>
+          </div>
         </div>
         <div>
           <Button variant="primary" onClick={add}>

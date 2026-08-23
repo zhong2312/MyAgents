@@ -159,6 +159,7 @@ function context(
     route,
     isActive: true,
     storage,
+    setShellTitle: () => undefined,
     agentSessions: {
       isAvailable: agentSessionsAvailable,
       open: openAgentSession,

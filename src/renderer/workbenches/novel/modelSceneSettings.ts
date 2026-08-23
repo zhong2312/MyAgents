@@ -10,6 +10,7 @@ export const MODEL_SCENE_IDS = [
   "world.template",
   "world.assist",
   "maps.fantasy",
+  "simulation.advance",
   "narrative.assist",
   "timeline.assist",
   "manuscript.generate",
@@ -98,6 +99,14 @@ export const NOVEL_MODEL_SCENES: readonly NovelModelSceneDefinition[] = [
     label: "Agent + Azgaar 地图生成",
     description: "读取世界架构并调用 Azgaar 生成待作者审阅的地图提案",
     execution: "agent",
+  },
+  {
+    id: "simulation.advance",
+    group: "世界推演",
+    label: "世界推演裁定",
+    description:
+      "依据时间窗口、世界规则与主体状态生成一段连续的世界故事，并附可审计事件账本",
+    execution: "run",
   },
   {
     id: "timeline.assist",

@@ -181,6 +181,7 @@ export function createMapSceneStroke(input: {
 export function createMapSceneRegion(input: {
   readonly id: string;
   readonly layerId: string;
+  readonly sourceFeatureId?: string;
   readonly kind: MapSceneRegion["kind"];
   readonly points: readonly MapScenePoint[];
   readonly fill?: string;
@@ -195,6 +196,7 @@ export function createMapSceneRegion(input: {
   return {
     id: input.id,
     layerId: input.layerId,
+    ...(input.sourceFeatureId ? { sourceFeatureId: input.sourceFeatureId } : {}),
     kind: input.kind,
     points: input.points.map((point) => ({ x: point.x, y: point.y })),
     fill: input.fill ?? (isLand ? "#b8ad7d" : "#5d92a5"),

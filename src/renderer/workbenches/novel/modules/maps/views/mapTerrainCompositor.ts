@@ -34,6 +34,14 @@ import { mapRegionTextureVariation } from "../business/mapTerrainTextures";
 
 const MAX_SURFACE_EDGE = 2_048;
 
+export type MapTerrainCompositeOptions = {
+  /**
+   * 交互预览可降低临时栅格分辨率；正式画布和导出保持默认精度。
+   * 该值只影响可重建的像素缓存，不会修改 MapDocument 中的几何事实。
+   */
+  readonly maxSurfaceEdge?: number;
+};
+
 type Rgb = readonly [number, number, number];
 
 type VisibleSceneRegion = {
@@ -613,8 +621,30 @@ function materialBoundaryContinuity(
   return total > 0 ? same / total : 0;
 }
 
+export function mapTerrainCompositeRasterSize(
+  worldWidth: number,
+  worldHeight: number,
+  options: MapTerrainCompositeOptions = {},
+): { readonly width: number; readonly height: number } {
+  const safeWorldWidth = Math.max(1, Math.round(worldWidth));
+  const safeWorldHeight = Math.max(1, Math.round(worldHeight));
+  const requestedEdge = options.maxSurfaceEdge;
+  const maximumEdge = Number.isFinite(requestedEdge)
+    ? Math.max(64, Math.floor(requestedEdge!))
+    : MAX_SURFACE_EDGE;
+  const scale = Math.min(
+    1,
+    maximumEdge / Math.max(safeWorldWidth, safeWorldHeight),
+  );
+  return {
+    width: Math.max(1, Math.round(safeWorldWidth * scale)),
+    height: Math.max(1, Math.round(safeWorldHeight * scale)),
+  };
+}
+
 export function createMapTerrainComposite(
   mapDocument: MapDocument,
+  options: MapTerrainCompositeOptions = {},
 ): MapTerrainComposite | null {
   const scene = mapDocument.scene;
   if (!scene || typeof globalThis.document === "undefined") return null;
@@ -671,12 +701,12 @@ export function createMapTerrainComposite(
   );
   const worldWidth = mapDocument.canvas.width;
   const worldHeight = mapDocument.canvas.height;
-  const scale = Math.min(
-    1,
-    MAX_SURFACE_EDGE / Math.max(worldWidth, worldHeight),
+  const { width, height } = mapTerrainCompositeRasterSize(
+    worldWidth,
+    worldHeight,
+    options,
   );
-  const width = Math.max(1, Math.round(worldWidth * scale));
-  const height = Math.max(1, Math.round(worldHeight * scale));
+  const scale = width / worldWidth;
   const maskCanvas = createSurface(width, height);
   const colorCanvas = createSurface(width, height);
   const waterCanvas = createSurface(width, height);

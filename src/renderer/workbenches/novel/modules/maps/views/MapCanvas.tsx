@@ -52,7 +52,7 @@ import { mapFeaturesInRenderOrder } from "../business/mapLayerOrder";
 import {
   DEFAULT_MAP_RIVER_PROPS,
   getMapRiverStyle,
-  isMapRiverFeature,
+  hasMapRiverAppearance,
   mapRiverWidthAt,
   smoothMapPath,
 } from "../business/mapHydrography";
@@ -223,7 +223,7 @@ function featureStyle(
         feature.props.curve === "arc" ? "arc" : "line",
       )
     : smoothMapPath(feature.points);
-  if (isMapRiverFeature(feature)) {
+  if (hasMapRiverAppearance(feature)) {
     const riverStyle = getMapRiverStyle(feature);
     const smoothed = pathPoints;
     const styles: Style[] = [];

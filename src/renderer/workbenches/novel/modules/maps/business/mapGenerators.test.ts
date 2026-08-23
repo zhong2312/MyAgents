@@ -397,10 +397,17 @@ describe("mapGenerators", () => {
     const applied = applyGeneratorCandidate(document(), candidate);
     expect(mapDocumentSchema.parse(applied)).toEqual(applied);
     const sourceLayerIds = mapGeneratorSourceLayerIds("fantasy-map");
-    expect(
+    const generatedSceneRegions =
       applied.scene?.layers.find((layer) => layer.id === sourceLayerIds.scene)
-        ?.regions,
+        ?.regions ?? [];
+    expect(
+      generatedSceneRegions,
     ).not.toHaveLength(0);
+    expect(
+      generatedSceneRegions.every((region) =>
+        applied.features.some((feature) => feature.id === region.sourceFeatureId),
+      ),
+    ).toBe(true);
     const materialIds = new Set<MapTerrainMaterial>(
       applied.scene?.layers
         .flatMap((layer) => layer.strokes)

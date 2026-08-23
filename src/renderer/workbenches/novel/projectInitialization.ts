@@ -13,6 +13,7 @@ import { createTimelineLibraryInitializationFiles } from "./timelineLibraryRepos
 import { createCultivationEcologyInitializationFiles } from "./cultivationEcologyRepository";
 import { createInspirationInitializationFiles } from "./inspirationRepository";
 import { createNarrativeEngineeringInitializationFiles } from "./narrativeEngineeringRepository";
+import { createSimulationInitializationFiles } from "./modules/simulation/data-access/simulationRepository";
 import { createFactionLibraryInitializationFiles } from "./modules/factions/data-access/factionLibraryRepository";
 import {
   createEmptyNovelChapterIndex,
@@ -20,6 +21,7 @@ import {
 } from "./projectSchema";
 import { createEmptyManuscriptContinuityState } from "./manuscriptTrackingSchema";
 import { createManuscriptTrackingInitializationFiles } from "./manuscriptTrackingRepository";
+import { createManuscriptCommentInitializationFiles } from "./manuscriptCommentRepository";
 import { createManuscriptContinuityFiles } from "../../../shared/workbenches/novel/manuscriptContinuityStorage";
 import { createKnowledgeFiles } from "../../../shared/workbenches/novel/knowledgeStorage";
 import {
@@ -51,6 +53,7 @@ const DIRECTORIES = [
   "manuscript/state-ledger/batches",
   "manuscript/continuity-state",
   "manuscript/continuity-state/facts",
+  "manuscript/comments/records",
   "narrative",
   "narrative/lines/records",
   "narrative/arcs/records",
@@ -87,6 +90,7 @@ const DIRECTORIES = [
   "world/maps/proposals",
   "world/maps/trash",
   "world/cultivation-proposals",
+  "world/simulations/runs",
   "timeline",
   "timeline/calendars/records",
   "timeline/periods/records",
@@ -179,10 +183,12 @@ Thumbs.db
       content: serializeNovelChapterIndex(createEmptyNovelChapterIndex()),
     },
     ...createManuscriptTrackingInitializationFiles(input.createdAt),
+    ...createManuscriptCommentInitializationFiles(input.createdAt),
     ...createManuscriptContinuityFiles(
       createEmptyManuscriptContinuityState(input.createdAt),
     ),
     ...createNarrativeEngineeringInitializationFiles(input.createdAt),
+    ...createSimulationInitializationFiles(),
     ...createCharacterLibraryInitializationFiles(),
     ...createCultivationEcologyInitializationFiles(),
     ...createLocationLibraryInitializationFiles(),

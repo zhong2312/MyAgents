@@ -1,4 +1,4 @@
-import { isMapRiverFeature, smoothMapPath } from "./mapHydrography";
+import { hasMapRiverAppearance, smoothMapPath } from "./mapHydrography";
 import { isMapFeatureFreeformArea } from "../entities/mapSchema";
 import type { MapFeature, MapScenePoint } from "../entities/mapSchema";
 
@@ -169,6 +169,15 @@ export type MapLabelPlacementOptions = {
   readonly padding?: number;
 };
 
+export type MapLabelViewport = {
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
+  readonly bottom: number;
+};
+
+export type MapLabelFeatureBounds = MapLabelViewport;
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
@@ -231,7 +240,7 @@ function defaultStyle(
       followPath: false,
     };
   }
-  if (isMapRiverFeature(feature)) {
+  if (hasMapRiverAppearance(feature)) {
     return {
       fontId: "cartographer",
       fontSize: 16,
@@ -447,10 +456,12 @@ export function getMapLabelLayout(
 ): MapLabelLayout {
   const style = getMapLabelStyle(feature);
   if (feature.kind === "route") {
-    const path = isMapRiverFeature(feature) ? smoothMapPath(points) : points;
+    const path = hasMapRiverAppearance(feature)
+      ? smoothMapPath(points)
+      : points;
     const layout = pointAlongPath(
       path,
-      isMapRiverFeature(feature) ? 0.56 : 0.5,
+      hasMapRiverAppearance(feature) ? 0.56 : 0.5,
     );
     return style.followPath ? layout : { ...layout, pathRotation: 0 };
   }
@@ -556,8 +567,50 @@ function labelPriority(feature: MapFeature): number {
   )
     return 5;
   if (feature.props.entityRole) return 4;
-  if (isMapRiverFeature(feature)) return 3;
+  if (hasMapRiverAppearance(feature)) return 3;
   return 2;
+}
+
+function featureBounds(feature: MapFeature): MapLabelFeatureBounds {
+  let left = Number.POSITIVE_INFINITY;
+  let right = Number.NEGATIVE_INFINITY;
+  let top = Number.POSITIVE_INFINITY;
+  let bottom = Number.NEGATIVE_INFINITY;
+  for (const point of feature.points) {
+    left = Math.min(left, point.x);
+    right = Math.max(right, point.x);
+    top = Math.min(top, point.y);
+    bottom = Math.max(bottom, point.y);
+  }
+  return {
+    left: Number.isFinite(left) ? left : 0,
+    right: Number.isFinite(right) ? right : 0,
+    top: Number.isFinite(top) ? top : 0,
+    bottom: Number.isFinite(bottom) ? bottom : 0,
+  };
+}
+
+/**
+ * 标签避让属于视图派生计算。大地图平移时，只让可能进入当前视口的标签
+ * 参与排序和碰撞；几何事实与完整标签集合仍保留在 MapDocument 中。
+ */
+export function mapLabelViewportCandidates(
+  features: readonly MapFeature[],
+  boundsById: ReadonlyMap<string, MapLabelFeatureBounds>,
+  viewport: MapLabelViewport,
+  padding = 0,
+): readonly MapFeature[] {
+  const safePadding = Number.isFinite(padding) ? Math.max(0, padding) : 0;
+  return features.filter((feature) => {
+    if (!mapFeatureHasLabel(feature) || !feature.name.trim()) return false;
+    const bounds = boundsById.get(feature.id) ?? featureBounds(feature);
+    return (
+      bounds.right + safePadding >= viewport.left &&
+      bounds.left - safePadding <= viewport.right &&
+      bounds.bottom + safePadding >= viewport.top &&
+      bounds.top - safePadding <= viewport.bottom
+    );
+  });
 }
 
 function intersects(

@@ -105,12 +105,7 @@ describe("createNovelProjectInitialization", () => {
           "prompts/installations/storyforge.prompt-library/content/",
         ),
       ),
-    ).toHaveLength(89);
-    expect(
-      paths.filter((path) =>
-        path.startsWith("prompts/installations/myagents.novel.base/content/"),
-      ),
-    ).toHaveLength(1);
+    ).toHaveLength(90);
     const soulIndex = JSON.parse(
       initialization.files.find(
         (file) => file.path === "characters/souls/index.json",

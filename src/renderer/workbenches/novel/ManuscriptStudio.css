@@ -4497,6 +4497,77 @@
   height: 1rem;
   background: color-mix(in srgb, var(--paper) 20%, transparent);
 }
+.ms-selection-comment-popover {
+  position: fixed;
+  z-index: 23;
+  display: flex;
+  width: min(30rem, calc(100vw - 1.5rem));
+  max-width: calc(100vw - 1.5rem);
+  flex-direction: column;
+  gap: 0.55rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 0.65rem;
+  background: var(--paper);
+  box-shadow: var(--shadow-lg);
+  color: var(--ink);
+  transform: translateX(-50%);
+}
+.ms-selection-comment-popover > header,
+.ms-selection-comment-popover > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.ms-selection-comment-popover > header {
+  font-size: var(--text-xs);
+}
+.ms-selection-comment-popover > header button {
+  display: grid;
+  width: 1.5rem;
+  height: 1.5rem;
+  place-items: center;
+  color: var(--ink-muted);
+}
+.ms-selection-comment-popover blockquote {
+  max-height: 4.5rem;
+  overflow: auto;
+  border-left: 2px solid var(--accent-warm);
+  padding-left: 0.55rem;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.ms-selection-comment-popover textarea {
+  min-height: 7rem;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper-elevated);
+  padding: 0.55rem;
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  outline: none;
+}
+.ms-selection-comment-popover textarea:focus {
+  border-color: var(--accent-warm);
+}
+.ms-selection-comment-popover > footer {
+  justify-content: flex-end;
+}
+.ms-selection-comment-popover > footer button {
+  border-radius: 4px;
+  padding: 0.35rem 0.6rem;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+.ms-selection-comment-popover > footer button.is-primary {
+  background: var(--accent-warm);
+  color: var(--on-accent);
+}
 .ms-selection-ai-popover {
   position: fixed;
   z-index: 23;
@@ -4750,7 +4821,7 @@
   color: var(--ink);
 }
 .ms-inspector-tabs {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
 }
 .ms-inspector-tabs button {
   position: relative;
@@ -4768,6 +4839,107 @@
   font-size: 0.58rem;
 }
 .ms-context-panel .ms-inspector-section {
+  padding: 0.8rem;
+}
+.ms-comments-summary {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+  padding: 0.8rem;
+}
+.ms-comments-summary strong,
+.ms-comments-summary span {
+  display: block;
+}
+.ms-comments-summary strong {
+  font-size: var(--text-xs);
+}
+.ms-comments-summary span {
+  margin-top: 0.2rem;
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+}
+.ms-comments-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.ms-comments-summary button:not(.ns-button) {
+  color: var(--accent-warm);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.ms-comment-list {
+  display: grid;
+}
+.ms-comment-item {
+  border-bottom: 1px solid var(--line-subtle);
+  padding: 0.8rem;
+}
+.ms-comment-item > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.ms-comment-item > header > label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+}
+.ms-comment-item > header > label input {
+  accent-color: var(--accent-warm);
+}
+.ms-comment-delete {
+  display: grid;
+  width: 1.6rem;
+  height: 1.6rem;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--ink-muted);
+}
+.ms-comment-delete:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-danger) 12%, transparent);
+  color: var(--accent-danger);
+}
+.ms-comment-delete:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+.ms-comment-item blockquote {
+  margin-top: 0.55rem;
+  border-left: 2px solid var(--line-strong);
+  padding-left: 0.55rem;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.ms-comment-item p {
+  margin-top: 0.55rem;
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.ms-comment-item small {
+  display: block;
+  margin-top: 0.45rem;
+  color: var(--ink-subtle);
+  font-size: 0.65rem;
+}
+.ms-comments-footer {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
   padding: 0.8rem;
 }
 .ms-inspector-section > header {
@@ -6407,8 +6579,14 @@
   font-weight: 600;
 }
 .ms-simulation-path > footer button.is-primary {
-  background: var(--accent-warm-subtle);
-  color: var(--accent-warm);
+  border-color: var(--button-primary-bg);
+  background: var(--button-primary-bg);
+  color: #ffffff;
+}
+.ms-simulation-path > footer button.is-primary:hover:not(:disabled) {
+  border-color: var(--button-primary-bg-hover);
+  background: var(--button-primary-bg-hover);
+  color: #ffffff;
 }
 
 .ms-delete-impact {

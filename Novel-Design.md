@@ -34,6 +34,7 @@ MyAgents Core -> workbench-sdk <- Novel Workbench
 - 工作区文件操作统一通过绑定项目根目录的 `WorkbenchStorage` 完成。
 - Launcher 通过工作台声明的 `launcher` contribution 加载新建项目界面。
 - 工作台内容由 `WorkbenchShell` 承载，不复制宿主标题栏、导航、加载态和错误边界。
+- 小说工作台的 AI 任务坞属于发起任务的小说工作台 Tab：只能挂载在该 Tab 的内部容器，切换到其它 Tab 时不得作为 App 级全局浮层显示，也不得汇总其它小说的任务。
 - 大型 AI 功能通过 `context.agentSessions.open()` 请求宿主创建完整 MyAgents 对话，工作台不得直接操作 Chat、Tab 或 Sidecar。
 - 小说工作台通过 Shell contribution 声明左侧导航默认收起，不能在通用 Shell 中硬编码小说工作台 ID。
 - 工作台 Tab 使用统一的 `view: "workbench"`，不能为小说增加新的 Tab view 类型。
@@ -137,6 +138,9 @@ Agent 运行信息小窗只是宿主运行状态的简化投影，统一显示�
 |   |-- continuity-state/
 |       |-- index.json
 |       |-- facts/<fact-id>.json
+|   |-- comments/
+|       |-- index.json
+|       `-- records/<comment-id>.json
 |   |-- chapters/
 |   |   `-- .gitkeep
 |   `-- trash/
@@ -324,6 +328,7 @@ Agent 运行信息小窗只是宿主运行状态的简化投影，统一显示�
 - 删除章节必须将 Markdown 移入 `manuscript/trash/<deletion-id>/`，在索引中保留原路径、目录、正文关联、删除时间和状态批次；恢复先恢复文件，再恢复索引与仍然有效的剧情关联。删除不是永久删除。
 - 正文连续性账本位于 `manuscript/state-ledger/`。`index.json` 使用领域 `schemaVersion: 3`、目录 `storageVersion: 1`，只保存更新时间、全局基线路径和批次的有序 `{id,path}` 引用；首次变更前的目标快照保存在 `baselines.json`，每个批次的正文哈希、证据、变更和回滚 mutation 独立保存在 `batches/<batch-id>.json`。Repository 在内存中聚合完整账本，保存时比较整个目录快照、差量写入基线与批次并最后提交根索引；旧 `manuscript/state-ledger.json` 单文件格式不兼容、不迁移。
 - 正文连续性事实位于 `manuscript/continuity-state/`。`index.json` 使用领域 `schemaVersion: 1`、目录 `storageVersion: 1`，只保存更新时间和事实的有序 `{id,path}` 引用；每条 `ManuscriptContinuityFact` 独立保存在 `facts/<fact-id>.json`。投影在内存中聚合完整连续性状态，保存时比较整个目录快照、差量写入事实并最后提交根索引，删除已移除事实文件；旧 `manuscript/continuity-state.json` 单文件格式不兼容、不迁移。
+- 正文评论位于 `manuscript/comments/`。`index.json` 保存评论的章节归属与记录路径，每条评论独立保存在 `records/<comment-id>.json`，记录选中的逐字引用、选区位置、作者评论和时间。评论是独立事实源，不修改正文；发送 AI 时只把当前勾选的评论与当前正文快照一次性提交，生成结果仍须经过候选审阅后才能写回正文。
 - AI 只能创建带正文证据的 `proposed` 批次，证据必须是分析时正文中可逐字定位的连续原文片段，禁止概括、改写或拼接多处文本。分析结果必须在创建批次前使用与应用阶段相同的证据规则过滤；全部变化均无有效证据时分析失败，不得生成一个必然无法应用的批次。作者审阅后才可标记 `applied`；应用前仍须校验正文哈希与逐项证据，旧批次中的无效证据项默认取消选择且不得阻断同批有效项。删除章节按批次逆序标记 `reverted`，恢复章节可重新应用原批次。批次领域覆盖时间线、人物出场 / 状态 / 关系、物品、地点、势力、伏笔、世界规则和承接事项。`novel_continuity_get_context` 默认只返回批次摘要和当前连续性事实，传 `chapterId` 可筛选章节，只有传 `batchId` 才展开单个完整批次，避免把全部证据和回滚快照一次塞入模型上下文。
 - 正文脑暴以“完整方案”为一级生成单位，采用总控 Agent + 最多 6 个专业设计师 Agent 的结构化编排。作者设置完整方案数量和本轮意图；“完整方案数”下拉框紧邻“作者本轮意图”输入框展示，开始或重新会诊动作保留在配置栏底部。事实快照按字符预算压缩，总控接收全局短摘要，每个设计师只接收与职责相关的少量模块摘要。第一阶段各设计师并行提交机会、约束、建议和问题，总控再汇总共同事实、共识与分歧，并为每套候选生成带稳定 `planId` 的方案契约。
 - 方案契约锁定核心选择、因果链、必备节拍、人物问题、情绪弧线、反转、钩子、不可违背边界和待定问题。第二阶段仍由设计师并行工作，但每位设计师一次性覆盖全部 `planId` 并按 ID 返回贡献，避免产生“方案数 × 角色数”的无必要请求；第三阶段由总控一次性按方案整合并审计，显式保留事实依据、作者要求、创作假设、角色贡献和未解决风险，不得静默抹平冲突。会诊、定契约、并行设计、总控整合分别展示状态；总控和每个设计师都必须展示排队、请求、已返回、解析、完成、部分完成、超时或失败状态、当前任务与真实耗时，不使用虚构百分比。设计师返回形态或 `planId` 不符合协议时必须保留解析诊断，禁止统一折叠为“未返回可用贡献”；会诊全部失败时不得继续伪装成总控失败。
@@ -609,9 +614,9 @@ src/renderer/workbenches/novel/
 - 提示词正文独立保存在 `prompts/installations/<installation-id>/content/**/*.md`。来自技能包的提示词保持 manifest 内容根目录下的原始相对路径；项目内新建提示词写入该安装副本的 `_local/` 目录。
 - 注册表磁盘字段使用领域正式名称：技能包副本为 `installationId`，稳定提示词标识为 `promptId`，副本内实例为 `instanceId`。同一个 `promptId` 可以存在于多个安装副本中，但 `instanceId` 与 `contentPath` 在项目内必须唯一。
 - 每个安装副本必须且只能拥有一个根分组；目录父子关系不得跨安装副本或形成循环；提示词只能关联同一安装副本内的目录。
-- 新小说初始化时复制一套可编辑的 `StoryForge 小说提示词库` 安装副本，以及 `MyAgents 小说工作台提示词` 安装副本。StoryForge 当前快照来自 `3.7.5`，包含 89 个 Markdown 提示词：40 个通用模板默认启用，49 个题材模板保留来源中的默认停用状态；工作台安装副本包含人物库 Agent 的 `novel.characters.assist` 默认提示词。
-- StoryForge 默认包目录固定映射为 `prompts/general/**` 与 `prompts/genre-packs/<genre>/**`；题材目录通过小说工作台的中文题材集合声明作用域。工作台提示词位于 `prompts/characters/**`，系统提示词、用户模板、变量、参数、示例、模型覆盖和来源文件统一写入 Markdown。
-- 默认包是项目初始化材料，不是某一部测试小说的专用数据。每次新建小说都会把注册表、目录树和 90 份 Markdown 复制到该小说根目录，复制后与内置快照解耦并允许作者修改。已存在注册表但缺少工作台人物库提示词的旧项目，在读取时只补齐缺失安装副本，不覆盖已有提示词或用户修改。
+- 新小说初始化时只复制一套可编辑的 `My Novel Studio 小说提示词库` 安装副本（基于 StoryForge 3.7.5 快照）。该库由 89 个快照提示词和人物库 Agent 的 `novel.characters.assist` 组成，共 90 份 Markdown：41 份默认启用，49 份题材模板保留来源中的默认停用状态。
+- 默认包目录固定映射为 `prompts/general/**`、`prompts/genre-packs/<genre>/**` 与 `prompts/characters/**`；题材目录通过小说工作台的中文题材集合声明作用域。系统提示词、用户模板、变量、参数、示例、模型覆盖和来源文件统一写入 Markdown。
+- 默认包是项目初始化材料，不是某一部测试小说的专用数据。每次新建小说都会把注册表、目录树和 90 份 Markdown 复制到该小说根目录，复制后与内置快照解耦并允许作者修改。旧项目读取时会将 `myagents.novel.base` 自动合并到 `storyforge.prompt-library`：保留稳定 `promptId`、用户正文与启停/覆盖配置，将人物库移动到 `prompts/characters/**`，并在注册表 CAS 写入成功后清理旧正文。
 - 已存在 `prompts/registry.json` 的旧小说不得在普通打开流程中被默认数据静默覆盖；显式迁移或测试数据重置可以用当前快照整体替换。
 - 保存 Markdown 与注册表时必须使用 `expectedContent` 检测人工编辑冲突。发现磁盘内容变化时停止覆盖并提示载入磁盘版本；新提示词只有在 Markdown 创建成功后才能登记到注册表，登记失败时回滚新建正文。
 - 当前正式实现覆盖本地技能包、目录、提示词、作用域、启停、重新安装副本、启用集解析与冲突处理。GitHub 下载仍等待 MyAgents 平台安装能力，正式工作台不得用模拟下载替代。

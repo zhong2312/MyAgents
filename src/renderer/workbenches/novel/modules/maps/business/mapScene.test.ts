@@ -28,6 +28,22 @@ import {
 } from "../entities/mapSchema";
 
 describe("mapScene", () => {
+  it("保留生成区域的来源要素引用", () => {
+    const region = createMapSceneRegion({
+      id: "region-derived-land",
+      layerId: "scene-terrain",
+      sourceFeatureId: "feature-derived-land",
+      kind: "land",
+      points: [
+        { x: 0, y: 0 },
+        { x: 120, y: 0 },
+        { x: 120, y: 80 },
+      ],
+    });
+
+    expect(region.sourceFeatureId).toBe("feature-derived-land");
+  });
+
   it("制图修饰笔刷进入地图效果层，不污染地形层", () => {
     expect(sceneLayerKindForComponentCategory("cartography")).toBe("effects");
     expect(sceneLayerIdForKind("effects")).toBe("scene-effects");

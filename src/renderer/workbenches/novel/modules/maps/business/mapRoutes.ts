@@ -3,6 +3,7 @@ import type { MapFeature } from "../entities/mapSchema";
 
 export const MAP_ROUTE_STYLE_OPTIONS = Object.freeze([
   { id: "plain", name: "普通线" },
+  { id: "river", name: "河流" },
   { id: "road", name: "土石道路" },
   { id: "paved", name: "石板大道" },
   { id: "trail", name: "林间小径" },
@@ -65,6 +66,15 @@ const ROUTE_STYLE_BASES: Readonly<Record<MapRouteStyleId, RouteStyleBase>> =
       casingColor: "#8b6b4a",
       width: 2,
       casingWidth: 0,
+      dash: null,
+      decoration: "none",
+    },
+    river: {
+      id: "river",
+      color: "#3b83a5",
+      casingColor: "#315d6c",
+      width: 4,
+      casingWidth: 1.7,
       dash: null,
       decoration: "none",
     },

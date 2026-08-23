@@ -13,7 +13,7 @@ import {
 } from "./mapLabels";
 import {
   getMapRiverStyle,
-  isMapRiverFeature,
+  hasMapRiverAppearance,
   smoothMapPath,
 } from "./mapHydrography";
 import { getMapRouteStyle, mapRouteStrokeLayers } from "./mapRoutes";
@@ -248,7 +248,7 @@ function featureGeometryRadius(
     const height = (width * dimensions.height) / dimensions.width;
     return Math.hypot(width, height) / 2;
   }
-  if (isMapRiverFeature(feature)) {
+  if (hasMapRiverAppearance(feature)) {
     const style = getMapRiverStyle(feature);
     return style.mouthWidth / 2 + style.bankWidth * 2;
   }
@@ -331,7 +331,7 @@ function collectContentBounds(
   map.features.forEach((feature) => {
     const renderedPoints =
       feature.kind === "route" &&
-      (isMapRiverFeature(feature) || getMapRouteStyle(feature)?.id !== "plain")
+      (hasMapRiverAppearance(feature) || getMapRouteStyle(feature)?.id !== "plain")
         ? smoothMapPath(feature.points)
         : feature.points;
     bounds = includePoints(

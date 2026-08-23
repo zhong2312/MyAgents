@@ -1,5 +1,6 @@
 import {
   Check,
+  CircleHelp,
   Clock3,
   CircleDashed,
   Columns2,
@@ -242,6 +243,7 @@ import {
 } from "../business/mapTerrainMaterials";
 import {
   getMapRiverStyle,
+  hasMapRiverAppearance,
   isMapRiverFeature,
   reverseMapRiverFeature,
 } from "../business/mapHydrography";
@@ -268,8 +270,10 @@ import {
   createMapSelectableGroup,
   duplicateMapSelectableItems,
   expandMapSelectableItemIds,
+  isMapSelectableItemLocked,
   moveMapSelectableItems,
   removeMapSelectableItems,
+  setMapSelectableItemsLocked,
   ungroupMapSelectableItems,
 } from "../business/mapSelection";
 
@@ -562,6 +566,11 @@ export default function MapEditor({
   // 画布连续操作和全局键盘事件都可能发生在 React 下一帧提交之前；保留
   // 选区镜像，保证 Shift 追加后立即按方向键仍作用于完整选区。
   const selectedFeatureIdsRef = useRef<readonly string[]>([]);
+  /** 地图画布内部剪贴板；只保存当前地图的对象 id，不把文档事实暴露给外部文本输入。 */
+  const mapClipboardRef = useRef<{
+    readonly mapId: string;
+    readonly itemIds: readonly string[];
+  } | null>(null);
   const primarySelectedFeatureIdRef = useRef<string | null>(null);
   const multiSelectionUpdateRef = useRef(false);
   const [deleteMapTarget, setDeleteMapTarget] = useState<string | null>(null);
@@ -581,6 +590,7 @@ export default function MapEditor({
   const [history, setHistory] = useState<MapHistoryEntry[]>([]);
   const [future, setFuture] = useState<MapHistoryEntry[]>([]);
   const [newMapOpen, setNewMapOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [newMapName, setNewMapName] = useState("");
   const [newMapProjection, setNewMapProjection] =
     useState<MapProjectionType>("continent");
@@ -1265,7 +1275,13 @@ export default function MapEditor({
         const features = map.features.map((feature) => {
           if (feature.id !== selectedFeatureId) return feature;
           const layer = map.layers.find((item) => item.id === feature.layerId);
-          if (!layer?.visible || layer.locked) return feature;
+          if (
+            !layer?.visible ||
+            layer.locked ||
+            isMapSelectableItemLocked(map, feature.id)
+          ) {
+            return feature;
+          }
           changed = true;
           return {
             ...feature,
@@ -1281,7 +1297,13 @@ export default function MapEditor({
             ...layer,
             stamps: layer.stamps.map((stamp) => {
               if (stamp.id !== selectedFeatureId) return stamp;
-              if (!layer.visible || layer.locked) return stamp;
+              if (
+                !layer.visible ||
+                layer.locked ||
+                isMapSelectableItemLocked(map, stamp.id)
+              ) {
+                return stamp;
+              }
               changed = true;
               return {
                 ...stamp,
@@ -1298,7 +1320,13 @@ export default function MapEditor({
                 ...layer,
                 strokes: layer.strokes.map((stroke) => {
                   if (stroke.id !== selectedFeatureId) return stroke;
-                  if (!layer.visible || layer.locked) return stroke;
+                  if (
+                    !layer.visible ||
+                    layer.locked ||
+                    isMapSelectableItemLocked(map, stroke.id)
+                  ) {
+                    return stroke;
+                  }
                   changed = true;
                   return {
                     ...stroke,
@@ -1310,7 +1338,13 @@ export default function MapEditor({
                 }),
                 regions: layer.regions.map((region) => {
                   if (region.id !== selectedFeatureId) return region;
-                  if (!layer.visible || layer.locked) return region;
+                  if (
+                    !layer.visible ||
+                    layer.locked ||
+                    isMapSelectableItemLocked(map, region.id)
+                  ) {
+                    return region;
+                  }
                   changed = true;
                   return {
                     ...region,
@@ -1385,6 +1419,49 @@ export default function MapEditor({
       updateMapSelection,
     ],
   );
+
+  const copySelectedMapItems = useCallback(() => {
+    const currentMap = docRef.current?.map;
+    const ids = [
+      ...new Set(
+        selectedFeatureIdsRef.current.length > 0
+          ? selectedFeatureIdsRef.current
+          : [selectedFeatureId].filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    if (!currentMap || ids.length === 0) return false;
+    if (!canEditMapSelectableItems(currentMap, ids)) {
+      setError("选区包含隐藏、锁定或不支持复制的对象。");
+      return false;
+    }
+    const topologyNodeIds = ids.filter((id) =>
+      currentMap.features.some(
+        (feature) => feature.id === id && feature.kind === "node",
+      ),
+    );
+    if (
+      mapRendererForProjection(currentMap.projectionType) === "topology" &&
+      topologyNodeIds.length > 0 &&
+      !canEditTopologyNodes(currentMap, topologyNodeIds)
+    ) {
+      setError("选区包含锁定、隐藏或不存在的拓扑节点，无法复制。");
+      return false;
+    }
+    mapClipboardRef.current = { mapId: currentMap.id, itemIds: ids };
+    setError(null);
+    return true;
+  }, [selectedFeatureId]);
+
+  const pasteMapItems = useCallback(() => {
+    const currentMap = docRef.current?.map;
+    const clipboard = mapClipboardRef.current;
+    if (!currentMap || !clipboard) return false;
+    if (clipboard.mapId !== currentMap.id) {
+      setError("只能把对象粘贴到复制它的同一张地图中。");
+      return false;
+    }
+    return duplicateSelectedMapItems(clipboard.itemIds);
+  }, [duplicateSelectedMapItems]);
 
   const finalizeProjectArtworkRemovals = useCallback(
     async (map: MapDocument): Promise<readonly string[]> => {
@@ -1563,6 +1640,16 @@ export default function MapEditor({
         return;
       }
       const key = event.key.toLocaleLowerCase("en-US");
+      if (key === "c") {
+        event.preventDefault();
+        copySelectedMapItems();
+        return;
+      }
+      if (key === "v") {
+        event.preventDefault();
+        pasteMapItems();
+        return;
+      }
       if (key === "d") {
         if (selectedFeatureId) {
           event.preventDefault();
@@ -1593,10 +1680,12 @@ export default function MapEditor({
     activeTerrainMaterial,
     artworkBrushAssetId,
     chooseTool,
+    copySelectedMapItems,
     doc,
     duplicateSelectedMapItems,
     isActive,
     nudgeSelection,
+    pasteMapItems,
     redo,
     save,
     saving,
@@ -2393,7 +2482,10 @@ export default function MapEditor({
       const layer = currentMap?.scene?.layers.find((candidate) =>
         candidate.strokes.some((stroke) => stroke.id === strokeId),
       );
-      if (!isEditableMapLayer(layer)) {
+      if (
+        !isEditableMapLayer(layer) ||
+        isMapSelectableItemLocked(currentMap!, strokeId)
+      ) {
         setError("当前地形图层已隐藏或锁定。无法删除笔触。");
         return;
       }
@@ -2430,7 +2522,10 @@ export default function MapEditor({
       const layer = currentMap?.scene?.layers.find((candidate) =>
         candidate.strokes.some((stroke) => stroke.id === strokeId),
       );
-      if (!isEditableMapLayer(layer)) {
+      if (
+        !isEditableMapLayer(layer) ||
+        isMapSelectableItemLocked(currentMap!, strokeId)
+      ) {
         setError("当前地形图层已隐藏或锁定。无法修改笔触。");
         return;
       }
@@ -2455,7 +2550,10 @@ export default function MapEditor({
       const layer = currentMap?.scene?.layers.find((candidate) =>
         candidate.strokes.some((stroke) => stroke.id === strokeId),
       );
-      if (!isEditableMapLayer(layer)) {
+      if (
+        !isEditableMapLayer(layer) ||
+        isMapSelectableItemLocked(currentMap!, strokeId)
+      ) {
         setError("当前地形图层已隐藏或锁定。无法移动笔触。");
         return;
       }
@@ -2512,7 +2610,10 @@ export default function MapEditor({
       const layer = currentMap?.scene?.layers.find((candidate) =>
         candidate.regions.some((region) => region.id === regionId),
       );
-      if (!isEditableMapLayer(layer)) {
+      if (
+        !isEditableMapLayer(layer) ||
+        isMapSelectableItemLocked(currentMap!, regionId)
+      ) {
         setError("当前地形图层已隐藏或锁定。无法删除区域。");
         return;
       }
@@ -2549,7 +2650,10 @@ export default function MapEditor({
       const layer = currentMap?.scene?.layers.find((candidate) =>
         candidate.regions.some((region) => region.id === regionId),
       );
-      if (!isEditableMapLayer(layer)) {
+      if (
+        !isEditableMapLayer(layer) ||
+        isMapSelectableItemLocked(currentMap!, regionId)
+      ) {
         setError("当前地形图层已隐藏或锁定。无法修改区域。");
         return;
       }
@@ -2574,7 +2678,10 @@ export default function MapEditor({
       const layer = currentMap?.scene?.layers.find((candidate) =>
         candidate.regions.some((region) => region.id === regionId),
       );
-      if (!isEditableMapLayer(layer)) {
+      if (
+        !isEditableMapLayer(layer) ||
+        isMapSelectableItemLocked(currentMap!, regionId)
+      ) {
         setError("当前地形图层已隐藏或锁定。无法移动区域。");
         return;
       }
@@ -2613,7 +2720,10 @@ export default function MapEditor({
       const layer = currentMap?.layers.find(
         (item) => item.id === feature?.layerId,
       );
-      if (!isEditableMapLayer(layer)) {
+      if (
+        !isEditableMapLayer(layer) ||
+        isMapSelectableItemLocked(currentMap!, featureId)
+      ) {
         setError("当前绘图层已隐藏或锁定。无法修改地图要素。");
         return;
       }
@@ -2735,7 +2845,8 @@ export default function MapEditor({
       if (
         !source ||
         !isEditableMapLayer(sourceLayer) ||
-        !isEditableMapLayer(targetLayer)
+        !isEditableMapLayer(targetLayer) ||
+        isMapSelectableItemLocked(currentMap!, featureId)
       ) {
         setError("源图层或目标图层已隐藏或锁定。无法移动地图要素。");
         return;
@@ -2768,22 +2879,49 @@ export default function MapEditor({
       const layer = currentMap?.layers.find(
         (item) => item.id === feature?.layerId,
       );
-      if (!isEditableMapLayer(layer)) {
+      if (
+        !isEditableMapLayer(layer) ||
+        isMapSelectableItemLocked(currentMap!, featureId)
+      ) {
         setError("当前绘图层已隐藏或锁定。无法修改地图几何。");
         return;
       }
-      mutateDoc((map) => ({
-        ...map,
-        features: map.features.map((feature) =>
-          feature.id === featureId
+      mutateDoc((map) => {
+        const scene = map.scene ?? createEmptyMapScene();
+        const hasDerivedRegion = scene.layers.some((layer) =>
+          layer.regions.some((region) => region.sourceFeatureId === featureId),
+        );
+        return {
+          ...map,
+          features: map.features.map((feature) =>
+            feature.id === featureId
+              ? {
+                  ...feature,
+                  points,
+                  props: props ? { ...feature.props, ...props } : feature.props,
+                }
+              : feature,
+          ),
+          // 设定驱动地图的海陆场景由 feature 派生。编辑控制点时同步来源
+          // 区域，保证最终画面与可编辑几何始终来自同一份 MapDocument。
+          scene: hasDerivedRegion
             ? {
-                ...feature,
-                points,
-                props: props ? { ...feature.props, ...props } : feature.props,
+                ...scene,
+                layers: scene.layers.map((layer) => ({
+                  ...layer,
+                  regions: layer.regions.map((region) =>
+                    region.sourceFeatureId === featureId
+                      ? {
+                          ...region,
+                          points: points.map((point) => ({ ...point })),
+                        }
+                      : region,
+                  ),
+                })),
               }
-            : feature,
-        ),
-      }));
+            : map.scene,
+        };
+      });
     },
     [mutateDoc],
   );
@@ -2794,7 +2932,10 @@ export default function MapEditor({
       const layer = currentMap?.artwork.layers.find((candidate) =>
         candidate.stamps.some((stamp) => stamp.id === stampId),
       );
-      if (!isEditableMapLayer(layer)) {
+      if (
+        !isEditableMapLayer(layer) ||
+        isMapSelectableItemLocked(currentMap!, stampId)
+      ) {
         setError("当前素材图层已隐藏或锁定。无法移动印章。");
         return;
       }
@@ -2818,7 +2959,10 @@ export default function MapEditor({
       const layer = currentMap?.artwork.layers.find((candidate) =>
         candidate.stamps.some((stamp) => stamp.id === stampId),
       );
-      if (!isEditableMapLayer(layer)) {
+      if (
+        !isEditableMapLayer(layer) ||
+        isMapSelectableItemLocked(currentMap!, stampId)
+      ) {
         setError("当前素材图层已隐藏或锁定。无法修改印章。");
         return;
       }
@@ -2836,7 +2980,10 @@ export default function MapEditor({
       const layer = currentMap?.artwork.layers.find((candidate) =>
         candidate.stamps.some((stamp) => stamp.id === stampId),
       );
-      if (!isEditableMapLayer(layer)) {
+      if (
+        !isEditableMapLayer(layer) ||
+        isMapSelectableItemLocked(currentMap!, stampId)
+      ) {
         setError("当前素材图层已隐藏或锁定。无法删除印章。");
         return;
       }
@@ -3456,6 +3603,18 @@ export default function MapEditor({
     [mutateDoc],
   );
 
+  const setMapItemsLocked = useCallback(
+    (itemIds: readonly string[], locked: boolean) => {
+      const currentMap = docRef.current?.map;
+      if (!currentMap) return;
+      const ids = [...new Set(expandMapSelectableItemIds(currentMap, itemIds))];
+      if (ids.length === 0) return;
+      mutateDoc((map) => setMapSelectableItemsLocked(map, ids, locked));
+      setError(null);
+    },
+    [mutateDoc],
+  );
+
   const createMapObjectGroup = useCallback(
     (itemIds: readonly string[]) => {
       const currentMap = docRef.current?.map;
@@ -3657,7 +3816,10 @@ export default function MapEditor({
       const layer = currentMap?.layers.find(
         (item) => item.id === feature?.layerId,
       );
-      if (!isEditableMapLayer(layer)) {
+      if (
+        !isEditableMapLayer(layer) ||
+        isMapSelectableItemLocked(currentMap!, featureId)
+      ) {
         setError("当前绘图层已隐藏或锁定。无法删除地图要素。");
         return;
       }
@@ -3942,9 +4104,12 @@ export default function MapEditor({
     (feature) => feature.id === selectedFeatureId,
   );
   const selectedRiverStyle =
-    selectedFeature && isMapRiverFeature(selectedFeature)
+    selectedFeature && hasMapRiverAppearance(selectedFeature)
       ? getMapRiverStyle(selectedFeature)
       : null;
+  const selectedIsRiverFeature = Boolean(
+    selectedFeature && isMapRiverFeature(selectedFeature),
+  );
   const selectedRouteStyle = selectedFeature
     ? getMapRouteStyle(selectedFeature)
     : null;
@@ -4486,6 +4651,15 @@ export default function MapEditor({
                 <span className="max-xl:hidden">转换风格</span>
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => setHelpOpen(true)}
+              title="地图帮助"
+              aria-label="地图帮助"
+              className="flex h-8 w-8 items-center justify-center rounded-md border border-[var(--line)] text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+            >
+              <CircleHelp className="h-4 w-4" />
+            </button>
             <button
               type="button"
               onClick={() => void save()}
@@ -5285,9 +5459,7 @@ export default function MapEditor({
                   {visibleFeatureKinds.map((kind) =>
                     (() => {
                       const label =
-                        kind === "area"
-                          ? "自由"
-                          : FEATURE_KIND_LABELS[kind];
+                        kind === "area" ? "自由" : FEATURE_KIND_LABELS[kind];
                       const Icon = FEATURE_KIND_ICONS[kind];
                       const activeLayer = doc.map.layers.find(
                         (layer) => layer.id === activeLayerId,
@@ -6074,6 +6246,7 @@ export default function MapEditor({
                         onSelectionChange={updateMapSelection}
                         onCreateGroup={createMapObjectGroup}
                         onUngroup={ungroupMapObject}
+                        onSetItemsLocked={setMapItemsLocked}
                         onCreate={createFeature}
                         onTopologyNodePlaced={() => chooseTool("select")}
                         artworkBrushAssetId={artworkBrushAssetId}
@@ -8178,19 +8351,21 @@ export default function MapEditor({
                         />
                       </label>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        updateFeature(
-                          selectedFeature.id,
-                          reverseMapRiverFeature(selectedFeature),
-                        )
-                      }
-                      className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                    >
-                      <GitCompareArrows className="h-3.5 w-3.5 rotate-90" />
-                      反转源头与河口
-                    </button>
+                    {selectedIsRiverFeature && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateFeature(
+                            selectedFeature.id,
+                            reverseMapRiverFeature(selectedFeature),
+                          )
+                        }
+                        className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                      >
+                        <GitCompareArrows className="h-3.5 w-3.5 rotate-90" />
+                        反转源头与河口
+                      </button>
+                    )}
                   </div>
                 )}
                 {selectedRouteStyle && (
@@ -8211,92 +8386,108 @@ export default function MapEditor({
                         value: option.id,
                         label: option.name,
                       }))}
-                      onChange={(routeStyle) =>
-                        updateFeature(selectedFeature.id, {
-                          props: {
-                            ...selectedFeature.props,
-                            routeStyle,
-                            terrain:
-                              routeStyle === "wall"
-                                ? "wall"
-                                : routeStyle === "border"
-                                  ? "border"
-                                  : routeStyle === "road" ||
-                                      routeStyle === "paved" ||
-                                      routeStyle === "trail"
-                                    ? "road"
-                                    : (selectedFeature.props.terrain ?? ""),
-                          },
-                        })
-                      }
+                      onChange={(routeStyle) => {
+                        const nextProps: Record<string, string> = {
+                          ...selectedFeature.props,
+                          routeStyle,
+                        };
+                        delete nextProps.routeAppearance;
+                        if (routeStyle === "river") {
+                          if (
+                            nextProps.terrain === "river" ||
+                            nextProps.terrain === "tributary" ||
+                            nextProps.terrain === "rapids"
+                          ) {
+                            delete nextProps.terrain;
+                          }
+                        } else if (routeStyle === "wall") {
+                          nextProps.terrain = "wall";
+                        } else if (routeStyle === "border") {
+                          nextProps.terrain = "border";
+                        } else if (
+                          routeStyle === "road" ||
+                          routeStyle === "paved" ||
+                          routeStyle === "trail"
+                        ) {
+                          nextProps.terrain = "road";
+                        } else if (
+                          nextProps.terrain === "river" ||
+                          nextProps.terrain === "tributary" ||
+                          nextProps.terrain === "rapids"
+                        ) {
+                          delete nextProps.terrain;
+                        }
+                        updateFeature(selectedFeature.id, { props: nextProps });
+                      }}
                       ariaLabel="路线样式"
                       size="sm"
                     />
-                    {selectedRouteStyle.id !== "plain" && (
-                      <div className="grid grid-cols-2 gap-2">
-                        <label className="block">
-                          <span className="mb-1 block text-[var(--ink-muted)]">
-                            主体颜色
-                          </span>
-                          <input
-                            type="color"
-                            value={selectedRouteStyle.color}
-                            onChange={(event) =>
-                              updateFeature(selectedFeature.id, {
-                                props: {
-                                  ...selectedFeature.props,
-                                  routeColor: event.target.value,
-                                },
-                              })
-                            }
-                            aria-label="路线主体颜色"
-                            className="h-8 w-full rounded border border-[var(--line)] bg-[var(--paper-elevated)]"
-                          />
-                        </label>
-                        <label className="block">
-                          <span className="mb-1 block text-[var(--ink-muted)]">
-                            边缘颜色
-                          </span>
-                          <input
-                            type="color"
-                            value={selectedRouteStyle.casingColor}
-                            onChange={(event) =>
-                              updateFeature(selectedFeature.id, {
-                                props: {
-                                  ...selectedFeature.props,
-                                  routeCasingColor: event.target.value,
-                                },
-                              })
-                            }
-                            aria-label="路线边缘颜色"
-                            className="h-8 w-full rounded border border-[var(--line)] bg-[var(--paper-elevated)]"
-                          />
-                        </label>
-                        <label className="col-span-2 block">
-                          <span className="mb-1 flex justify-between text-[var(--ink-muted)]">
-                            <span>主体宽度</span>
-                            <span>{selectedRouteStyle.width}px</span>
-                          </span>
-                          <input
-                            type="range"
-                            min={1}
-                            max={64}
-                            step={0.5}
-                            value={selectedRouteStyle.width}
-                            onChange={(event) =>
-                              updateFeature(selectedFeature.id, {
-                                props: {
-                                  ...selectedFeature.props,
-                                  routeWidth: event.target.value,
-                                },
-                              })
-                            }
-                            aria-label="路线主体宽度"
-                            className="w-full accent-[var(--accent-warm)]"
-                          />
-                        </label>
-                      </div>
-                    )}
+                    {selectedRouteStyle.id !== "plain" &&
+                      selectedRouteStyle.id !== "river" && (
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="block">
+                            <span className="mb-1 block text-[var(--ink-muted)]">
+                              主体颜色
+                            </span>
+                            <input
+                              type="color"
+                              value={selectedRouteStyle.color}
+                              onChange={(event) =>
+                                updateFeature(selectedFeature.id, {
+                                  props: {
+                                    ...selectedFeature.props,
+                                    routeColor: event.target.value,
+                                  },
+                                })
+                              }
+                              aria-label="路线主体颜色"
+                              className="h-8 w-full rounded border border-[var(--line)] bg-[var(--paper-elevated)]"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-[var(--ink-muted)]">
+                              边缘颜色
+                            </span>
+                            <input
+                              type="color"
+                              value={selectedRouteStyle.casingColor}
+                              onChange={(event) =>
+                                updateFeature(selectedFeature.id, {
+                                  props: {
+                                    ...selectedFeature.props,
+                                    routeCasingColor: event.target.value,
+                                  },
+                                })
+                              }
+                              aria-label="路线边缘颜色"
+                              className="h-8 w-full rounded border border-[var(--line)] bg-[var(--paper-elevated)]"
+                            />
+                          </label>
+                          <label className="col-span-2 block">
+                            <span className="mb-1 flex justify-between text-[var(--ink-muted)]">
+                              <span>主体宽度</span>
+                              <span>{selectedRouteStyle.width}px</span>
+                            </span>
+                            <input
+                              type="range"
+                              min={1}
+                              max={64}
+                              step={0.5}
+                              value={selectedRouteStyle.width}
+                              onChange={(event) =>
+                                updateFeature(selectedFeature.id, {
+                                  props: {
+                                    ...selectedFeature.props,
+                                    routeWidth: event.target.value,
+                                  },
+                                })
+                              }
+                              aria-label="路线主体宽度"
+                              className="w-full accent-[var(--accent-warm)]"
+                            />
+                          </label>
+                        </div>
+                      )}
                   </section>
                 )}
                 <label className="flex items-center gap-2 text-[var(--ink-muted)]">
@@ -8881,6 +9072,193 @@ export default function MapEditor({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {helpOpen && (
+        <div
+          className="fixed inset-0 z-[320] flex items-center justify-center bg-black/30 px-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setHelpOpen(false);
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="map-help-title"
+            className="flex max-h-[min(820px,92vh)] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--paper)] shadow-xl"
+          >
+            <header className="flex h-12 shrink-0 items-center gap-3 border-b border-[var(--line)] px-4">
+              <CircleHelp className="h-4 w-4 text-[var(--accent-warm)]" />
+              <h2 id="map-help-title" className="text-sm font-semibold">
+                地图帮助
+              </h2>
+              <button
+                type="button"
+                aria-label="关闭地图帮助"
+                onClick={() => setHelpOpen(false)}
+                className="ml-auto grid h-8 w-8 place-items-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+            <div className="min-h-0 flex-1 overflow-y-auto p-4 text-sm leading-6 text-[var(--ink-muted)]">
+              <div className="grid gap-5 min-[760px]:grid-cols-2">
+                <section>
+                  <h3 className="font-medium text-[var(--ink)]">快捷键</h3>
+                  <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5">
+                    <dt>
+                      <kbd className="rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink)]">
+                        V
+                      </kbd>
+                    </dt>
+                    <dd>选择工具</dd>
+                    <dt>
+                      <kbd className="rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink)]">
+                        M
+                      </kbd>
+                    </dt>
+                    <dd>移动工具；已选地貌材质时切换材质笔刷</dd>
+                    <dt>
+                      <kbd className="rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink)]">
+                        H
+                      </kbd>
+                    </dt>
+                    <dd>平移画布</dd>
+                    {rendererKind === "geographic" && (
+                      <>
+                        <dt>
+                          <kbd className="rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink)]">
+                            F / L / W / E / R
+                          </kbd>
+                        </dt>
+                        <dd>自由画笔 / 陆地 / 水域 / 擦除 / 路线</dd>
+                        <dt>
+                          <kbd className="rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink)]">
+                            B
+                          </kbd>
+                        </dt>
+                        <dd>素材笔刷</dd>
+                      </>
+                    )}
+                    <dt>
+                      <kbd className="rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink)]">
+                        方向键
+                      </kbd>
+                    </dt>
+                    <dd>移动选区；按住 Shift 每次移动 10</dd>
+                    <dt>
+                      <kbd className="rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink)]">
+                        Ctrl/Cmd + C / V
+                      </kbd>
+                    </dt>
+                    <dd>复制 / 粘贴当前选区</dd>
+                    <dt>
+                      <kbd className="rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink)]">
+                        Ctrl/Cmd + D
+                      </kbd>
+                    </dt>
+                    <dd>直接复制当前选区</dd>
+                    <dt>
+                      <kbd className="rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink)]">
+                        Ctrl/Cmd + S / Z
+                      </kbd>
+                    </dt>
+                    <dd>保存 / 撤销</dd>
+                    <dt>
+                      <kbd className="rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink)]">
+                        Ctrl/Cmd + Shift + Z 或 Y
+                      </kbd>
+                    </dt>
+                    <dd>重做</dd>
+                    <dt>
+                      <kbd className="rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink)]">
+                        Delete / Backspace
+                      </kbd>
+                    </dt>
+                    <dd>删除选中对象</dd>
+                  </dl>
+                </section>
+                {rendererKind === "topology" ? (
+                  <section>
+                    <h3 className="font-medium text-[var(--ink)]">拓扑地图</h3>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      <li>从构件库选择节点模板后点击画布放置节点。</li>
+                      <li>使用路线工具依次点击来源和目标节点，建立通道。</li>
+                      <li>
+                        选中节点后可在右侧检查器调整类型、关联地图和关联实体；选中通道后可重连或反向。
+                      </li>
+                      <li>多选节点后，可按当前关系模板批量创建通道。</li>
+                    </ul>
+                  </section>
+                ) : (
+                  <section>
+                    <h3 className="font-medium text-[var(--ink)]">
+                      选择与绘制
+                    </h3>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      <li>
+                        选择工具可点击对象；按住 Shift
+                        追加选区，拖拽空白处可框选。
+                      </li>
+                      <li>
+                        自由画笔拖拽绘制，闭合轮廓会创建区域，未闭合时会保留为开放路线。
+                      </li>
+                      <li>
+                        多边形逐点点击，移动鼠标预览下一段；双击左键、单击右键或
+                        Enter 确认，Escape 取消。
+                      </li>
+                      <li>
+                        陆地笔刷增加陆地，水域笔刷恢复水域；地貌材质须在对应的陆地或水域表面绘制。
+                      </li>
+                    </ul>
+                  </section>
+                )}
+              </div>
+              {rendererKind === "geographic" && (
+                <div className="mt-5 border-t border-[var(--line-subtle)] pt-4">
+                  <h3 className="font-medium text-[var(--ink)]">
+                    路线、素材与地图管理
+                  </h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    <li>
+                      <span className="font-medium text-[var(--ink)]">
+                        路线外观为河流：
+                      </span>
+                      先画路线或开放自由画笔，选中后在右侧检查器的“路线外观”中选择“河流”，才会显示渐宽、河岸与高光效果。
+                    </li>
+                    <li>
+                      <span className="font-medium text-[var(--ink)]">
+                        河流画笔：
+                      </span>
+                      可直接创建带水系语义的河流，并支持反转流向；它与“路线外观=河流”是两种不同用途。
+                    </li>
+                    <li>
+                      从素材面板选择印章或笔刷后，点击或拖入画布放置；选中对象可在右侧检查器调整。
+                    </li>
+                    <li>
+                      隐藏或锁定图层会阻止其中对象的编辑、复制和移动；图层顺序影响叠放效果。
+                    </li>
+                    <li>
+                      生成地图先审阅提案再应用；转换风格会创建副本，不会覆盖当前地图。
+                    </li>
+                  </ul>
+                </div>
+              )}
+            </div>
+            <footer className="flex shrink-0 justify-end border-t border-[var(--line-subtle)] px-4 py-3">
+              <button
+                type="button"
+                onClick={() => setHelpOpen(false)}
+                className="h-8 rounded-md border border-[var(--line)] px-3 text-xs text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+              >
+                关闭
+              </button>
+            </footer>
+          </section>
         </div>
       )}
 

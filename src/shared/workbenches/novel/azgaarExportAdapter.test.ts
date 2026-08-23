@@ -122,9 +122,9 @@ describe("azgaarExportAdapter", () => {
         info: { width: 400, height: 200 },
         pack: {
           cells: [
-            { i: 0, v: [0, 1, 4, 3], state: 1, province: 1, biome: 2, f: 0 },
-            { i: 1, v: [1, 2, 5, 4], state: 1, province: 1, biome: 2, f: 0 },
-            { i: 2, v: [3, 4, 7, 6], state: 2, province: 2, biome: 3, f: 1 },
+            { i: 0, v: [0, 1, 4, 3], state: 1, province: 1, biome: 2, f: 0, h: 30 },
+            { i: 1, v: [1, 2, 5, 4], state: 1, province: 1, biome: 2, f: 0, h: 30 },
+            { i: 2, v: [3, 4, 7, 6], state: 2, province: 2, biome: 3, f: 1, h: 30 },
           ],
           vertices: [
             { i: 0, p: [0, 0] },
@@ -169,6 +169,13 @@ describe("azgaarExportAdapter", () => {
     expect(
       features.filter((feature) => feature.props.azgaarLayer === "biome"),
     ).toHaveLength(2);
+    expect(
+      features.filter((feature) => feature.props.azgaarLayer === "land"),
+    ).toHaveLength(1);
+    expect(
+      features.find((feature) => feature.props.azgaarLayer === "land")
+        ?.points.length,
+    ).toBeGreaterThanOrEqual(3);
     expect(features.some((feature) => feature.name === "北境")).toBe(true);
     expect(features.every((feature) => feature.points.length >= 1)).toBe(true);
   });

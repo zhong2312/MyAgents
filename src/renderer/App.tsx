@@ -64,7 +64,9 @@ import LinkContextMenuProvider from "@/components/LinkContextMenuProvider";
 import TabBar from "@/components/TabBar";
 import { SessionDeletionContext } from "@/context/SessionDeletionContext";
 import TabProvider from "@/context/TabProvider";
-import WorkbenchAgentSurfaceHost from "@/workbench-host/WorkbenchAgentSurfaceHost";
+import WorkbenchAgentSurfaceHost, {
+  workbenchAgentTaskDockHostId,
+} from "@/workbench-host/WorkbenchAgentSurfaceHost";
 import {
   clearWorkbenchAgentConversation,
   loadWorkbenchAgentConversation,
@@ -731,27 +733,33 @@ export const MemoizedTabContent = memo(
             <Space isActive={isActive} />
           </Suspense>
         ) : kind === "workbench" ? (
-          <Suspense fallback={PAGE_FALLBACK}>
-            <WorkbenchShell
-              target={tab.workbench}
-              workspacePath={tab.agentDir ?? ""}
-              isActive={isActive}
-              onNavigate={(route) => onUpdateWorkbenchRoute?.(tab.id, route)}
-              onNavigationGuardChange={(guard) =>
-                onRegisterWorkbenchNavigationGuard?.(tab.id, guard)
-              }
-              onOpenAgentSession={
-                onOpenWorkbenchAgentSession
-                  ? openWorkbenchAgentSession
-                  : undefined
-              }
-              onRunAi={onRunWorkbenchAi}
-              onCancelAiRun={onCancelWorkbenchAiRun}
-              onSubscribeAiRunProgress={onSubscribeWorkbenchAiRunProgress}
-              onProvideSearch={onProvideWorkbenchSearch}
-              onProvideProjection={onProvideWorkbenchProjection}
-            />
-          </Suspense>
+          <div
+            id={workbenchAgentTaskDockHostId(tab.id)}
+            className="relative h-full min-h-0"
+            data-workbench-agent-task-dock-host
+          >
+            <Suspense fallback={PAGE_FALLBACK}>
+              <WorkbenchShell
+                target={tab.workbench}
+                workspacePath={tab.agentDir ?? ""}
+                isActive={isActive}
+                onNavigate={(route) => onUpdateWorkbenchRoute?.(tab.id, route)}
+                onNavigationGuardChange={(guard) =>
+                  onRegisterWorkbenchNavigationGuard?.(tab.id, guard)
+                }
+                onOpenAgentSession={
+                  onOpenWorkbenchAgentSession
+                    ? openWorkbenchAgentSession
+                    : undefined
+                }
+                onRunAi={onRunWorkbenchAi}
+                onCancelAiRun={onCancelWorkbenchAiRun}
+                onSubscribeAiRunProgress={onSubscribeWorkbenchAiRunProgress}
+                onProvideSearch={onProvideWorkbenchSearch}
+                onProvideProjection={onProvideWorkbenchProjection}
+              />
+            </Suspense>
+          </div>
         ) : (
           <TabProvider
             tabId={tab.id}

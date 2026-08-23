@@ -5834,6 +5834,7 @@ function fantasySceneForFeatures(
       terrainLayer.regions.push({
         id: "generated-region-" + feature.id,
         layerId: terrainLayer.id,
+        sourceFeatureId: feature.id,
         kind: "land",
         points: feature.points.map((point) => ({ x: point.x, y: point.y })),
         fill: feature.props.fill ?? "#d8c58f",
@@ -5857,6 +5858,7 @@ function fantasySceneForFeatures(
       waterLayer.regions.push({
         id: "generated-region-" + feature.id,
         layerId: waterLayer.id,
+        sourceFeatureId: feature.id,
         kind: "water",
         points: feature.points.map((point) => ({ x: point.x, y: point.y })),
         fill: feature.props.fill ?? "#5d9caf",

@@ -45,6 +45,9 @@ function renderSceneCanvas(
     onGeometryChange: vi.fn(),
     onSelectionChange: vi.fn(),
     onBatchMove: vi.fn(),
+    onCreateGroup: vi.fn(),
+    onUngroup: vi.fn(),
+    onSetItemsLocked: vi.fn(),
   };
   render(
     <MapSceneCanvas
@@ -495,7 +498,10 @@ describe("MapSceneCanvas 画布动作优先级", () => {
     expect(onCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: "route",
-        props: expect.objectContaining({ freehand: "true", closed: "false" }),
+        props: expect.objectContaining({
+          freehand: "true",
+          closed: "false",
+        }),
       }),
     );
   });
@@ -1550,6 +1556,182 @@ describe("MapSceneCanvas 画布动作优先级", () => {
       ["feature-west", "feature-east"],
       "feature-east",
     );
+  });
+
+  it("框选会跳过已锁定的对象", () => {
+    const document = {
+      ...createDocument(),
+      features: [
+        {
+          id: "feature-locked",
+          kind: "marker" as const,
+          name: "锁定城市",
+          entityRef: null,
+          layerId: "layer-main",
+          locked: true,
+          points: [{ x: 320, y: 240 }],
+          timeFrom: null,
+          timeTo: null,
+          props: {},
+          description: "",
+        },
+        {
+          id: "feature-open",
+          kind: "marker" as const,
+          name: "开放城市",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [{ x: 620, y: 420 }],
+          timeFrom: null,
+          timeTo: null,
+          props: {},
+          description: "",
+        },
+      ],
+    };
+    const { canvas, onSelectionChange } = renderSceneCanvas({
+      document,
+      tool: "select",
+      artworkBrushAssetId: null,
+    });
+
+    firePointer(canvas, "pointerdown", {
+      button: 0,
+      clientX: 180,
+      clientY: 140,
+      pointerId: 81,
+    });
+    firePointer(canvas, "pointermove", {
+      button: 0,
+      clientX: 760,
+      clientY: 560,
+      pointerId: 81,
+    });
+    firePointer(canvas, "pointerup", {
+      button: 0,
+      clientX: 760,
+      clientY: 560,
+      pointerId: 81,
+    });
+
+    expect(onSelectionChange).toHaveBeenLastCalledWith(
+      ["feature-open"],
+      "feature-open",
+    );
+  });
+
+  it("右键锁定对象显示解锁菜单", () => {
+    const document = {
+      ...createDocument(),
+      features: [
+        {
+          id: "feature-locked",
+          kind: "marker" as const,
+          name: "锁定城市",
+          entityRef: null,
+          layerId: "layer-main",
+          locked: true,
+          points: [{ x: 320, y: 240 }],
+          timeFrom: null,
+          timeTo: null,
+          props: {},
+          description: "",
+        },
+        {
+          id: "feature-open",
+          kind: "marker" as const,
+          name: "开放城市",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [{ x: 620, y: 420 }],
+          timeFrom: null,
+          timeTo: null,
+          props: {},
+          description: "",
+        },
+      ],
+    };
+    const { canvas, onSetItemsLocked } = renderSceneCanvas({
+      document,
+      tool: "select",
+      artworkBrushAssetId: null,
+    });
+
+    fireEvent.contextMenu(canvas, {
+      button: 2,
+      clientX: 320,
+      clientY: 240,
+    });
+    expect(screen.getByRole("menuitem", { name: "解锁" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("menuitem", { name: "解锁" }));
+    expect(onSetItemsLocked).toHaveBeenCalledWith(["feature-locked"], false);
+  });
+
+  it("多选右键显示批量锁定和组合菜单", () => {
+    const document = {
+      ...createDocument(),
+      features: [
+        {
+          id: "feature-west",
+          kind: "marker" as const,
+          name: "西境城",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [{ x: 320, y: 240 }],
+          timeFrom: null,
+          timeTo: null,
+          props: {},
+          description: "",
+        },
+        {
+          id: "feature-east",
+          kind: "marker" as const,
+          name: "东境城",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [{ x: 620, y: 420 }],
+          timeFrom: null,
+          timeTo: null,
+          props: {},
+          description: "",
+        },
+      ],
+    };
+    const { canvas } = renderSceneCanvas({
+      document,
+      tool: "select",
+      artworkBrushAssetId: null,
+    });
+    firePointer(canvas, "pointerdown", {
+      button: 0,
+      clientX: 180,
+      clientY: 140,
+      pointerId: 82,
+    });
+    firePointer(canvas, "pointermove", {
+      button: 0,
+      clientX: 760,
+      clientY: 560,
+      pointerId: 82,
+    });
+    firePointer(canvas, "pointerup", {
+      button: 0,
+      clientX: 760,
+      clientY: 560,
+      pointerId: 82,
+    });
+    fireEvent.contextMenu(canvas, {
+      button: 2,
+      clientX: 620,
+      clientY: 420,
+    });
+
+    expect(
+      screen.getByRole("menuitem", { name: "锁定所选对象（2）" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("menuitem", { name: "组合所选对象（2）" }),
+    ).toBeTruthy();
   });
 
   it("首击只选中对象，第二次手势才移动对象", () => {

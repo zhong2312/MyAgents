@@ -99,6 +99,38 @@ export function validateMapGenerationProjection(
   if (!plan) return [];
 
   const errors: string[] = [];
+  for (const layer of map.scene?.layers ?? []) {
+    for (const region of layer.regions) {
+      if (!region.id.startsWith("generated-region-")) continue;
+      if (!region.sourceFeatureId) {
+        errors.push(
+          `地图“${map.id}”生成场景区域“${region.id}”缺少来源要素，无法保持编辑同步。`,
+        );
+        continue;
+      }
+      const source = map.features.find(
+        (feature) => feature.id === region.sourceFeatureId,
+      );
+      if (!source) {
+        errors.push(
+          `地图“${map.id}”生成场景区域“${region.id}”引用了不存在的来源要素“${region.sourceFeatureId}”。`,
+        );
+        continue;
+      }
+      if (
+        source.points.length !== region.points.length ||
+        source.points.some(
+          (point, index) =>
+            point.x !== region.points[index]?.x ||
+            point.y !== region.points[index]?.y,
+        )
+      ) {
+        errors.push(
+          `地图“${map.id}”生成场景区域“${region.id}”与来源要素“${source.id}”的几何不同步。`,
+        );
+      }
+    }
+  }
   const byPlanEntityId = new Map<string, MapFeature>();
   const byPlanTerritoryId = new Map<string, MapFeature>();
   const bySpatialLayerId = new Map<string, MapFeature>();

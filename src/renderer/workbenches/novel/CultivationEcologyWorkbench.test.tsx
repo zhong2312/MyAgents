@@ -294,6 +294,26 @@ describe("CultivationEcologyWorkbench 境界检查器", () => {
     }
   });
 
+  it("能力页将获取方式与功能类型筛选分组展示", async () => {
+    await renderProgression();
+
+    fireEvent.click(screen.getByRole("button", { name: "能力" }));
+
+    const acquisitionGroup = screen.getByRole("group", { name: "获取方式" });
+    const functionGroup = screen.getByRole("group", { name: "功能类型" });
+    expect(acquisitionGroup).toBeInTheDocument();
+    expect(functionGroup).toBeInTheDocument();
+    expect(
+      within(acquisitionGroup).getByRole("button", { name: /全部/u }),
+    ).toBeInTheDocument();
+    expect(
+      within(functionGroup).getByRole("button", { name: "全部" }),
+    ).toBeInTheDocument();
+    expect(
+      within(functionGroup).getByRole("button", { name: "辅助类" }),
+    ).toBeInTheDocument();
+  });
+
   it("把境界删除入口放在冻结头部并保留确认流程", async () => {
     await expectFrozenHeaderDelete(/一境.*2 个阶段/u, "删除「一境」");
   });

@@ -12,6 +12,9 @@ export const DEFAULT_MAP_RIVER_PROPS = Object.freeze({
   showLabel: "true",
 });
 
+/** 路线外观选择“河流”时复用河流渲染，不改变路线本身的几何语义。 */
+export const MAP_RIVER_ROUTE_APPEARANCE = "river" as const;
+
 export interface MapRiverStyle {
   readonly color: string;
   readonly bankColor: string;
@@ -39,6 +42,16 @@ export function isMapRiverFeature(feature: MapFeature): boolean {
     (feature.props.terrain === "river" ||
       feature.props.terrain === "tributary" ||
       feature.props.terrain === "rapids")
+  );
+}
+
+export function hasMapRiverAppearance(feature: MapFeature): boolean {
+  return (
+    isMapRiverFeature(feature) ||
+    (feature.kind === "route" &&
+      (feature.props.routeStyle === MAP_RIVER_ROUTE_APPEARANCE ||
+        (feature.props.routeAppearance === MAP_RIVER_ROUTE_APPEARANCE &&
+          !feature.props.routeStyle)))
   );
 }
 

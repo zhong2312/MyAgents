@@ -5,6 +5,7 @@ import {
   getMapLabelLayout,
   getMapLabelStyle,
   getMapLabelTextDimensions,
+  mapLabelViewportCandidates,
   mapLabelLines,
   mapFeatureHasLabel,
   mapLabelCanvasFont,
@@ -169,6 +170,43 @@ describe("mapLabels", () => {
     });
     expect(placements.get("region")?.visible).toBe(true);
     expect(placements.get("village")?.visible).toBe(false);
+  });
+
+  it("只让当前视口附近的标签参与避让", () => {
+    const nearby = feature({
+      id: "nearby",
+      kind: "marker",
+      props: { showLabel: "true" },
+      points: [{ x: 120, y: 80 }],
+    });
+    const approaching = feature({
+      id: "approaching",
+      kind: "marker",
+      props: { showLabel: "true" },
+      points: [{ x: 740, y: 80 }],
+    });
+    const distant = feature({
+      id: "distant",
+      kind: "marker",
+      props: { showLabel: "true" },
+      points: [{ x: 1_200, y: 80 }],
+    });
+
+    const candidates = mapLabelViewportCandidates(
+      [nearby, approaching, distant],
+      new Map([
+        [nearby.id, { left: 120, right: 120, top: 80, bottom: 80 }],
+        [approaching.id, { left: 740, right: 740, top: 80, bottom: 80 }],
+        [distant.id, { left: 1_200, right: 1_200, top: 80, bottom: 80 }],
+      ]),
+      { left: 0, right: 240, top: 0, bottom: 200 },
+      512,
+    );
+
+    expect(candidates.map((candidate) => candidate.id)).toEqual([
+      "nearby",
+      "approaching",
+    ]);
   });
 
   it("数百个中文标签在高密度地图中保持确定性避让", () => {

@@ -230,6 +230,75 @@ describe("validateMapGenerationProjection", () => {
     );
   });
 
+  it("阻止生成场景区域脱离来源要素", () => {
+    const base = generatedMap();
+    const source = base.features[0]!;
+    const valid: MapDocument = {
+      ...base,
+      scene: {
+        version: 1,
+        terrainStyle: {
+          landColor: "#b8ad7d",
+          waterColor: "#2c6a81",
+          shallowWaterColor: "#5d9caf",
+          beachColor: "#d7c58f",
+          coastColor: "#655540",
+          textureStrength: 0.62,
+          coastWidth: 2.6,
+          shelfWidth: 13,
+        },
+        layers: [
+          {
+            id: "scene-terrain",
+            name: "生成地形",
+            kind: "terrain",
+            visible: true,
+            locked: false,
+            opacity: 1,
+            strokes: [],
+            regions: [
+              {
+                id: "generated-region-layer-world-feature",
+                layerId: "scene-terrain",
+                sourceFeatureId: source.id,
+                kind: "land",
+                points: source.points,
+                fill: "#d8c58f",
+                texture: "paper-land",
+                opacity: 1,
+                edgeColor: "#536b54",
+                edgeWidth: 3,
+                terrainMaterial: null,
+              },
+            ],
+          },
+        ],
+      },
+    };
+    expect(validateMapGenerationProjection(valid)).toEqual([]);
+
+    const broken: MapDocument = {
+      ...valid,
+      scene: {
+        ...valid.scene!,
+        layers: valid.scene!.layers.map((layer) => ({
+          ...layer,
+          regions: layer.regions.map((region) => ({
+            ...region,
+            points: [
+              { x: 1, y: 1 },
+              { x: 2, y: 1 },
+              { x: 2, y: 2 },
+            ],
+          })),
+        })),
+      },
+    };
+    expect(validateMapGenerationProjection(broken)).toEqual(
+      expect.arrayContaining([expect.stringContaining("几何不同步")]),
+    );
+  });
+
   it("要求规划地标拥有可回溯印章，并拒绝结构区域伪装成地标", () => {
     const base = generatedMap();
     const landmarkPlan: MapGenerationPlan = {

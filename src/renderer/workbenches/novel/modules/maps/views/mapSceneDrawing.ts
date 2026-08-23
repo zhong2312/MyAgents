@@ -1,4 +1,7 @@
-import { getMapRiverStyle, mapRiverWidthAt } from "../business/mapHydrography";
+import {
+  getMapRiverStyle,
+  mapRiverWidthAt,
+} from "../business/mapHydrography";
 import { mapBrushCurvePoints } from "../business/mapFeatureShapes";
 import {
   getMapLabelFrameStyle,

@@ -1107,6 +1107,16 @@ export async function buildKnowledgeGraphFromStorage(
   return result;
 }
 
+/**
+ * 返回当前工作台会话中已经构建的快照；不会读取工作区，也不会假设缓存仍然
+ * 有效。工作区变更由页面的 storage.watch 触发完整重建并更新该缓存。
+ */
+export function getCachedKnowledgeGraph(
+  storage: WorkbenchStorage,
+): KnowledgeGraphSnapshot | null {
+  return memorySnapshots.get(storage)?.snapshot ?? null;
+}
+
 function scoreNode(
   node: KnowledgeNode,
   query: string,

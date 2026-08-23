@@ -635,9 +635,9 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
     const isSSEResponse = contentType.includes('text/event-stream');
 
     // 8. Translate response
-    if (anthropicReq.stream || isSSEResponse) {
+    if (isSSEResponse) {
       // Stream response (or non-stream request that got SSE back — auto-fallback)
-      if (isSSEResponse && !anthropicReq.stream) {
+      if (!anthropicReq.stream) {
         log('[bridge] Non-stream request received SSE response — auto-falling back to stream processing');
       }
       // Hand off lifecycle ownership to the stream handler — it owns:
@@ -649,6 +649,12 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
         ? handleResponsesStreamResponse(upstreamResp, anthropicReq.model, log, controller, request.signal, onDownstreamAbort)
         : handleStreamResponse(upstreamResp, anthropicReq.model, translateReasoning, log, thoughtSignatureCache, controller, request.signal, onDownstreamAbort);
     } else {
+      // A few OpenAI-compatible providers ignore stream=true and return a
+      // regular JSON completion. Translate it as non-stream so the caller
+      // still receives the assistant text instead of an empty SSE body.
+      if (anthropicReq.stream) {
+        log('[bridge] Stream request received JSON response — using non-stream translation');
+      }
       // Non-stream branch: response body is read with a single await; the
       // request.signal listener can be detached now (controller lives only
       // through the body read, which translateXxxResponse owns).

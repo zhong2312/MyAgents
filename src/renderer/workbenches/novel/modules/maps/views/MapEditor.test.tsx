@@ -45,6 +45,33 @@ function fireMapPointer(
 }
 
 describe("MapEditor（地图阶段验收）", () => {
+  it("地图帮助说明快捷键和当前地图类型的使用方法", async () => {
+    const storage = new NovelMemoryStorage({});
+    const repository = await import("../data-access/mapRepository").then(
+      (module) => module.createNovelMapRepository(storage),
+    );
+    await repository.createMap({
+      id: "map-help-geographic",
+      name: "帮助地图",
+      projectionType: "continent",
+    });
+
+    render(<MapEditor storage={storage} projectTitle="测试小说" isActive />);
+    fireEvent.click(await screen.findByText("帮助地图"));
+    fireEvent.click(await screen.findByRole("button", { name: "地图帮助" }));
+
+    expect(
+      await screen.findByRole("dialog", { name: "地图帮助" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Ctrl/Cmd + C / V")).toBeInTheDocument();
+    expect(screen.getByText("选择与绘制")).toBeInTheDocument();
+    expect(screen.getByText("路线外观为河流：")).toBeInTheDocument();
+    expect(screen.getByText(/单击右键或 Enter 确认/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭地图帮助" }));
+    expect(screen.queryByRole("dialog", { name: "地图帮助" })).not.toBeInTheDocument();
+  });
+
   it("中文玄幻风格转换会预览并创建独立副本，原图保持不变", async () => {
     const storage = new NovelMemoryStorage({});
     const repository = await import("../data-access/mapRepository").then(

@@ -982,19 +982,26 @@ export function applyGeneratorCandidate(
       isMapFeatureFreeformArea(feature.kind) &&
       feature.props.terrain === "lake",
   );
-  const features = candidate.features
-    .filter(
-      (feature) =>
-        !landCandidates.includes(feature) && !waterCandidates.includes(feature),
-    )
-    .map((feature) => {
+  const features = candidate.features.map((feature) => {
       let id = feature.id;
       let suffix = 2;
       while (existingIds.has(id)) id = `${feature.id}-${suffix++}`;
       existingIds.add(id);
+      const isSceneSurface =
+        landCandidates.includes(feature) || waterCandidates.includes(feature);
       return {
         ...(id === feature.id ? feature : { ...feature, id }),
         layerId: sourceLayerIds.feature,
+        ...(isSceneSurface
+          ? {
+              props: {
+                ...feature.props,
+                // 海陆轮廓同时驱动 MapFeature 与 MapScene；场景层只负责
+                // 材质合成，不再持有一份无法编辑的独立地表事实。
+                sceneSurface: "true",
+              },
+            }
+          : {}),
       };
     });
   const initialScene = document.scene ?? createEmptyMapScene();
@@ -1037,6 +1044,7 @@ export function applyGeneratorCandidate(
       createMapSceneRegion({
         id: regionId,
         layerId: sourceLayerIds.scene,
+        sourceFeatureId: feature.id,
         kind: "land",
         points: feature.points,
         fill: feature.props.fill ?? (index % 2 === 0 ? "#b8ad7d" : "#c9b983"),
@@ -1056,6 +1064,7 @@ export function applyGeneratorCandidate(
       createMapSceneRegion({
         id: regionId,
         layerId: sourceLayerIds.scene,
+        sourceFeatureId: feature.id,
         kind: "water",
         points: feature.points,
         fill: feature.props.fill ?? "#5d9caf",

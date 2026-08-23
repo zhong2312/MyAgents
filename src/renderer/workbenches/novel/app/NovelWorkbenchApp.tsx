@@ -73,6 +73,9 @@ import CultivationEcologyWorkbench, {
 import KnowledgeBase from "../KnowledgeBase";
 import TimelineLibrary from "../TimelineLibrary";
 import type { TimelineAiAgentRequest } from "../timelineAi";
+import WorldSimulationWorkbench, {
+  type SimulationAiRunRequest,
+} from "../modules/simulation/views/WorldSimulationWorkbench";
 import NarrativeEngineering from "../NarrativeEngineering";
 import type { NarrativeAiAgentRequest } from "../narrativeAi";
 import InspirationStudio from "../InspirationStudio";
@@ -816,6 +819,14 @@ export default function NovelWorkbenchRenderer({
   context,
 }: WorkbenchRendererProps) {
   const controller = useNovelProject(context.storage, context.isActive);
+  const { setShellTitle } = context;
+  const shellProjectTitle = controller.isLoading
+    ? null
+    : (controller.project?.metadata.title ?? null);
+  useEffect(() => {
+    setShellTitle?.(shellProjectTitle);
+    return () => setShellTitle?.(null);
+  }, [setShellTitle, shellProjectTitle]);
   const [selectedChapterId, setSelectedChapterId] = useState("");
   const domainIndex = useDomainIndex(
     context.storage,
@@ -2246,6 +2257,55 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
         />
       );
       break;
+    case "simulation":
+      content = (
+        <WorldSimulationWorkbench
+          storage={context.storage}
+          projectTitle={project.metadata.title}
+          isActive={context.isActive}
+          onAiRun={
+            context.aiRuns.isAvailable
+              ? async (request: SimulationAiRunRequest) => {
+                  const unsubscribe = request.onProgress
+                    ? context.aiRuns.subscribeProgress(
+                        request.runId,
+                        request.onProgress,
+                      )
+                    : () => undefined;
+                  try {
+                    return await runSceneAi(request.sceneId, {
+                      runId: request.runId,
+                      label: request.label,
+                      prompt: request.prompt,
+                      systemPrompt: request.systemPrompt,
+                      executionProfile: request.executionProfile,
+                      timeoutMs: request.timeoutMs,
+                      maxTurns: request.maxTurns,
+                      streamOutput: request.streamOutput,
+                      ...(request.usesNovelContextTools
+                        ? {
+                            toolset: {
+                              id: "novel-world",
+                              context: {
+                                mode: "world",
+                                promptId: "novel.simulation.advance",
+                                promptVersion: "1.0.0",
+                                readToolCallLimit: "10",
+                              },
+                            },
+                          }
+                        : {}),
+                    });
+                  } finally {
+                    unsubscribe();
+                  }
+                }
+              : undefined
+          }
+          registerNavigationGuard={context.registerNavigationGuard}
+        />
+      );
+      break;
     case "research":
       content = (
         <ResearchLibrary
@@ -2297,6 +2357,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
     "knowledge",
     "map",
     "timeline",
+    "simulation",
     "narrative",
     "inspiration",
     "ai-prompts",

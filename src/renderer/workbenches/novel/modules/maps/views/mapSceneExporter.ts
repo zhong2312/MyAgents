@@ -6,7 +6,7 @@ import {
   type MapArtworkAssetCatalog,
   type MapArtworkAssetVariant,
 } from "../business/mapArtwork";
-import { isMapRiverFeature } from "../business/mapHydrography";
+import { hasMapRiverAppearance } from "../business/mapHydrography";
 import {
   getTopologyNodeKindLabel,
   topologyNodeLabelVisible,
@@ -565,7 +565,9 @@ function drawFeatures(
           mapDocument.canvas.backgroundAssetPath),
     );
     context.save();
-    if (
+    if (feature.props.sceneSurface === "true") {
+      // 场景层已根据同一来源要素绘制海陆表面。
+    } else if (
       drawAzgaarOverlayFeature(
         context,
         feature,
@@ -598,7 +600,7 @@ function drawFeatures(
           opacity,
         );
       }
-    } else if (isMapRiverFeature(feature)) {
+    } else if (hasMapRiverAppearance(feature)) {
       drawTaperedRiver(context, feature, points, EXPORT_CAMERA, opacity);
     } else if (
       drawMapStyledRoute(context, feature, points, EXPORT_CAMERA, opacity)

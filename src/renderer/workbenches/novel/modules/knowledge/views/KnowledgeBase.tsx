@@ -16,6 +16,7 @@ import type { WorkbenchStorage } from "@/workbench-sdk";
 
 import {
   buildKnowledgeGraphFromStorage,
+  getCachedKnowledgeGraph,
   getKnowledgeNeighbors,
   searchKnowledgeGraph,
   type KnowledgeGraphSnapshot,
@@ -65,12 +66,12 @@ function Toggle({
       aria-label="启用知识图谱"
       disabled={disabled}
       onClick={() => onChange(!enabled)}
-      className={`relative h-6 w-11 rounded-full transition-colors ${
+      className={`relative inline-flex h-6 w-11 shrink-0 rounded-full p-0 transition-colors ${
         enabled ? "bg-[var(--accent-cool)]" : "bg-[var(--line-strong)]"
       } disabled:cursor-not-allowed disabled:opacity-60`}
     >
       <span
-        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+        className={`absolute left-0 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
           enabled ? "translate-x-5" : "translate-x-0.5"
         }`}
       />
@@ -140,10 +141,19 @@ export default function KnowledgeBase({
       setSelectedId("");
       return;
     }
-    void rebuild();
+    const cached = getCachedKnowledgeGraph(storage);
+    if (cached) {
+      setSnapshot(cached);
+      setSelectedId((current) => current || cached.nodes[0]?.id || "");
+      setStatus("ready");
+    } else {
+      void rebuild();
+    }
     let disposed = false;
     let timer: number | undefined;
-    let subscription: Awaited<ReturnType<WorkbenchStorage["watch"]>> | undefined;
+    let subscription:
+      | Awaited<ReturnType<WorkbenchStorage["watch"]>>
+      | undefined;
     void storage
       .watch(() => {
         if (disposed) return;
@@ -155,7 +165,8 @@ export default function KnowledgeBase({
         else subscription = next;
       })
       .catch((cause) => {
-        if (!disposed) setError(cause instanceof Error ? cause.message : String(cause));
+        if (!disposed)
+          setError(cause instanceof Error ? cause.message : String(cause));
       });
     return () => {
       disposed = true;
@@ -176,9 +187,16 @@ export default function KnowledgeBase({
     return searchKnowledgeGraph(snapshot, query, kind);
   }, [filter, query, snapshot]);
 
-  const selectedResult = results.find((result) => result.node.id === selectedId);
-  const selectedNode = selectedResult?.node ?? snapshot?.nodes.find((node) => node.id === selectedId);
-  const neighbors = selectedNode && snapshot ? getKnowledgeNeighbors(snapshot, selectedNode.id) : [];
+  const selectedResult = results.find(
+    (result) => result.node.id === selectedId,
+  );
+  const selectedNode =
+    selectedResult?.node ??
+    snapshot?.nodes.find((node) => node.id === selectedId);
+  const neighbors =
+    selectedNode && snapshot
+      ? getKnowledgeNeighbors(snapshot, selectedNode.id)
+      : [];
   const diagnosticCount = snapshot?.diagnostics.length ?? 0;
 
   const changeEnabled = async (next: boolean) => {
@@ -196,33 +214,43 @@ export default function KnowledgeBase({
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--paper)]">
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--line-subtle)] px-5 py-3">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-xs text-[var(--ink-muted)]">
             <Network className="h-3.5 w-3.5 text-[var(--accent-cool)]" />
             <span>小说工作台</span>
             <ChevronRight className="h-3 w-3" />
             <span>知识库</span>
           </div>
-          <h1 className="mt-1 truncate text-lg font-semibold text-[var(--ink)]">{projectTitle}</h1>
+          <h1 className="mt-1 truncate text-lg font-semibold text-[var(--ink)]">
+            {projectTitle}
+          </h1>
         </div>
-        <div className="flex items-center gap-3 text-sm">
-          <div className="flex items-center gap-2 text-[var(--ink-muted)]">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-3 text-sm">
+          <div className="flex shrink-0 items-center gap-2 text-[var(--ink-muted)]">
             <span>{enabled ? "知识图谱" : "知识图谱已关闭"}</span>
-            <Toggle enabled={enabled} disabled={isToggling} onChange={(next) => void changeEnabled(next)} />
+            <Toggle
+              enabled={enabled}
+              disabled={isToggling}
+              onChange={(next) => void changeEnabled(next)}
+            />
           </div>
           {enabled && (
-            <div className="flex h-8 items-center gap-1 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] p-1">
+            <div
+              className="flex h-8 shrink-0 items-center gap-1 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] p-1"
+              role="group"
+              aria-label="知识库视图"
+            >
               <button
                 type="button"
                 onClick={() => setView("list")}
-                className={`h-6 rounded px-2 text-xs ${view === "list" ? "bg-[var(--accent-cool)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
+                className={`h-6 shrink-0 whitespace-nowrap rounded px-2 text-xs ${view === "list" ? "bg-[var(--accent-cool)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
               >
                 列表
               </button>
               <button
                 type="button"
                 onClick={() => setView("graph")}
-                className={`h-6 rounded px-2 text-xs ${view === "graph" ? "bg-[var(--accent-cool)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
+                className={`h-6 shrink-0 whitespace-nowrap rounded px-2 text-xs ${view === "graph" ? "bg-[var(--accent-cool)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
                 title="图谱视图（只读，双击节点设为中心）"
               >
                 图谱
@@ -230,7 +258,7 @@ export default function KnowledgeBase({
               <button
                 type="button"
                 onClick={() => setView("wiki")}
-                className={`h-6 rounded px-2 text-xs ${view === "wiki" ? "bg-[var(--accent-cool)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
+                className={`h-6 shrink-0 whitespace-nowrap rounded px-2 text-xs ${view === "wiki" ? "bg-[var(--accent-cool)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
                 title="百科阅读模式"
               >
                 百科
@@ -242,10 +270,12 @@ export default function KnowledgeBase({
               type="button"
               onClick={() => void rebuild()}
               disabled={status === "building"}
-              className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line-strong)] px-2.5 text-xs font-medium hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-[var(--line-strong)] px-2.5 text-xs font-medium hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-50"
               title="重新构建知识图谱"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${status === "building" ? "animate-spin" : ""}`} />
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${status === "building" ? "animate-spin" : ""}`}
+              />
               重建
             </button>
           )}
@@ -277,7 +307,16 @@ export default function KnowledgeBase({
               )}
             </div>
             <div className="flex h-9 items-center gap-1 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] p-1">
-              {(["all", "entity", "setting", "entry", "fact", "heading"] as const).map((item) => (
+              {(
+                [
+                  "all",
+                  "entity",
+                  "setting",
+                  "entry",
+                  "fact",
+                  "heading",
+                ] as const
+              ).map((item) => (
                 <button
                   type="button"
                   key={item}
@@ -294,7 +333,13 @@ export default function KnowledgeBase({
             <div className="flex shrink-0 items-center gap-2 border-b border-[var(--line-subtle)] bg-[var(--error-bg)] px-5 py-2 text-xs text-[var(--error)]">
               <AlertTriangle className="h-3.5 w-3.5" />
               <span className="min-w-0 flex-1 truncate">{error}</span>
-              <button type="button" onClick={() => void rebuild()} className="font-medium underline">重试</button>
+              <button
+                type="button"
+                onClick={() => void rebuild()}
+                className="font-medium underline"
+              >
+                重试
+              </button>
             </div>
           )}
 
@@ -304,15 +349,25 @@ export default function KnowledgeBase({
                 <AlertTriangle className="h-3.5 w-3.5" />
                 <span>已索引，存在 {diagnosticCount} 个数据问题</span>
                 <span className="ml-auto text-[var(--ink-muted)]">
-                  {snapshot.nodes.length} 节点 · {snapshot.edges.length} 关系 · {snapshot.documents.length} 文档
+                  {snapshot.nodes.length} 节点 · {snapshot.edges.length} 关系 ·{" "}
+                  {snapshot.documents.length} 文档
                 </span>
               </div>
               <ul className="mt-2 space-y-1">
                 {snapshot.diagnostics.slice(0, 8).map((diagnostic, index) => (
-                  <li key={`${diagnostic.kind}:${diagnostic.source?.path ?? ""}:${index}`} className="flex items-center gap-2 text-xs text-[var(--ink-muted)]">
-                    <span className="min-w-0 flex-1 truncate">{diagnostic.message}</span>
+                  <li
+                    key={`${diagnostic.kind}:${diagnostic.source?.path ?? ""}:${index}`}
+                    className="flex items-center gap-2 text-xs text-[var(--ink-muted)]"
+                  >
+                    <span className="min-w-0 flex-1 truncate">
+                      {diagnostic.message}
+                    </span>
                     {diagnostic.source && (
-                      <button type="button" onClick={() => onOpenSource(diagnostic.source!)} className="shrink-0 text-[var(--accent-cool)] hover:underline">
+                      <button
+                        type="button"
+                        onClick={() => onOpenSource(diagnostic.source!)}
+                        className="shrink-0 text-[var(--accent-cool)] hover:underline"
+                      >
                         打开来源
                       </button>
                     )}
@@ -328,30 +383,41 @@ export default function KnowledgeBase({
             </div>
           ) : !snapshot || snapshot.nodes.length === 0 ? (
             <EmptyState enabled />
+          ) : view === "graph" ? (
+            <KnowledgeGraphView
+              nodes={snapshot.nodes}
+              edges={snapshot.edges}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onOpenSource={onOpenSource}
+            />
+          ) : view === "wiki" ? (
+            <WikiView
+              storage={storage}
+              projectTitle={projectTitle}
+              snapshot={snapshot}
+              onOpenSource={onOpenSource}
+            />
           ) : (
-            view === "graph" ? (
-              <KnowledgeGraphView
-                nodes={snapshot.nodes}
-                edges={snapshot.edges}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                onOpenSource={onOpenSource}
-              />
-            ) : view === "wiki" ? (
-              <WikiView
-                storage={storage}
-                projectTitle={projectTitle}
-                snapshot={snapshot}
-                onOpenSource={onOpenSource}
-              />
-            ) : (
             <div className="grid min-h-0 flex-1 grid-cols-[minmax(220px,0.85fr)_minmax(280px,1.4fr)_minmax(300px,1fr)] divide-x divide-[var(--line-subtle)] max-xl:grid-cols-[minmax(190px,0.8fr)_minmax(260px,1.2fr)_minmax(280px,1fr)] max-lg:grid-cols-[minmax(180px,0.8fr)_minmax(260px,1.2fr)]">
               <section className="min-h-0 overflow-y-auto p-4">
                 <div className="flex items-center justify-between text-xs text-[var(--ink-muted)]">
-                  <span>{query ? `${results.length} 条结果` : `${snapshot.nodes.length} 个节点`}</span>
-                  <span className={`flex items-center gap-1 ${diagnosticCount ? "text-[var(--warning)]" : "text-[var(--success)]"}`}>
-                    {diagnosticCount ? <AlertTriangle className="h-3 w-3" /> : <Check className="h-3 w-3" />}
-                    {diagnosticCount ? `已索引，${diagnosticCount} 个问题` : "已同步"}
+                  <span>
+                    {query
+                      ? `${results.length} 条结果`
+                      : `${snapshot.nodes.length} 个节点`}
+                  </span>
+                  <span
+                    className={`flex items-center gap-1 ${diagnosticCount ? "text-[var(--warning)]" : "text-[var(--success)]"}`}
+                  >
+                    {diagnosticCount ? (
+                      <AlertTriangle className="h-3 w-3" />
+                    ) : (
+                      <Check className="h-3 w-3" />
+                    )}
+                    {diagnosticCount
+                      ? `已索引，${diagnosticCount} 个问题`
+                      : "已同步"}
                   </span>
                 </div>
                 <div className="mt-3 space-y-1.5">
@@ -363,13 +429,23 @@ export default function KnowledgeBase({
                       className={`w-full rounded-md border px-3 py-2 text-left transition-colors ${selectedId === result.node.id ? "border-[var(--accent-cool)] bg-[var(--hover-bg)]" : "border-transparent hover:border-[var(--line)] hover:bg-[var(--hover-bg)]"}`}
                     >
                       <div className="flex items-center gap-2">
-                        <span className="truncate text-sm font-medium text-[var(--ink)]">{result.node.label}</span>
-                        <span className="shrink-0 text-xs text-[var(--ink-subtle)]">{KIND_LABELS[result.node.kind]}</span>
+                        <span className="truncate text-sm font-medium text-[var(--ink)]">
+                          {result.node.label}
+                        </span>
+                        <span className="shrink-0 text-xs text-[var(--ink-subtle)]">
+                          {KIND_LABELS[result.node.kind]}
+                        </span>
                       </div>
-                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--ink-muted)]">{result.snippet}</p>
+                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--ink-muted)]">
+                        {result.snippet}
+                      </p>
                     </button>
                   ))}
-                  {!results.length && <p className="px-2 py-8 text-center text-xs text-[var(--ink-muted)]">没有匹配结果</p>}
+                  {!results.length && (
+                    <p className="px-2 py-8 text-center text-xs text-[var(--ink-muted)]">
+                      没有匹配结果
+                    </p>
+                  )}
                 </div>
               </section>
 
@@ -378,51 +454,99 @@ export default function KnowledgeBase({
                   <>
                     <div className="flex items-start justify-between gap-4">
                       <div>
-                        <div className="text-xs text-[var(--ink-muted)]">{KIND_LABELS[selectedNode.kind]}</div>
-                        <h2 className="mt-1 text-xl font-semibold text-[var(--ink)]">{selectedNode.label}</h2>
+                        <div className="text-xs text-[var(--ink-muted)]">
+                          {KIND_LABELS[selectedNode.kind]}
+                        </div>
+                        <h2 className="mt-1 text-xl font-semibold text-[var(--ink)]">
+                          {selectedNode.label}
+                        </h2>
                       </div>
-                      <span className="rounded-full bg-[var(--success-bg)] px-2 py-1 text-xs text-[var(--success)]">已索引</span>
+                      <span className="rounded-full bg-[var(--success-bg)] px-2 py-1 text-xs text-[var(--success)]">
+                        已索引
+                      </span>
                     </div>
-                    <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-[var(--ink)]">{selectedNode.description || "暂无描述"}</p>
+                    <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-[var(--ink)]">
+                      {selectedNode.description || "暂无描述"}
+                    </p>
 
                     {selectedNode.aliases.length > 0 && (
                       <div className="mt-5">
-                        <h3 className="text-xs font-semibold text-[var(--ink-muted)]">别名</h3>
+                        <h3 className="text-xs font-semibold text-[var(--ink-muted)]">
+                          别名
+                        </h3>
                         <div className="mt-2 flex flex-wrap gap-1.5">
-                          {selectedNode.aliases.map((alias) => <span key={alias} className="rounded border border-[var(--line)] px-2 py-1 text-xs text-[var(--ink-muted)]">{alias}</span>)}
+                          {selectedNode.aliases.map((alias) => (
+                            <span
+                              key={alias}
+                              className="rounded border border-[var(--line)] px-2 py-1 text-xs text-[var(--ink-muted)]"
+                            >
+                              {alias}
+                            </span>
+                          ))}
                         </div>
                       </div>
                     )}
 
                     <div className="mt-6 border-t border-[var(--line-subtle)] pt-5">
-                      <h3 className="text-xs font-semibold text-[var(--ink-muted)]">关系</h3>
+                      <h3 className="text-xs font-semibold text-[var(--ink-muted)]">
+                        关系
+                      </h3>
                       {neighbors.length ? (
                         <div className="mt-2 divide-y divide-[var(--line-subtle)]">
                           {neighbors.map(({ edge, node }) => (
-                            <button type="button" key={edge.id} onClick={() => setSelectedId(node.id)} className="flex w-full items-center gap-2 py-2 text-left text-sm hover:text-[var(--accent-cool)]">
-                              <span className="truncate text-[var(--ink)]">{edge.from === selectedNode.id ? "→" : "←"} {edge.label}</span>
-                              <span className="ml-auto truncate text-xs text-[var(--ink-muted)]">{node.label}</span>
+                            <button
+                              type="button"
+                              key={edge.id}
+                              onClick={() => setSelectedId(node.id)}
+                              className="flex w-full items-center gap-2 py-2 text-left text-sm hover:text-[var(--accent-cool)]"
+                            >
+                              <span className="truncate text-[var(--ink)]">
+                                {edge.from === selectedNode.id ? "→" : "←"}{" "}
+                                {edge.label}
+                              </span>
+                              <span className="ml-auto truncate text-xs text-[var(--ink-muted)]">
+                                {node.label}
+                              </span>
                             </button>
                           ))}
                         </div>
-                      ) : <p className="mt-2 text-xs text-[var(--ink-muted)]">暂无已识别关系</p>}
+                      ) : (
+                        <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                          暂无已识别关系
+                        </p>
+                      )}
                     </div>
                   </>
-                ) : <p className="text-sm text-[var(--ink-muted)]">选择一个节点查看详情</p>}
+                ) : (
+                  <p className="text-sm text-[var(--ink-muted)]">
+                    选择一个节点查看详情
+                  </p>
+                )}
               </section>
 
               <section className="min-h-0 overflow-y-auto p-5 max-lg:col-span-2 max-lg:border-t max-lg:border-[var(--line-subtle)]">
                 {selectedNode ? (
                   <>
-                    <h3 className="text-xs font-semibold text-[var(--ink-muted)]">来源文件</h3>
+                    <h3 className="text-xs font-semibold text-[var(--ink-muted)]">
+                      来源文件
+                    </h3>
                     <div className="mt-3 space-y-2">
                       {selectedNode.sourceRefs.map((source) => (
-                        <div key={`${source.path}:${source.line ?? source.jsonPointer ?? "file"}`} className="rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] p-3">
+                        <div
+                          key={`${source.path}:${source.line ?? source.jsonPointer ?? "file"}`}
+                          className="rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] p-3"
+                        >
                           <div className="flex items-start gap-2">
                             <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent-cool)]" />
                             <div className="min-w-0 flex-1">
-                              <p className="break-all text-xs leading-5 text-[var(--ink)]">{formatSource(source)}</p>
-                              <button type="button" onClick={() => onOpenSource(source)} className="mt-2 flex items-center gap-1 text-xs font-medium text-[var(--accent-cool)] hover:underline">
+                              <p className="break-all text-xs leading-5 text-[var(--ink)]">
+                                {formatSource(source)}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => onOpenSource(source)}
+                                className="mt-2 flex items-center gap-1 text-xs font-medium text-[var(--accent-cool)] hover:underline"
+                              >
                                 打开并定位 <ExternalLink className="h-3 w-3" />
                               </button>
                             </div>
@@ -431,14 +555,26 @@ export default function KnowledgeBase({
                       ))}
                     </div>
                     <div className="mt-6 border-t border-[var(--line-subtle)] pt-5 text-xs text-[var(--ink-muted)]">
-                      <div className="flex justify-between gap-3"><span>节点 ID</span><span className="break-all text-right font-mono text-xs">{selectedNode.id}</span></div>
-                      <div className="mt-2 flex justify-between gap-3"><span>图谱更新时间</span><span>{new Date(snapshot.builtAt).toLocaleString("zh-CN")}</span></div>
+                      <div className="flex justify-between gap-3">
+                        <span>节点 ID</span>
+                        <span className="break-all text-right font-mono text-xs">
+                          {selectedNode.id}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex justify-between gap-3">
+                        <span>图谱更新时间</span>
+                        <span>
+                          {new Date(snapshot.builtAt).toLocaleString("zh-CN")}
+                        </span>
+                      </div>
                     </div>
                   </>
-                ) : <p className="text-sm text-[var(--ink-muted)]">暂无来源</p>}
+                ) : (
+                  <p className="text-sm text-[var(--ink-muted)]">暂无来源</p>
+                )}
               </section>
-              </div>
-            ))}
+            </div>
+          )}
         </>
       )}
     </div>

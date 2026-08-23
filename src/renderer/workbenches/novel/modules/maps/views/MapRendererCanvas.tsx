@@ -44,6 +44,10 @@ interface MapRendererCanvasProps {
   ) => void;
   readonly onCreateGroup?: (itemIds: readonly string[]) => void;
   readonly onUngroup?: (groupId: string) => void;
+  readonly onSetItemsLocked?: (
+    itemIds: readonly string[],
+    locked: boolean,
+  ) => void;
   readonly onCreate: (feature: MapFeature) => void;
   readonly onTopologyNodePlaced?: () => void;
   readonly onComponentDrop: (
@@ -180,6 +184,7 @@ export default function MapRendererCanvas(props: MapRendererCanvasProps) {
       onSelectionChange={props.onSelectionChange}
       onCreateGroup={props.onCreateGroup}
       onUngroup={props.onUngroup}
+      onSetItemsLocked={props.onSetItemsLocked}
       onCreate={props.onCreate}
       onComponentDrop={props.onComponentDrop}
       onComponentSurface={props.onComponentSurface}

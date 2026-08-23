@@ -108,7 +108,11 @@ async function startFakeUpstream(
   };
 }
 
-async function callBridge(upstream: UpstreamConfig, logger: ((msg: string) => void) | null = null): Promise<Response> {
+async function callBridge(
+  upstream: UpstreamConfig,
+  logger: ((msg: string) => void) | null = null,
+  stream = false,
+): Promise<Response> {
   const handler = createBridgeHandler({
     getUpstreamConfig: async () => upstream,
     logger,
@@ -116,7 +120,7 @@ async function callBridge(upstream: UpstreamConfig, logger: ((msg: string) => vo
   return handler(new Request('http://127.0.0.1/bridge/test/v1/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(anthropicReq),
+    body: JSON.stringify(stream ? { ...anthropicReq, stream: true } : anthropicReq),
   }));
 }
 
@@ -168,6 +172,23 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
 
     expect(fake.seen).toHaveLength(1);
     expect('prompt_cache_key' in fake.seen[0].body).toBe(false);
+  });
+
+  it('translates a JSON completion even when the downstream requested streaming', async () => {
+    fake = await startFakeUpstream(() => ({ status: 200, body: okChatBody }));
+    const upstream: UpstreamConfig = {
+      providerId: 'json-stream-fallback',
+      baseUrl: fake.baseUrl,
+      apiKey: 'sk-test',
+      model: 'chat-model',
+      upstreamFormat: 'chat_completions',
+    };
+
+    const response = await callBridge(upstream, null, true);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      content: [{ type: 'text', text: 'ok' }],
+    });
   });
 
   it('retries once without prompt_cache_key and disables later injection for the same bridge', async () => {

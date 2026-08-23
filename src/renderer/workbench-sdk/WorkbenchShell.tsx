@@ -248,6 +248,24 @@ export default function WorkbenchShell({
   const [isNavigationCollapsed, setIsNavigationCollapsed] = useState(
     () => definition?.shell?.defaultNavigationCollapsed ?? false,
   );
+  const shellTitleKey = `${manifest?.id ?? ""}\u0000${workspacePath}`;
+  const [shellTitleState, setShellTitleState] = useState<{
+    readonly key: string;
+    readonly title: string | null;
+  }>({ key: shellTitleKey, title: null });
+  const setShellTitle = useCallback(
+    (title: string | null) => {
+      const normalized = title?.trim();
+      setShellTitleState({
+        key: shellTitleKey,
+        title: normalized || null,
+      });
+    },
+    [shellTitleKey],
+  );
+  const shellTitle =
+    shellTitleState.key === shellTitleKey ? shellTitleState.title : null;
+  const displayTitle = shellTitle ?? manifest?.name ?? "工作台";
   const [isOpeningProjectAssistant, setIsOpeningProjectAssistant] =
     useState(false);
   const routeIds = useMemo(
@@ -450,6 +468,7 @@ export default function WorkbenchShell({
     route,
     isActive,
     storage,
+    setShellTitle,
     agentSessions: Object.freeze({
       isAvailable: Boolean(onOpenAgentSession),
       open: openAgentSession,
@@ -506,24 +525,13 @@ export default function WorkbenchShell({
                 <PanelLeftClose className="h-4 w-4" />
               )}
             </button>
-            {routeIds.has("manuscript") && route !== "manuscript" && (
-              <button
-                type="button"
-                aria-label="返回正文"
-                title="返回正文"
-                onClick={() => navigate("manuscript")}
-                className={`flex h-8 flex-shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] ${
-                  isNavigationCollapsed ? "w-8" : "gap-1.5 px-2 text-xs"
-                }`}
-              >
-                <FileText className="h-4 w-4" />
-                {!isNavigationCollapsed && <span>回到正文</span>}
-              </button>
-            )}
             {!isNavigationCollapsed && (
               <div className="min-w-0">
-                <div className="truncate text-sm font-semibold text-[var(--ink)]">
-                  {manifest.name}
+                <div
+                  className="truncate text-sm font-semibold text-[var(--ink)]"
+                  title={displayTitle}
+                >
+                  {displayTitle}
                 </div>
                 <div
                   className="mt-0.5 truncate text-xs text-[var(--ink-muted)]"

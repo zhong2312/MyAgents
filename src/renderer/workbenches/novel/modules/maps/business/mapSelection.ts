@@ -1,7 +1,9 @@
 import type {
   MapDocument,
   MapObjectGroup,
+  MapSceneRegion,
   MapScenePoint,
+  MapSceneStroke,
 } from "../entities/mapSchema";
 
 type EditableLayer = {
@@ -132,6 +134,7 @@ export function isEditableMapSelectableItem(
   map: MapDocument,
   id: string,
 ): boolean {
+  if (isMapSelectableItemLocked(map, id)) return false;
   const feature = map.features.find((item) => item.id === id);
   if (feature) {
     return isEditableLayer(
@@ -151,6 +154,99 @@ export function isEditableMapSelectableItem(
     }
   }
   return false;
+}
+
+/**
+ * 统一读取画布对象的锁定状态。拓扑节点早期把状态写在 props.locked，
+ * 普通地理对象则使用对象级字段；两种格式都必须在选择层得到相同语义。
+ */
+export function isMapSelectableItemLocked(
+  map: MapDocument,
+  id: string,
+): boolean {
+  const feature = map.features.find((item) => item.id === id);
+  if (feature) {
+    return feature.locked === true || feature.props.locked === "true";
+  }
+  const artworkLayer = map.artwork.layers.find((layer) =>
+    layer.stamps.some((stamp) => stamp.id === id),
+  );
+  if (artworkLayer) {
+    return (
+      artworkLayer.stamps.find((stamp) => stamp.id === id)?.locked === true
+    );
+  }
+  for (const layer of map.scene?.layers ?? []) {
+    const stroke = layer.strokes.find((candidate) => candidate.id === id);
+    if (stroke) return stroke.locked === true;
+    const region = layer.regions.find((candidate) => candidate.id === id);
+    if (region) {
+      if (region.locked === true) return true;
+      const source = region.sourceFeatureId
+        ? map.features.find(
+            (candidate) => candidate.id === region.sourceFeatureId,
+          )
+        : undefined;
+      return Boolean(
+        source && (source.locked === true || source.props.locked === "true"),
+      );
+    }
+  }
+  return false;
+}
+
+/** 一次性修改对象级锁定状态，图层锁定状态保持不变。 */
+export function setMapSelectableItemsLocked(
+  map: MapDocument,
+  itemIds: readonly string[],
+  locked: boolean,
+): MapDocument {
+  const ids = new Set(expandMapSelectableItemIds(map, itemIds));
+  if (ids.size === 0) return map;
+  let changed = false;
+  const features = map.features.map((feature) => {
+    if (!ids.has(feature.id) || feature.locked === locked) return feature;
+    changed = true;
+    return { ...feature, locked };
+  });
+  const artwork = {
+    ...map.artwork,
+    layers: map.artwork.layers.map((layer) => ({
+      ...layer,
+      stamps: layer.stamps.map((stamp) => {
+        if (!ids.has(stamp.id) || stamp.locked === locked) return stamp;
+        changed = true;
+        return { ...stamp, locked };
+      }),
+    })),
+  };
+  const scene = map.scene
+    ? {
+        ...map.scene,
+        layers: map.scene.layers.map((layer) => ({
+          ...layer,
+          strokes: layer.strokes.map((stroke) => {
+            if (!ids.has(stroke.id) || stroke.locked === locked) return stroke;
+            changed = true;
+            return { ...stroke, locked };
+          }),
+          regions: layer.regions.map((region) => {
+            const sourceSelected = Boolean(
+              region.sourceFeatureId && ids.has(region.sourceFeatureId),
+            );
+            if (
+              (!ids.has(region.id) && !sourceSelected) ||
+              region.locked === locked
+            ) {
+              return region;
+            }
+            changed = true;
+            return { ...region, locked };
+          }),
+        })),
+      }
+    : map.scene;
+  return changed ? { ...map, features, artwork, scene } : map;
 }
 
 export function canEditMapSelectableItems(
@@ -224,7 +320,15 @@ export function moveMapSelectableItems(
                       y: point.y + delta.y,
                     })),
                   }
-                : region,
+                : region.sourceFeatureId && ids.has(region.sourceFeatureId)
+                  ? {
+                      ...region,
+                      points: region.points.map((point) => ({
+                        x: point.x + delta.x,
+                        y: point.y + delta.y,
+                      })),
+                    }
+                  : region,
             ),
           })),
         }
@@ -246,21 +350,36 @@ function nextDuplicateId(sourceId: string, occupiedIds: Set<string>): string {
 
 /**
  * 复制可独立变换的选区。副本保留所属图层与全部样式事实，只平移一个固定
- * 偏移量以便立即可见；地形区域和连续笔触仍遵守其单件编辑协议。
+ * 偏移量以便立即可见；普通要素、素材印章、场景笔触和场景区域共用同一
+ * 复制事务，避免 Ctrl+C/Ctrl+V 对不同画布内容产生不一致行为。
  */
 export function duplicateMapSelectableItems(
   map: MapDocument,
   itemIds: readonly string[],
   offset: MapScenePoint = { x: 18, y: 18 },
 ): MapSelectableItemsDuplication {
-  const selectedIds = new Set(itemIds);
+  const selectedIds = new Set(expandMapSelectableItemIds(map, itemIds));
   if (selectedIds.size === 0) return { map, duplicatedIds: [] };
+
+  // 海陆场景区域是来源 Feature 的可见投影。复制来源时必须把投影一起
+  // 带走并在下面改绑到副本，否则 `sceneSurface` 要素会变成不可见事实。
+  for (const layer of map.scene?.layers ?? []) {
+    for (const region of layer.regions) {
+      if (region.sourceFeatureId && selectedIds.has(region.sourceFeatureId)) {
+        selectedIds.add(region.id);
+      }
+    }
+  }
 
   const occupiedIds = new Set([
     ...map.features.map((feature) => feature.id),
     ...map.artwork.layers.flatMap((layer) =>
       layer.stamps.map((stamp) => stamp.id),
     ),
+    ...(map.scene?.layers.flatMap((layer) => [
+      ...layer.strokes.map((stroke) => stroke.id),
+      ...layer.regions.map((region) => region.id),
+    ]) ?? []),
   ]);
   const duplicatedIdsBySourceId = new Map<string, string>();
   for (const feature of map.features) {
@@ -277,6 +396,24 @@ export function duplicateMapSelectableItems(
         duplicatedIdsBySourceId.set(
           stamp.id,
           nextDuplicateId(stamp.id, occupiedIds),
+        );
+      }
+    }
+  }
+  for (const layer of map.scene?.layers ?? []) {
+    for (const stroke of layer.strokes) {
+      if (selectedIds.has(stroke.id)) {
+        duplicatedIdsBySourceId.set(
+          stroke.id,
+          nextDuplicateId(stroke.id, occupiedIds),
+        );
+      }
+    }
+    for (const region of layer.regions) {
+      if (selectedIds.has(region.id)) {
+        duplicatedIdsBySourceId.set(
+          region.id,
+          nextDuplicateId(region.id, occupiedIds),
         );
       }
     }
@@ -320,6 +457,44 @@ export function duplicateMapSelectableItems(
     ];
   };
 
+  const duplicateStroke = (stroke: MapSceneStroke) => {
+    const duplicateId = duplicatedIdsBySourceId.get(stroke.id);
+    if (!duplicateId) return [stroke];
+    return [
+      stroke,
+      {
+        ...stroke,
+        id: duplicateId,
+        points: stroke.points.map((point) => ({
+          x: point.x + offset.x,
+          y: point.y + offset.y,
+        })),
+      },
+    ];
+  };
+
+  const duplicateRegion = (region: MapSceneRegion) => {
+    const duplicateId = duplicatedIdsBySourceId.get(region.id);
+    if (!duplicateId) return [region];
+    const duplicateSourceFeatureId = region.sourceFeatureId
+      ? duplicatedIdsBySourceId.get(region.sourceFeatureId)
+      : undefined;
+    return [
+      region,
+      {
+        ...region,
+        id: duplicateId,
+        ...(duplicateSourceFeatureId
+          ? { sourceFeatureId: duplicateSourceFeatureId }
+          : { sourceFeatureId: undefined }),
+        points: region.points.map((point) => ({
+          x: point.x + offset.x,
+          y: point.y + offset.y,
+        })),
+      },
+    ];
+  };
+
   return {
     map: {
       ...map,
@@ -331,6 +506,16 @@ export function duplicateMapSelectableItems(
           stamps: layer.stamps.flatMap(duplicateStamp),
         })),
       },
+      scene: map.scene
+        ? {
+            ...map.scene,
+            layers: map.scene.layers.map((layer) => ({
+              ...layer,
+              strokes: layer.strokes.flatMap(duplicateStroke),
+              regions: layer.regions.flatMap(duplicateRegion),
+            })),
+          }
+        : map.scene,
     },
     duplicatedIds: [...duplicatedIdsBySourceId.values()],
   };
@@ -359,7 +544,11 @@ export function removeMapSelectableItems(
           layers: map.scene.layers.map((layer) => ({
             ...layer,
             strokes: layer.strokes.filter((stroke) => !ids.has(stroke.id)),
-            regions: layer.regions.filter((region) => !ids.has(region.id)),
+            regions: layer.regions.filter(
+              (region) =>
+                !ids.has(region.id) &&
+                !(region.sourceFeatureId && ids.has(region.sourceFeatureId)),
+            ),
           })),
         }
       : map.scene,

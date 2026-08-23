@@ -4426,7 +4426,11 @@ async function main() {
               `[workbench-ai] empty label=${JSON.stringify(label)} durationMs=${Date.now() - startedAt}`,
             );
             return jsonResponse(
-              { success: false, error: "The model returned no text." },
+              {
+                success: false,
+                error:
+                  "模型完成了本次请求，但没有返回可用正文。请重试，或更换模型后再进行推演。",
+              },
               502,
             );
           }

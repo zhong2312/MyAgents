@@ -612,10 +612,13 @@ export default function InspirationWorkbench({
                   className={`ns-list-row ${selectedId === item.id ? "is-active" : ""}`}
                   type="button"
                   key={item.id}
+                  data-state={item.state}
                   onClick={() => selectItem(item.id)}
                 >
                   <span className="ns-list-title">{item.title}</span>
-                  <span className="ns-badge">{STATE_LABELS[item.state]}</span>
+                  <span className="ns-badge" data-state={item.state}>
+                    {STATE_LABELS[item.state]}
+                  </span>
                   <span className="ns-list-summary">
                     {item.body || "暂无正文"} ·{" "}
                     {item.tags.join("、") || item.source.label}
@@ -641,12 +644,23 @@ export default function InspirationWorkbench({
                           className={`ns-kanban-card ${selectedId === item.id ? "is-active" : ""}`}
                           type="button"
                           key={item.id}
+                          data-state={item.state}
                           onClick={() => selectItem(item.id)}
                         >
-                          <strong className="text-xs">{item.title}</strong>
+                          <span className="ns-kanban-card-meta">
+                            {SOURCE_LABELS[item.source.kind]}
+                          </span>
+                          <strong className="ns-kanban-card-title">
+                            {item.title}
+                          </strong>
                           <p className="mt-1 line-clamp-3 text-xs leading-5 text-[var(--ink-muted)]">
                             {item.body || "暂无正文"}
                           </p>
+                          {item.tags.length > 0 && (
+                            <span className="ns-kanban-card-tags">
+                              {item.tags.slice(0, 2).join(" · ")}
+                            </span>
+                          )}
                         </button>
                       ))}
                     </section>
@@ -661,7 +675,7 @@ export default function InspirationWorkbench({
             <Sparkles className="h-4 w-4 text-[var(--accent-warm)]" />
             <strong>灵感详情</strong>
             {selected && (
-              <span className="ml-auto ns-badge">
+              <span className="ml-auto ns-badge" data-state={selected.state}>
                 {STATE_LABELS[selected.state]}
               </span>
             )}
