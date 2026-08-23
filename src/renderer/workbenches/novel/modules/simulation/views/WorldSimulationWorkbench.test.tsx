@@ -272,6 +272,7 @@ describe("WorldSimulationWorkbench", () => {
     expect(
       await screen.findByText("AI 推演已取消，未完成的本轮没有保存。"),
     ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
     const index = JSON.parse(
       storage.getText("world/simulations/index.json") ?? "{}",
     ) as { runs?: Array<{ path: string }> };
