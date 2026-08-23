@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { HeartPulse } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useConfig } from '@/hooks/useConfig';
-import { enableAgentAndStartChannels, reconcilePersistedAgentWorkspaceIdentities } from '@/config/services/agentConfigService';
+import { setProactiveAgentEnabled, reconcilePersistedAgentWorkspaceIdentities } from '@/config/services/agentConfigService';
 
 interface AgentUpgradePromptProps {
   projectId: string;
@@ -27,7 +27,7 @@ export default function AgentUpgradePrompt({ projectId, onUpgraded }: AgentUpgra
       const identity = await reconcilePersistedAgentWorkspaceIdentities();
       const agent = identity.agentProjections.find(item => item.projectId === projectId)?.agent;
       if (!agent) throw new Error(`Could not resolve Agent for Project '${projectId}'.`);
-      await enableAgentAndStartChannels(agent.id);
+      await setProactiveAgentEnabled(agent.id, true);
       await patchProject(projectId, { isAgent: true });
       await refreshConfig();
 

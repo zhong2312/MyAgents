@@ -1,7 +1,7 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.47
-> **Last Updated**: 2026-08-04
+> **Version**: 2.8.51
+> **Last Updated**: 2026-08-15
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
 
@@ -90,6 +90,7 @@ Focus、链接和进行中状态。success/error/warning/info 继续使用各 Th
 |-------|------|------|
 | `--paper` | `#faf6ee` | 主背景 |
 | `--global-sidebar-bg` | `#f5efe5` | 全局 App Shell 侧栏背景；比主背景略深、比 inset 克制 |
+| `--global-sidebar-bg-a0` | `rgb(245 239 229 / 0)` | 侧栏同色透明端点；用于无黑色串染的渐变遮罩 |
 | `--paper-elevated` | `#fffcf7` | 卡片、弹层背景 |
 | `--message-user-bg` | `#fffefa` | 用户 Query 气泡背景（比对话页更白，去阴影后保持层次） |
 | `--paper-inset` | `#e8dccf` | 输入框内部、小按钮 hover |
@@ -462,6 +463,8 @@ Hover: shadow-sm（0 2px 8px rgb(28 22 18 / 0.08)）
 
 **v2.3 变更原因**：同一列表密集堆叠 N 张卡时，边框 + hover 位移会让页面显得"稀碎"。取消边框、用阴影强度变化承载 hover 反馈，卡片更像"漂在温暖纸张上"，静态整体感更强。
 
+技能、指令与 Sub-Agent 卡片在全局和工作区使用同一标题层级：类型图标固定在名称左侧，名称是主身份；作者若存在则以弱化纯文字紧跟名称，不使用 Tag 底色；来源、系统、作用域和同步状态属于状态信息，使用 Tag 并右对齐。系统内置 Skill 的状态文案统一为“系统”，替代开关；Command 与 Sub-Agent 不因视觉统一而虚构系统状态，继续遵循各自真实的开关与作用域规则。
+
 ### 6.3 输入框 (Inputs)
 
 ```
@@ -537,6 +540,8 @@ Item 选中: 文字 var(--accent-warm)
 内嵌 `BrowserPanel` 是全表面例外：它承载浮于 React DOM 之上的原生 child Webview，窄布局时必须让同一个 Chat / Tab-owned host 原位铺满 Chat，不能通过 `OverlayBackdrop` 重挂载或重建 Webview。其全屏关闭层 z-index 必须与视觉层级一致，并与分屏、工具栏、Browser Tab × 复用同一个关闭 callback；只有当前 active Browser view 可以消费该关闭层。
 
 全局历史搜索由 DOM 顺序早于 Tab 工作区的 `GlobalSidebar` 声明，因此 `HistorySearchOverlayFrame` 的稳定外壳必须 portal 到 `document.body`。这里不能只提高 `z-index`：macOS WKWebView 的 overflow scrollbar 使用独立合成层，后续 Tab 滚动面仍可能穿透较早的 backdrop。未来新增或重构同类 App 级 Overlay 时应先核对 owner 与 DOM 绘制顺序；页面内部、天然位于自身滚动面之后的局部 Overlay不受此约束。
+
+历史搜索 Overlay 打开时保留浏览筛选器，并在筛选栏右侧呈现约 30% 宽的紧凑搜索框；用户点击或键盘激活后，搜索表面以右侧为锚点向左延伸占满整行，筛选器同步淡出。展开和收起只允许使用 transform / opacity 的短动效并提供 `prefers-reduced-motion` 退化；Escape 与输入框关闭按钮清空查询、恢复紧凑态和焦点。Suspense fallback 必须保持同一紧凑框几何，避免懒加载完成时从全宽搜索框跳变。
 
 **适用范围**：
 - 模态框（ConfirmDialog、SessionStatsModal 等）
@@ -810,9 +815,17 @@ transition: opacity var(--duration-slow),
 
 - 默认: `var(--ink-muted)`
 - Hover: `var(--ink)`
-- 文件夹/文件: `var(--accent-warm)` (统一暖色调，保持页面视觉一致性)
+- 具体文件/文件夹身份：使用统一 `FileIcon` 的 Symbols 原生资源色，不按 Theme、hover、selected 或编辑状态重绘
 - 成功: `var(--success)`
 - 错误: `var(--error)`
+
+### 9.3 文件资源图标
+
+- 所有代表一个具体文件或文件夹对象的入口统一使用 `src/renderer/components/file-icon/`；consumer 只传 filename、node kind、folder expanded 和语义尺寸，不自行按扩展名选择图标；
+- dense=16px 用于文件树、搜索与紧凑附件行，regular=20px 用于 Turn 摘要、附件卡片和卡片 header，display=24px 用于预览 header/空态；固定 slot 不得改变行高和文字起点；
+- 图标视觉资产来自随应用固定版本打包的 Symbols SVG；不依赖 VS Code、网络或用户安装。PDF、Office 家族、语言和常见资源使用专属图形，长尾进入类别兜底，未知格式进入统一 document 兜底；
+- 图标有可见文件名时使用装饰性空 alt；只有图标独立表达资源时才提供 accessible label；
+- 动作图标、section 装饰、workspace avatar 与图片/音频/视频真实内容预览不属于文件资源图标，继续使用各自 owner。
 
 ---
 
@@ -903,6 +916,8 @@ transition: opacity var(--duration-slow),
 圆角: var(--radius-sm)
 内边距: 2px 6px
 ```
+
+AI 正文反引号内容采用渐进增强：普通 code、尚在检查、文件不存在、被路径安全策略拒绝或检查失败时均保持上述普通样式；有效 HTTP(S) URL 通过格式校验后、文件/目录通过当前有效的 Rust existence + safety 校验后，才增加虚线下划线、pointer 与对应链接动作。文件下划线表达“当前已验证可操作”，不能只凭字符串像路径或后端返回了结果对象就出现；左右键执行前仍需复核，失效后立即降级。显式 Markdown / GFM 链接继续使用标准链接视觉，其样式表达作者已经声明的链接意图。
 
 #### 多行代码块
 ```
@@ -1319,6 +1334,8 @@ rail 64px:
 
 工作区标题行与每个活跃工作区行的右侧双动作采用同一优先级方向：低频“更多”在左，高频“新增工作区 / 新对话”固定在最右边缘。最右槽位不得因菜单打开状态或侧栏收展而交换，确保快速创建的屏幕边缘肌肉记忆稳定。工作区新建动作的 Tooltip 统一使用短文案“新对话”；列表首项的动作提示向下展开，避开滚动容器上边界裁切，其余条目保持向上展开。
 
+活跃工作区行的双动作是覆盖在右缘的绝对定位层，不参与工作区名称的静态宽度计算；名称常态可使用动作区下方的完整行宽，仅在动作显现时由左透明、右实色的 Theme 渐变自然遮住实际重叠部分。动作层只在 hover、focus-within 或菜单打开时显现，隐藏时不得截获鼠标命中。
+
 ### 15.3 工作区与 Session 树
 
 - 工作区按置顶时间、最近打开时间、名称稳定排序；归档工作区位于默认收起的独立分组。
@@ -1395,13 +1412,16 @@ Settings 内部导航顺序固定为：模型供应商、通用设置、聊天�
 About 页必须把软件授权作为用户可达的一等产品信息：在联系方式之后使用标准
 `paper-elevated` 卡片说明 `AGPL-3.0-only` 社区许可与闭源商业授权的边界，并提供许可证、
 对应源码、第三方声明和商业授权邮件四个入口。开源入口使用 inset 次按钮，商业授权使用
-Primary CTA；所有链接复用 `ExternalLink`，不得由 WebView 原生导航接管。
+Primary CTA；“获取源代码”固定打开 GitHub 仓库默认页，不跟随应用版本、tag 或开发分支；
+所有链接复用 `ExternalLink`，不得由 WebView 原生导航接管。
 
 AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前模型居中放入可视范围，模型供应商或外部 Runtime 模型异步刷新后再次校正，不得调用会牵动页面滚动的全局 `scrollIntoView`。底部“管理自定义模型服务”入口仅在 AgentSDK 输入 chrome 显示：builtin 与 Managed Codex 均显示，用户自管 Claude Code / Codex CLI / Gemini CLI 不显示；点击后关闭模型菜单并打开或聚焦 `设置 → 模型供应商`。
 
 AI 输入框的会话模式保持各 Runtime 既有文案、顺序与菜单样式，图标统一使用 1.75 stroke 的 Lucide“权限边界”词汇：只读规划统一为 `Eye`；需逐项确认的 Default / Suggest 为 `ShieldQuestion`；自动编辑文件的 Accept Edits / Auto Edit / Auto-Edit 为 `FilePenLine`；受约束自主执行的 builtin 行动 / Codex Full Auto 为 `ShieldCheck`；跳过审批或限制的 Full Agency / Bypass / YOLO / No Restrictions 为 `LockOpen`。未知的 Runtime 自定义模式继续展示自身声明的图标。
 
 AI 输入框的“定时任务”属于低频创建动作，和引用文件、使用技能、上传文件一起收纳在 `+` 菜单内，不单独占用工具栏位置；Launcher 与 Chat 共用同一结构和 handler。`+`、会话模式与工具菜单统一使用 200ms 的 opacity + 纵向 translate（6px → 0）入场，不使用 scale，并在 `prefers-reduced-motion` 下取消动画；动效不得覆盖 Floating UI 的定位 transform。`@` 文件引用与 `/` 技能选择弹窗使用 `shadow-md`，与 AI 输入框本体保持同一悬浮层级。
+
+Chat 中选择 `/goal` 后立即在输入框上方进入 Goal 草稿横条，不先打开设置弹窗；目标正文继续在输入框输入并随首次发送启动。横条的设置按钮是结束条件、通知等低频参数的二级入口，关闭按钮取消草稿。斜杠菜单按真实 Runtime 能力投影，而不是按输入框视觉 chrome 投影：MyAgents 客户端动作与当前工作区能力保留，Claude Agent SDK 系统指令只在实际 builtin Session 展示；Managed Codex 仅额外展示已原生适配的 `/compact`，其他 external Runtime 不展示系统指令。Managed Codex 的 `/compact` 与 context 用量卡片右上角「智能压缩」必须共用同一个 Session 控制动作及 compacting/success/failed 状态，不生成对话消息。
 
 ### 15.8 任务创建面板
 

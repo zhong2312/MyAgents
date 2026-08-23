@@ -43,17 +43,131 @@ impl DispatchGate {
         Some(DispatchLease { gate: gate.clone() })
     }
 
-    pub(crate) fn close_and_wait(&self) {
-        let mut state = self
+    pub(crate) fn is_accepting(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .accepting
+    }
+
+    /// Stop admitting requests without waiting for already-admitted work.
+    ///
+    /// This is the only operation that may run while `SidecarManager` is
+    /// locked. The returned drain is waited only after the manager lock has
+    /// been released.
+    pub(crate) fn close(gate: &Arc<Self>) -> DispatchDrain {
+        let mut state = gate
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.accepting = false;
-        while state.in_flight > 0 {
+        DispatchDrain { gate: gate.clone() }
+    }
+
+    fn wait_until_in_flight_at_most(&self, maximum: usize) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.in_flight > maximum {
             state = self
                 .drained
                 .wait(state)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+
+    pub(crate) fn close_and_wait(gate: &Arc<Self>) {
+        Self::close(gate).wait();
+    }
+}
+
+/// A transient handoff proving that request admission was closed while the
+/// process generation was still manager-owned.
+pub(crate) struct DispatchDrain {
+    gate: Arc<DispatchGate>,
+}
+
+impl DispatchDrain {
+    pub(crate) fn wait(&self) {
+        self.gate.wait_until_in_flight_at_most(0);
+    }
+
+    pub(crate) fn matches(&self, gate: &Arc<DispatchGate>) -> bool {
+        Arc::ptr_eq(&self.gate, gate)
+    }
+}
+
+/// Exact Global/legacy instance replacement handoff.
+///
+/// The private lease keeps the closed old generation manager-authoritative
+/// while the replacement process is prepared outside `SidecarManager`. A
+/// concurrent stop waits that same gate, so it cannot expose an authority gap
+/// or race a second process into the singleton slot.
+#[must_use = "finish or abandon the exact replacement before dropping its lease"]
+pub(crate) struct DispatchReplacement {
+    gate: Arc<DispatchGate>,
+    _lease: DispatchLease,
+}
+
+impl DispatchReplacement {
+    pub(crate) fn begin(gate: &Arc<DispatchGate>) -> Option<Self> {
+        let lease = DispatchGate::try_acquire(gate)?;
+        DispatchGate::close(gate);
+        Some(Self {
+            gate: gate.clone(),
+            _lease: lease,
+        })
+    }
+
+    /// Wait for ordinary requests while retaining this replacement's own
+    /// lifecycle lease.
+    pub(crate) fn wait_for_requests(&self) {
+        self.gate.wait_until_in_flight_at_most(1);
+    }
+
+    pub(crate) fn matches(&self, gate: &Arc<DispatchGate>) -> bool {
+        Arc::ptr_eq(&self.gate, gate)
+    }
+}
+
+/// Exact process gates closed by one Session lifecycle transition.
+///
+/// The manager keeps the corresponding entries authoritative while these
+/// drains are waited outside its mutex. Pointer identity prevents a stale
+/// completion from removing a newer generation.
+#[must_use = "wait for the closed generation outside SidecarManager, then finalize it"]
+pub(crate) struct SessionGenerationDrain {
+    pub(super) session_id: String,
+    pub(super) active: Option<DispatchDrain>,
+    pub(super) recovering: Option<DispatchDrain>,
+}
+
+/// Process objects detached from manager authority. Dropping this value waits
+/// their already-closed gates and terminates the exact process trees; callers
+/// must therefore carry it outside the manager mutex first.
+#[must_use = "drop detached Sidecars only after releasing SidecarManager"]
+pub(crate) struct SidecarRetirement {
+    pub(crate) sessions: Vec<SessionSidecar>,
+    pub(crate) globals: Vec<SidecarInstance>,
+}
+
+impl SidecarRetirement {
+    pub(crate) fn finish(self) {
+        let Self { sessions, globals } = self;
+        drop(sessions);
+        drop(globals);
+        remove_global_port_file();
+    }
+}
+
+impl SessionGenerationDrain {
+    pub(crate) fn wait(&self) {
+        if let Some(drain) = &self.active {
+            drain.wait();
+        }
+        if let Some(drain) = &self.recovering {
+            drain.wait();
         }
     }
 }
@@ -71,9 +185,10 @@ impl Drop for DispatchLease {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         debug_assert!(state.in_flight > 0);
         state.in_flight = state.in_flight.saturating_sub(1);
-        if state.in_flight == 0 {
-            self.gate.drained.notify_all();
-        }
+        // Ordinary drains wait for zero; replacement drains retain one private
+        // lifecycle lease and wait for all other requests to leave. Wake both
+        // predicates on every decrement.
+        self.gate.drained.notify_all();
     }
 }
 
@@ -157,6 +272,10 @@ pub(super) enum ExistingSidecarReuse {
         runtime_source: Option<String>,
         owner_added: bool,
     },
+    /// Admission was closed by a concurrent last-owner release or
+    /// replacement. Wait for that exact generation outside the manager lock,
+    /// then retry the normal ensure path.
+    Draining(DispatchDrain),
 }
 
 pub(super) fn normalize_runtime_name(runtime: Option<&str>) -> &str {
@@ -263,6 +382,20 @@ mod lifecycle_contract_tests {
         values.into_iter().collect()
     }
 
+    fn test_global_instance(port: u16, generation: u64, healthy: bool) -> SidecarInstance {
+        SidecarInstance {
+            process: Some(spawn_test_child()),
+            generation,
+            port,
+            agent_dir: None,
+            healthy,
+            is_global: true,
+            session_delete_authority: None,
+            dispatch_gate: DispatchGate::new(),
+            created_at: std::time::Instant::now(),
+        }
+    }
+
     #[test]
     fn dispatch_gate_drains_admitted_request_before_closing_generation() {
         let gate = DispatchGate::new();
@@ -271,7 +404,7 @@ mod lifecycle_contract_tests {
         let (closed_tx, closed_rx) = std::sync::mpsc::channel();
 
         std::thread::spawn(move || {
-            closing_gate.close_and_wait();
+            DispatchGate::close_and_wait(&closing_gate);
             closed_tx.send(()).expect("report closed gate");
         });
 
@@ -286,7 +419,7 @@ mod lifecycle_contract_tests {
     fn assert_dispatch_blocks_generation_close<T>(dispatch: T, gate: Arc<DispatchGate>) {
         let (closed_tx, closed_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            gate.close_and_wait();
+            DispatchGate::close_and_wait(&gate);
             closed_tx.send(()).expect("report closed generation");
         });
         assert!(closed_rx.recv_timeout(Duration::from_millis(25)).is_err());
@@ -311,19 +444,10 @@ mod lifecycle_contract_tests {
             .expect("Session dispatch");
         assert_dispatch_blocks_generation_close(session_dispatch, session_gate);
 
-        manager.next_generation(GLOBAL_SIDECAR_ID);
+        let global_generation = manager.next_instance_generation();
         manager.insert_instance(
             GLOBAL_SIDECAR_ID.to_string(),
-            SidecarInstance {
-                process: spawn_test_child(),
-                port: 31419,
-                agent_dir: None,
-                healthy: true,
-                is_global: true,
-                session_delete_authority: None,
-                dispatch_gate: DispatchGate::new(),
-                created_at: std::time::Instant::now(),
-            },
+            test_global_instance(31419, global_generation, true),
         );
         let global_gate = manager
             .instances
@@ -333,6 +457,68 @@ mod lifecycle_contract_tests {
             .clone();
         let global_dispatch = manager.acquire_global_dispatch().expect("Global dispatch");
         assert_dispatch_blocks_generation_close(global_dispatch, global_gate);
+    }
+
+    #[test]
+    fn last_owner_release_waits_without_holding_sidecar_manager() {
+        let manager = Arc::new(Mutex::new(SidecarManager::new()));
+        {
+            let mut guard = manager.lock().expect("manager lock");
+            insert_test_sidecar(&mut guard, "session-a", SidecarState::Healthy);
+            insert_test_sidecar(&mut guard, "session-b", SidecarState::Healthy);
+        }
+        let dispatch = manager
+            .lock()
+            .expect("manager lock")
+            .acquire_frontend_session_dispatch("session-a", &SidecarOwner::Tab("tab-a".to_string()))
+            .expect("admitted request");
+
+        let release_manager = manager.clone();
+        let (released_tx, released_rx) = std::sync::mpsc::channel();
+        let release_thread = std::thread::spawn(move || {
+            let result = crate::sidecar::release_session_sidecar(
+                &release_manager,
+                "session-a",
+                &SidecarOwner::Tab("tab-a".to_string()),
+            );
+            released_tx.send(result).expect("report release result");
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            let mut guard = manager.lock().expect("manager remains available");
+            let admission_closed = guard
+                .sidecars
+                .get("session-a")
+                .is_some_and(|sidecar| !sidecar.dispatch_gate.is_accepting());
+            if admission_closed {
+                assert_eq!(guard.get_session_port("session-b"), Some(31418));
+                assert!(!guard
+                    .add_session_owner("session-a", SidecarOwner::Task("late-owner".to_string()),));
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "release did not close admission"
+            );
+            drop(guard);
+            std::thread::yield_now();
+        }
+        assert!(released_rx.recv_timeout(Duration::from_millis(25)).is_err());
+
+        drop(dispatch);
+        assert_eq!(
+            released_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("release completes after request body is consumed"),
+            Ok(true)
+        );
+        release_thread.join().expect("release thread");
+        assert!(!manager
+            .lock()
+            .expect("manager lock")
+            .sidecars
+            .contains_key("session-a"));
     }
 
     #[test]
@@ -349,46 +535,31 @@ mod lifecycle_contract_tests {
             GlobalMonitorSnapshot::DesiredMissing
         ));
 
-        let failed_generation = manager.next_generation(GLOBAL_SIDECAR_ID);
+        let failed_generation = manager.next_instance_generation();
         manager.insert_instance(
             GLOBAL_SIDECAR_ID.to_string(),
-            SidecarInstance {
-                process: spawn_test_child(),
-                port: 31419,
-                agent_dir: None,
-                healthy: false,
-                is_global: true,
-                session_delete_authority: None,
-                dispatch_gate: DispatchGate::new(),
-                created_at: std::time::Instant::now(),
-            },
+            test_global_instance(31419, failed_generation, false),
         );
         assert!(matches!(
             manager.global_monitor_snapshot(),
-            GlobalMonitorSnapshot::Present { port: 31419, .. }
+            GlobalMonitorSnapshot::Present {
+                port: 31419,
+                process_alive: true,
+                ..
+            }
         ));
 
         manager.remove_instance(GLOBAL_SIDECAR_ID);
-        assert_eq!(manager.current_generation(GLOBAL_SIDECAR_ID), 0);
         assert!(matches!(
             manager.global_monitor_snapshot(),
             GlobalMonitorSnapshot::DesiredMissing
         ));
 
-        let ready_generation = manager.next_generation(GLOBAL_SIDECAR_ID);
+        let ready_generation = manager.next_instance_generation();
         assert!(ready_generation > failed_generation);
         manager.insert_instance(
             GLOBAL_SIDECAR_ID.to_string(),
-            SidecarInstance {
-                process: spawn_test_child(),
-                port: 31420,
-                agent_dir: None,
-                healthy: true,
-                is_global: true,
-                session_delete_authority: None,
-                dispatch_gate: DispatchGate::new(),
-                created_at: std::time::Instant::now(),
-            },
+            test_global_instance(31420, ready_generation, true),
         );
         assert!(manager.acquire_global_dispatch().is_ok());
         assert!(manager.global_sidecar_is_desired());
@@ -401,11 +572,204 @@ mod lifecycle_contract_tests {
         ));
 
         manager.request_global_sidecar_running("test-stop-all");
-        manager.stop_all();
+        manager.stop_all().finish();
         assert!(matches!(
             manager.global_monitor_snapshot(),
             GlobalMonitorSnapshot::Stopped
         ));
+    }
+
+    #[test]
+    fn global_birth_reservation_is_canonical_and_not_monitor_dead_work() {
+        let mut manager = SidecarManager::new();
+        manager.request_global_sidecar_running("test-birth");
+        let generation = manager.next_instance_generation();
+        let gate = DispatchGate::new();
+        let birth_lease = DispatchGate::try_acquire(&gate).expect("birth lease");
+        manager.insert_instance(
+            GLOBAL_SIDECAR_ID.to_string(),
+            SidecarInstance {
+                process: None,
+                generation,
+                port: 31419,
+                agent_dir: None,
+                healthy: false,
+                is_global: true,
+                session_delete_authority: None,
+                dispatch_gate: gate,
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        assert_eq!(
+            manager.global_monitor_snapshot(),
+            GlobalMonitorSnapshot::BirthPending {
+                port: 31419,
+                generation,
+            }
+        );
+        assert!(manager.acquire_global_dispatch().is_err());
+
+        let drain = manager
+            .prepare_instance_retirement(GLOBAL_SIDECAR_ID)
+            .expect("stop observes the canonical birth reservation");
+        drop(birth_lease);
+        drain.wait();
+        let retired = manager
+            .finish_instance_retirement(GLOBAL_SIDECAR_ID, &drain)
+            .expect("stop removes the exact birth reservation");
+        drop(retired);
+    }
+
+    #[test]
+    fn stale_global_health_result_cannot_mark_reused_port_generation_unhealthy() {
+        let mut manager = SidecarManager::new();
+        let current_generation = manager.next_instance_generation();
+        manager.insert_instance(
+            GLOBAL_SIDECAR_ID.to_string(),
+            test_global_instance(31419, current_generation, true),
+        );
+
+        assert!(!manager.instance_identity_is_current(
+            GLOBAL_SIDECAR_ID,
+            31419,
+            current_generation.saturating_sub(1),
+        ));
+        assert!(manager.instance_identity_is_current(GLOBAL_SIDECAR_ID, 31419, current_generation,));
+        assert!(!manager.mark_instance_unhealthy_if_current(
+            GLOBAL_SIDECAR_ID,
+            31419,
+            current_generation.saturating_sub(1),
+        ));
+        assert!(manager
+            .get_instance(GLOBAL_SIDECAR_ID)
+            .is_some_and(|instance| instance.healthy));
+        assert!(manager.mark_instance_unhealthy_if_current(
+            GLOBAL_SIDECAR_ID,
+            31419,
+            current_generation,
+        ));
+        assert!(manager
+            .get_instance(GLOBAL_SIDECAR_ID)
+            .is_some_and(|instance| !instance.healthy));
+    }
+
+    #[test]
+    fn global_retirement_retains_authority_and_finishes_only_the_exact_gate() {
+        let mut manager = SidecarManager::new();
+        manager.request_global_sidecar_running("test-start");
+        let first_generation = manager.next_instance_generation();
+        manager.insert_instance(
+            GLOBAL_SIDECAR_ID.to_string(),
+            test_global_instance(31419, first_generation, true),
+        );
+
+        let admitted = manager.acquire_global_dispatch().expect("Global dispatch");
+        let drain = manager
+            .prepare_instance_retirement(GLOBAL_SIDECAR_ID)
+            .expect("retirement drain");
+
+        assert!(manager.instances.contains_key(GLOBAL_SIDECAR_ID));
+        assert_eq!(
+            manager
+                .get_instance(GLOBAL_SIDECAR_ID)
+                .map(|instance| instance.generation),
+            Some(first_generation)
+        );
+        assert!(manager.acquire_global_dispatch().is_err());
+
+        drop(admitted);
+        drain.wait();
+        let retired = manager
+            .finish_instance_retirement(GLOBAL_SIDECAR_ID, &drain)
+            .expect("exact old generation retires");
+        assert!(!manager.instances.contains_key(GLOBAL_SIDECAR_ID));
+
+        let replacement_generation = manager.next_instance_generation();
+        manager.insert_instance(
+            GLOBAL_SIDECAR_ID.to_string(),
+            test_global_instance(31420, replacement_generation, true),
+        );
+
+        assert!(manager
+            .finish_instance_retirement(GLOBAL_SIDECAR_ID, &drain)
+            .is_none());
+        assert_eq!(
+            manager
+                .get_instance(GLOBAL_SIDECAR_ID)
+                .map(|item| item.port),
+            Some(31420)
+        );
+        drop(retired);
+    }
+
+    #[test]
+    fn global_replacement_lease_orders_request_drain_and_concurrent_stop() {
+        let mut manager = SidecarManager::new();
+        manager.request_global_sidecar_running("test-start");
+        let first_generation = manager.next_instance_generation();
+        manager.insert_instance(
+            GLOBAL_SIDECAR_ID.to_string(),
+            test_global_instance(31419, first_generation, true),
+        );
+
+        let request = manager.acquire_global_dispatch().expect("Global dispatch");
+        let replacement = manager
+            .prepare_instance_replacement(GLOBAL_SIDECAR_ID)
+            .expect("replacement owns the accepting old generation");
+        let (replacement_tx, replacement_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            replacement.wait_for_requests();
+            replacement_tx
+                .send(replacement)
+                .expect("return replacement handoff");
+        });
+
+        assert!(replacement_rx
+            .recv_timeout(Duration::from_millis(25))
+            .is_err());
+        assert!(manager.instances.contains_key(GLOBAL_SIDECAR_ID));
+        drop(request);
+        let replacement = replacement_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("replacement proceeds after the ordinary request leaves");
+
+        // A stop that begins during process creation waits the replacement's
+        // private lease on the same exact old gate.
+        let stop_drain = manager
+            .prepare_instance_retirement(GLOBAL_SIDECAR_ID)
+            .expect("concurrent stop drain");
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            stop_drain.wait();
+            stop_tx.send(stop_drain).expect("return stop drain");
+        });
+        assert!(stop_rx.recv_timeout(Duration::from_millis(25)).is_err());
+
+        let replacement_generation = manager.next_instance_generation();
+        let retired = match manager.finish_instance_replacement(
+            GLOBAL_SIDECAR_ID,
+            &replacement,
+            test_global_instance(31420, replacement_generation, false),
+        ) {
+            Ok(retired) => retired,
+            Err(_) => panic!("replacement publishes atomically"),
+        };
+        drop(replacement);
+        drop(retired);
+
+        let stop_drain = stop_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("stop wakes when replacement publication settles");
+        assert!(manager
+            .finish_instance_retirement(GLOBAL_SIDECAR_ID, &stop_drain)
+            .is_none());
+        assert_eq!(
+            manager
+                .get_instance(GLOBAL_SIDECAR_ID)
+                .map(|instance| instance.port),
+            Some(31420)
+        );
     }
 
     #[test]
@@ -624,7 +988,7 @@ mod lifecycle_contract_tests {
         let session_generation = manager.current_generation("pending-a");
         assert!(manager.is_live_process("pending-a", session_generation));
 
-        assert!(manager.upgrade_session_id("pending-a", "session-a"));
+        assert!(manager.upgrade_session_id_for_tab("pending-a", "session-a", "tab-a"));
         assert!(
             manager.is_live_process("pending-a", session_generation),
             "a logical Session key upgrade must not invalidate the immutable identity injected into the live process"
@@ -634,19 +998,10 @@ mod lifecycle_contract_tests {
             "the mutable Session key is not a substitute for the process's injected management identity"
         );
 
-        let global_generation = manager.next_generation(GLOBAL_SIDECAR_ID);
+        let global_generation = manager.next_instance_generation();
         manager.insert_instance(
             GLOBAL_SIDECAR_ID.to_string(),
-            SidecarInstance {
-                process: spawn_test_child(),
-                port: 31419,
-                agent_dir: None,
-                healthy: true,
-                is_global: true,
-                session_delete_authority: None,
-                dispatch_gate: DispatchGate::new(),
-                created_at: std::time::Instant::now(),
-            },
+            test_global_instance(31419, global_generation, true),
         );
         assert!(manager.is_live_process(GLOBAL_SIDECAR_ID, global_generation));
         assert!(!manager.is_live_process(GLOBAL_SIDECAR_ID, global_generation + 1));
@@ -665,6 +1020,17 @@ mod lifecycle_contract_tests {
             .add_owner(SidecarOwner::Task("task-1".to_string()));
 
         assert!(!manager.upgrade_session_id_for_tab("pending-a", "session-real", "tab-b",));
+        assert!(!manager.session_id_upgrade_is_already_applied_for_tab(
+            "pending-a",
+            "session-real",
+            "tab-a",
+        ));
+        assert!(!manager.upgrade_session_id_for_tab("pending-a", "session-real", "tab-a",));
+
+        let release =
+            manager.remove_session_owner("session-real", &SidecarOwner::Task("task-1".to_string()));
+        assert!(release.removed);
+        assert!(!release.stopped);
         assert!(manager.session_id_upgrade_is_already_applied_for_tab(
             "pending-a",
             "session-real",
@@ -803,7 +1169,7 @@ mod lifecycle_contract_tests {
         insert_test_sidecar(&mut manager, "pending-tab-a", SidecarState::Healthy);
         let owner = SidecarOwner::Tab("tab-a".to_string());
 
-        assert!(manager.upgrade_session_id("pending-tab-a", "session-real"));
+        assert!(manager.upgrade_session_id_for_tab("pending-tab-a", "session-real", "tab-a"));
         assert_eq!(
             manager
                 .resolve_session_sidecar_for_frontend_owner("pending-tab-a", &owner)
@@ -895,7 +1261,8 @@ mod lifecycle_contract_tests {
         let mut manager = SidecarManager::new();
         insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
 
-        assert!(!manager.release_tab_session("session-a", "stale-tab", false));
+        let release = manager.release_tab_session("session-a", "stale-tab", false);
+        assert!(!release.removed);
         assert!(
             manager.session_has_exact_owner("session-a", &SidecarOwner::Tab("tab-a".to_string()),)
         );
@@ -911,7 +1278,8 @@ mod lifecycle_contract_tests {
             .expect("session sidecar")
             .owners = owners(vec![SidecarOwner::Goal("goal-a".to_string())]);
 
-        assert!(!manager.release_tab_session("session-a", "closed-tab", false));
+        let release = manager.release_tab_session("session-a", "closed-tab", false);
+        assert!(!release.removed);
         assert!(manager.session_has_persistent_owners("session-a"));
     }
 
@@ -1092,7 +1460,9 @@ mod lifecycle_contract_tests {
             .expect("session sidecar")
             .owners
             .insert(SidecarOwner::BackgroundCompletion("session-a".to_string()));
-        assert!(!manager.release_tab_session("session-a", "tab-a", false));
+        let release = manager.release_tab_session("session-a", "tab-a", false);
+        assert!(release.removed);
+        assert!(!release.stopped);
         assert!(manager.session_has_persistent_owners("session-a"));
         assert!(
             !manager.session_has_exact_owner("session-a", &SidecarOwner::Tab("tab-a".to_string()),)
@@ -1142,10 +1512,13 @@ mod lifecycle_contract_tests {
             .get_session_sidecar_mut("session-a")
             .expect("session sidecar")
             .owners = owners(vec![SidecarOwner::Goal("goal-a".to_string())]);
-        assert_eq!(
-            manager.remove_session_owner("session-a", &SidecarOwner::Goal("goal-a".to_string())),
-            (true, true)
-        );
+        let release =
+            manager.remove_session_owner("session-a", &SidecarOwner::Goal("goal-a".to_string()));
+        assert!(release.removed && release.stopped);
+        let drain = release.drain.expect("last owner closes the generation");
+        drain.wait();
+        let retired = manager.finish_unowned_session_retirement(&drain);
+        drop(retired);
         assert!(!manager.sidecars.contains_key("session-a"));
         assert_eq!(manager.current_generation("session-a"), 0);
     }
@@ -1179,10 +1552,10 @@ mod lifecycle_contract_tests {
         // The monitor's replacement initially owns only the owner chosen to
         // start it; the retained dead object still carries every owner.
         insert_test_sidecar(&mut manager, "session-a", SidecarState::Starting);
-        assert_eq!(
-            manager.remove_session_owner("session-a", &SidecarOwner::Tab("tab-a".to_string()),),
-            (true, false),
-        );
+        let release =
+            manager.remove_session_owner("session-a", &SidecarOwner::Tab("tab-a".to_string()));
+        assert!(release.removed);
+        assert!(!release.stopped);
         assert!(!manager.recovery_attempt_is_authorized(
             "session-a",
             recovery_epoch,
@@ -1205,10 +1578,15 @@ mod lifecycle_contract_tests {
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
         ));
 
-        assert_eq!(
-            manager.remove_session_owner("session-a", &SidecarOwner::Goal("goal-a".to_string()),),
-            (true, true),
-        );
+        let release =
+            manager.remove_session_owner("session-a", &SidecarOwner::Goal("goal-a".to_string()));
+        assert!(release.removed && release.stopped);
+        let drain = release
+            .drain
+            .expect("last recovery owner closes the generation");
+        drain.wait();
+        let retired = manager.finish_unowned_session_retirement(&drain);
+        drop(retired);
         assert!(!manager.sidecars.contains_key("session-a"));
         assert!(!manager.recovering_sidecars.contains_key("session-a"));
     }
@@ -1333,7 +1711,7 @@ impl SessionCompletionClaim {
 impl SessionSidecar {
     /// Is this sidecar healthy and ready to accept requests?
     pub fn is_reusable(&self) -> bool {
-        matches!(self.state, SidecarState::Healthy)
+        matches!(self.state, SidecarState::Healthy) && self.dispatch_gate.is_accepting()
     }
 
     /// Is this sidecar both marked healthy and still alive?
@@ -1397,7 +1775,7 @@ impl SessionSidecar {
 /// Ensure Sidecar process is killed when SessionSidecar is dropped
 impl Drop for SessionSidecar {
     fn drop(&mut self) {
-        self.dispatch_gate.close_and_wait();
+        DispatchGate::close_and_wait(&self.dispatch_gate);
         ulog_info!(
             "[sidecar] Drop: killing SessionSidecar for session {} on port {} (state: {:?})",
             self.session_id,
@@ -1412,8 +1790,13 @@ impl Drop for SessionSidecar {
 /// Still uses `healthy: bool` since the Global Sidecar is a singleton
 /// without the multi-owner race conditions that motivated `SidecarState`.
 pub struct SidecarInstance {
-    /// The child process plus exact descendant-containment authority.
-    pub(crate) process: ChildTree,
+    /// The child process plus exact descendant-containment authority. `None`
+    /// exists only while the canonical manager entry reserves an admitted
+    /// process birth whose spawn is running outside the manager mutex.
+    pub(crate) process: Option<ChildTree>,
+    /// Process-lifetime identity. Ports are bounded and may be reused; this
+    /// monotonic generation is the exact identity for stale-result rejection.
+    pub(crate) generation: u64,
     /// Port this instance is running on
     pub port: u16,
     /// Agent directory (None for global sidecar)
@@ -1434,35 +1817,45 @@ pub struct SidecarInstance {
 }
 
 impl SidecarInstance {
-    /// Check if the sidecar process is still running
-    /// This actively checks the process rather than just relying on the healthy flag
-    pub fn is_running(&mut self) -> bool {
-        if !self.healthy {
-            return false;
-        }
+    pub(crate) fn is_birth_pending(&self) -> bool {
+        self.process.is_none()
+    }
 
-        // Try to check if process has exited
-        match self.process.try_wait() {
+    /// Check process liveness independently from HTTP readiness. A Global
+    /// candidate is alive while it is starting even though `healthy` is false.
+    pub(crate) fn is_process_alive(&mut self) -> bool {
+        let Some(process) = self.process.as_mut() else {
+            // The birth lease on this entry's gate keeps it manager-owned until
+            // the creator either installs the process or abandons the slot.
+            return true;
+        };
+        match process.try_wait() {
             Ok(Some(_)) => {
-                // Process has exited
                 self.healthy = false;
                 false
             }
-            Ok(None) => true, // Still running
+            Ok(None) => true,
             Err(_) => {
                 self.healthy = false;
                 false
             }
         }
     }
+
+    /// Check if the sidecar is both ready for requests and still alive.
+    pub fn is_running(&mut self) -> bool {
+        self.healthy && self.is_process_alive()
+    }
 }
 
 /// Ensure Node.js process is killed when SidecarInstance is dropped
 impl Drop for SidecarInstance {
     fn drop(&mut self) {
-        self.dispatch_gate.close_and_wait();
+        DispatchGate::close_and_wait(&self.dispatch_gate);
         ulog_info!("[sidecar] Drop: killing process on port {}", self.port);
-        let _ = self.process.terminate();
+        if let Some(process) = self.process.as_mut() {
+            let _ = process.terminate();
+        }
 
         // Clean up temp directory for global sidecar
         if self.is_global {

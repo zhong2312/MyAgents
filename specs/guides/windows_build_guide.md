@@ -74,6 +74,7 @@ myagents-releases/
 3. 下载 bundled Node.js v24 运行时、cuse、Git 安装包和 VC++ Runtime DLL
 4. 安装前端/后端依赖 (`npm install`)
 5. 下载 Rust crates（`cargo fetch`）
+6. 准备 x64 离线文档 Worker、OCR、ONNX Runtime 与 PDFium；资源缓存跨 `npm run clean` 复用
 
 ### Git 安装包（构建必需）
 

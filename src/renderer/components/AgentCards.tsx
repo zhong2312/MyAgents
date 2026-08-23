@@ -10,7 +10,8 @@ import type { AgentItem } from '../../shared/agentTypes';
 //   • borderless + shadow-on-hover (the prior `border + translate-y` was
 //     a holdover from the pre-v0.1.69 card style)
 //   • px-3.5 py-3, title 14px
-//   • scope + synced badges move INLINE with the title row, in place of
+//   • the type icon leads the title; scope + synced badges remain right-aligned
+//     on the title row, in place of
 //     the prior footer. No toggle here — Agents are scope-gated, not
 //     enable/disable-gated, so no switch in this card variant.
 export function AgentCard({ agent, onClick }: { agent: AgentItem; onClick: () => void }) {
@@ -21,10 +22,10 @@ export function AgentCard({ agent, onClick }: { agent: AgentItem; onClick: () =>
             onClick={onClick}
         >
             <div className="flex items-center gap-2">
+                <Bot data-capability-type-icon="agent" className="h-3.5 w-3.5 shrink-0 text-violet-500" />
                 <h4 className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">
                     {agent.name}
                 </h4>
-                <Bot className="h-3.5 w-3.5 shrink-0 text-violet-500" />
                 <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium tracking-[0.04em] text-[var(--ink-muted)]">
                     {agent.scope === 'user' ? t('agentSettings.capabilities.scopeUser') : t('agentSettings.capabilities.scopeProject')}
                 </span>

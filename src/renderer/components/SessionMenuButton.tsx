@@ -6,9 +6,9 @@
  * earlier PRD 0.2.14 cut. All single-session actions previously scattered
  * across the SessionHistoryDropdown row hover state are gathered here:
  *
- *   重命名 / 收藏 / 导出 md / 查看消耗统计 / 绑定聊天机器人 ▸ / ─── / 删除
+ *   重命名 / 收藏 / 导出 md / 查看消耗统计 / 在聊天机器人继续此对话 › / ─── / 删除
  *
- * The "绑定聊天机器人" submenu replaces the standalone HandoverPopover and
+ * The "在聊天机器人继续此对话" submenu replaces the standalone HandoverPopover and
  * branches on whether the session is currently channel-bound:
  *
  *   - unbound        → list available channels; pick one → handover
@@ -23,6 +23,7 @@ import { createPortal } from 'react-dom';
 import {
     BarChart2,
     Check,
+    ChevronRight,
     Copy,
     Download,
     Gauge,
@@ -375,8 +376,13 @@ export default function SessionMenuButton({
                     <MenuItem
                         ref={botMenuItemRef}
                         icon={<MessageSquare className="h-3.5 w-3.5" />}
-                        label={t('shell.sessionMenu.bindBot')}
-                        trailing={<span className="text-[var(--ink-subtle)]">▸</span>}
+                        label={t('shell.sessionMenu.continueInBot')}
+                        trailing={(
+                            <ChevronRight
+                                className="h-4 w-4 shrink-0 text-[var(--ink-muted)]"
+                                data-session-menu-submenu-chevron
+                            />
+                        )}
                         onClick={() => setSubmenuOpen((prev) => !prev)}
                         active={submenuOpen}
                     />

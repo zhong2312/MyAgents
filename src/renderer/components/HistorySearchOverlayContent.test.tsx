@@ -71,16 +71,23 @@ function taskCenterData(overrides: Partial<TaskCenterData> = {}): TaskCenterData
     } as TaskCenterData;
 }
 
-function renderOverlay(initialMode: 'default' | 'search' = 'default') {
+function renderOverlay() {
     return render(
         <HistorySearchOverlayContent
             projects={[project]}
             taskCenterData={taskCenterData()}
-            initialMode={initialMode}
             onClose={vi.fn()}
             onOpenSession={vi.fn()}
         />,
     );
+}
+
+function enterSearchMode() {
+    const trigger = screen.getByRole('button', {
+        name: i18n.t('app:historyOverlay.searchPlaceholder'),
+    });
+    fireEvent.click(trigger);
+    return screen.getByPlaceholderText(i18n.t('app:historyOverlay.searchPlaceholder'));
 }
 
 function expectSharedSessionMenu() {
@@ -102,6 +109,62 @@ describe('HistorySearchOverlayContent', () => {
             configurable: true,
             value: { writeText: vi.fn().mockResolvedValue(undefined) },
         });
+    });
+
+    it('opens with a compact right-side search field and expands it on activation', async () => {
+        renderOverlay();
+
+        const searchBar = document.querySelector<HTMLElement>('[data-history-search-bar]')!;
+        const browseControls = document.querySelector<HTMLElement>('[data-history-browse-controls]')!;
+        const expandingSurface = document.querySelector<HTMLElement>('[data-history-search-expanding-surface]')!;
+        const trigger = screen.getByRole('button', {
+            name: i18n.t('app:historyOverlay.searchPlaceholder'),
+        });
+        const input = screen.getByPlaceholderText(i18n.t('app:historyOverlay.searchPlaceholder'));
+
+        expect(searchBar).toHaveAttribute('data-state', 'compact');
+        expect(trigger).toHaveClass('w-[30%]', 'opacity-100');
+        expect(trigger).toHaveFocus();
+        expect(input).toBeDisabled();
+        expect(browseControls).not.toHaveAttribute('inert');
+
+        fireEvent.click(trigger);
+
+        expect(searchBar).toHaveAttribute('data-state', 'expanded');
+        expect(expandingSurface).toHaveClass('scale-x-100', 'opacity-100');
+        expect(browseControls).toHaveAttribute('inert');
+        expect(input).not.toBeDisabled();
+        expect(screen.getByRole('textbox', {
+            name: i18n.t('app:historyOverlay.searchPlaceholder'),
+        })).toBe(input);
+        await waitFor(() => expect(input).toHaveFocus());
+    });
+
+    it('collapses search, clears the query, and restores focus to the compact field', async () => {
+        renderOverlay();
+        const input = enterSearchMode();
+        fireEvent.change(input, { target: { value: 'Shared menu' } });
+
+        fireEvent.click(screen.getByRole('button', { name: i18n.t('app:historyOverlay.exitSearch') }));
+
+        const trigger = screen.getByRole('button', {
+            name: i18n.t('app:historyOverlay.searchPlaceholder'),
+        });
+        expect(input).toHaveValue('');
+        expect(input).toBeDisabled();
+        await waitFor(() => expect(trigger).toHaveFocus());
+    });
+
+    it('uses Escape to return from expanded search to browse mode', async () => {
+        renderOverlay();
+        const input = enterSearchMode();
+
+        fireEvent.keyDown(input, { key: 'Escape' });
+
+        expect(document.querySelector('[data-history-search-bar]')).toHaveAttribute('data-state', 'compact');
+        await waitFor(() => expect(screen.getByRole('button', {
+            name: i18n.t('app:historyOverlay.searchPlaceholder'),
+        })).toHaveFocus());
     });
 
     it('keeps only all and favorites in the non-search browse filters', () => {
@@ -168,8 +231,8 @@ describe('HistorySearchOverlayContent', () => {
 
     it('routes a direct Session ID deletion through the App owner', async () => {
         mocks.deleteSession.mockResolvedValue({ deleted: true });
-        renderOverlay('search');
-        fireEvent.change(screen.getByPlaceholderText(i18n.t('app:historyOverlay.searchPlaceholder')), {
+        renderOverlay();
+        fireEvent.change(enterSearchMode(), {
             target: { value: `SessionID: ${session.id}` },
         });
 
@@ -208,8 +271,8 @@ describe('HistorySearchOverlayContent', () => {
                 turnCount: 1,
             }],
         });
-        renderOverlay('search');
-        fireEvent.change(screen.getByPlaceholderText(i18n.t('app:historyOverlay.searchPlaceholder')), {
+        renderOverlay();
+        fireEvent.change(enterSearchMode(), {
             target: { value: 'Shared menu' },
         });
 

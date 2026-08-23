@@ -45,6 +45,21 @@ const apiMocks = vi.hoisted(() => ({
 
 vi.mock("@/api/spaceCloud", () => ({
   DEFAULT_SPACE_ID: "official",
+  spaceErrorCode: (error: unknown) => {
+    if (error && typeof error === "object") {
+      const value = error as { code?: unknown; spaceCode?: unknown };
+      if (typeof value.spaceCode === "string") return value.spaceCode;
+      if (typeof value.code === "string") return value.code;
+    }
+    return String(error).match(/\b([A-Z][A-Z0-9_]+):/)?.[1] ?? null;
+  },
+  spaceErrorSessionBindingId: (error: unknown) => {
+    if (error && typeof error === "object") {
+      const value = (error as { sessionBindingId?: unknown }).sessionBindingId;
+      if (typeof value === "string") return value;
+    }
+    return String(error).match(/\[sessionBindingId=([^\]]+)\]/)?.[1] ?? null;
+  },
   findProjectForAgent: apiMocks.findProjectForAgent,
   spaceArchiveGoal: apiMocks.spaceArchiveGoal,
   spaceCancelIssueClaim: apiMocks.spaceCancelIssueClaim,
@@ -273,8 +288,28 @@ describe("spaceStore snapshot", () => {
 });
 
 describe("spaceStore boot", () => {
+  it("projects an invalidated credential as reauth instead of a boot error", async () => {
+    const { sessionBindingId: _binding, expiresAt: _expiresAt, ...account } =
+      fakeSession;
+    apiMocks.spaceGetSession.mockResolvedValueOnce({
+      state: "reauth_required",
+      account,
+      invalidatedSessionBindingId: "binding-old",
+    });
+
+    await actions.ensureBootstrapped({ force: true });
+
+    expect(getSnapshot().boot).toBe("reauthRequired");
+    expect(getSnapshot().session).toBeNull();
+    expect(getSnapshot().reauthAccount?.user.id).toBe("user-1");
+    expect(apiMocks.spaceGetOfficial).not.toHaveBeenCalled();
+  });
+
   it("uses the stable space slug for API routes even when the session contains a database id", async () => {
-    apiMocks.spaceGetSession.mockResolvedValueOnce(fakeSession);
+    apiMocks.spaceGetSession.mockResolvedValueOnce({
+      state: "authenticated",
+      session: fakeSession,
+    });
     apiMocks.spaceGetOfficial.mockResolvedValueOnce({
       space: fakeSession.space,
       membership: fakeSession.membership,
@@ -327,7 +362,10 @@ describe("spaceStore boot", () => {
       environments: ["production", "dev"],
       activeEnvironment: "dev",
     });
-    apiMocks.spaceGetSession.mockResolvedValueOnce(devSession);
+    apiMocks.spaceGetSession.mockResolvedValueOnce({
+      state: "authenticated",
+      session: devSession,
+    });
     apiMocks.spaceGetOfficial.mockResolvedValueOnce({
       space: devSession.space,
       membership: devSession.membership,
@@ -371,7 +409,10 @@ describe("spaceStore boot", () => {
       environments: ["production", "dev"],
       activeEnvironment: "dev",
     });
-    apiMocks.spaceGetSession.mockResolvedValueOnce(devSession);
+    apiMocks.spaceGetSession.mockResolvedValueOnce({
+      state: "authenticated",
+      session: devSession,
+    });
     apiMocks.spaceGetOfficial.mockResolvedValueOnce({
       space: devSession.space,
       membership: devSession.membership,
@@ -406,8 +447,8 @@ describe("spaceStore boot", () => {
       membership: { id: "membership-2", role: "member" },
     };
     apiMocks.spaceGetSession
-      .mockResolvedValueOnce(fakeSession)
-      .mockResolvedValueOnce(teamSession);
+      .mockResolvedValueOnce({ state: "authenticated", session: fakeSession })
+      .mockResolvedValueOnce({ state: "authenticated", session: teamSession });
     apiMocks.spaceGetOfficial
       .mockResolvedValueOnce({
         space: fakeSession.space,
@@ -700,6 +741,107 @@ describe("spaceStore boot", () => {
 });
 
 describe("spaceStore issue refresh", () => {
+  it("moves the matching active binding to reauth on a user-session 401", async () => {
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: fakeSession,
+      spaceId: "official",
+    });
+    apiMocks.spaceListIssues.mockRejectedValueOnce({
+      code: "SPACE_REAUTH_REQUIRED",
+      message: "MyAgents Space login is required.",
+      sessionBindingId: "binding-old",
+    });
+
+    await expect(
+      actions.refreshIssues({ limit: 50 }, { force: true }),
+    ).rejects.toMatchObject({ code: "SPACE_REAUTH_REQUIRED" });
+
+    expect(getSnapshot().boot).toBe("reauthRequired");
+    expect(getSnapshot().session).toBeNull();
+    expect(getSnapshot().reauthAccount?.user.id).toBe("user-1");
+  });
+
+  it("ignores a late reauth error from a replaced session binding", async () => {
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: { ...fakeSession, sessionBindingId: "binding-new" },
+      spaceId: "official",
+    });
+    apiMocks.spaceListIssues.mockRejectedValueOnce({
+      code: "SPACE_REAUTH_REQUIRED",
+      message: "late 401",
+      sessionBindingId: "binding-old",
+    });
+
+    await expect(
+      actions.refreshIssues({ limit: 50 }, { force: true }),
+    ).rejects.toMatchObject({ code: "SPACE_REAUTH_REQUIRED" });
+
+    expect(getSnapshot().boot).toBe("ready");
+    expect(getSnapshot().session?.sessionBindingId).toBe("binding-new");
+  });
+
+  it("does not derive reauth authority from an error string", async () => {
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: fakeSession,
+      spaceId: "official",
+    });
+    apiMocks.spaceListIssues.mockRejectedValueOnce(
+      "SPACE_REAUTH_REQUIRED: late text [sessionBindingId=binding-old]",
+    );
+
+    await expect(
+      actions.refreshIssues({ limit: 50 }, { force: true }),
+    ).rejects.toBeTypeOf("string");
+
+    expect(getSnapshot().boot).toBe("ready");
+    expect(getSnapshot().session).toEqual(fakeSession);
+  });
+
+  it("does not resurrect reauth UI after explicit logout", async () => {
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: fakeSession,
+      spaceId: "official",
+    });
+    const pending = deferred<{ items: SpaceIssue[]; nextCursor?: string | null }>();
+    apiMocks.spaceListIssues.mockReturnValueOnce(pending.promise);
+    const refresh = actions.refreshIssues({ limit: 50 }, { force: true });
+
+    await actions.logout();
+    pending.reject({
+      code: "SPACE_REAUTH_REQUIRED",
+      message: "late 401 after logout",
+      sessionBindingId: "binding-old",
+    });
+    await expect(refresh).resolves.toBeUndefined();
+
+    expect(getSnapshot().boot).toBe("signedOut");
+    expect(getSnapshot().session).toBeNull();
+    expect(getSnapshot().reauthAccount).toBeNull();
+  });
+
+  it("keeps the authenticated state for non-401 Cloud failures", async () => {
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: fakeSession,
+      spaceId: "official",
+    });
+    apiMocks.spaceListIssues.mockRejectedValueOnce({
+      code: "FORBIDDEN",
+      message: "permission denied",
+    });
+
+    await expect(
+      actions.refreshIssues({ limit: 50 }, { force: true }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    expect(getSnapshot().boot).toBe("ready");
+    expect(getSnapshot().session).toEqual(fakeSession);
+  });
+
   it("keeps related-to-me and unscoped issue caches independent", async () => {
     __setSpaceStoreStateForTest({ boot: "ready", session: fakeSession });
     const otherIssue = { ...fakeIssue, id: "iss_other", title: "Other" };
@@ -1542,6 +1684,30 @@ describe("spaceStore issue refresh", () => {
     expect(result.relativePath).toBe(
       "myagents_files/space/issues/iss_123/attachments/att_1/trace.log",
     );
+  });
+
+  it("moves attachment downloads through the Store reauth transition", async () => {
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: fakeSession,
+      spaceId: "official",
+    });
+    apiMocks.spaceDownloadIssueAttachment.mockRejectedValueOnce({
+      code: "SPACE_REAUTH_REQUIRED",
+      message: "MyAgents Space login is required.",
+      sessionBindingId: "binding-old",
+    });
+
+    await expect(
+      actions.downloadIssueAttachment({
+        issueId: "iss_123",
+        attachmentId: "att_1",
+        workspacePath: "/tmp/workspace",
+      }),
+    ).rejects.toMatchObject({ code: "SPACE_REAUTH_REQUIRED" });
+
+    expect(getSnapshot().boot).toBe("reauthRequired");
+    expect(getSnapshot().session).toBeNull();
   });
 });
 

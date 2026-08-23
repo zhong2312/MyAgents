@@ -1,5 +1,6 @@
 use super::manager::{
     BackgroundOwnerAttach, BackgroundOwnerRelease, BackgroundPollBinding, BackgroundPollTarget,
+    SessionOwnerRelease,
 };
 use super::*;
 
@@ -375,7 +376,23 @@ fn poll_background_completion<R: Runtime>(
                     Some(BackgroundOwnerRelease::Released {
                         sidecar_stopped,
                         completion_claim,
+                        drain,
                     }) => {
+                        if let Err(error) = finish_session_owner_release(
+                            manager,
+                            SessionOwnerRelease {
+                                removed: true,
+                                stopped: sidecar_stopped,
+                                drain,
+                            },
+                        ) {
+                            ulog_error!(
+                                "[bg-completion] Failed to finish owner retirement for session {}: {}",
+                                session_id,
+                                error
+                            );
+                            return;
+                        }
                         ulog_info!(
                             "[bg-completion] Session {} finished on generation {} (state: {})",
                             session_id,
@@ -409,8 +426,25 @@ fn poll_background_completion<R: Runtime>(
                     });
                     match release {
                         Some(BackgroundOwnerRelease::Released {
-                            sidecar_stopped, ..
+                            sidecar_stopped,
+                            drain,
+                            ..
                         }) => {
+                            if let Err(error) = finish_session_owner_release(
+                                manager,
+                                SessionOwnerRelease {
+                                    removed: true,
+                                    stopped: sidecar_stopped,
+                                    drain,
+                                },
+                            ) {
+                                ulog_error!(
+                                    "[bg-completion] Failed to finish unreachable owner retirement for session {}: {}",
+                                    session_id,
+                                    error
+                                );
+                                return;
+                            }
                             ulog_warn!(
                                 "[bg-completion] Session {} generation {} HTTP unreachable {} consecutive times, giving up",
                                 session_id, binding.generation, consecutive_http_failures
@@ -582,7 +616,7 @@ mod tests {
         assert!(
             manager
                 .remove_session_owner("session-a", &SidecarOwner::Tab("tab-a".to_string()),)
-                .0
+                .removed
         );
         assert_eq!(
             manager.background_poll_target("session-a", &owner),
@@ -627,10 +661,10 @@ mod tests {
         }
 
         let mut guard = manager.lock().expect("manager lock");
-        assert_eq!(
+        assert!(matches!(
             guard.release_background_owner_if_current("session-a", &owner, old_binding, None),
             BackgroundOwnerRelease::Stale
-        );
+        ));
         assert!(guard.session_has_exact_owner("session-a", &owner));
         let rebound = match guard.background_poll_target("session-a", &owner) {
             BackgroundPollTarget::Current(binding) => binding,
@@ -638,13 +672,14 @@ mod tests {
         };
         assert_eq!(rebound.generation, new_generation);
         assert_eq!(rebound.port, 32002);
-        assert_eq!(
+        assert!(matches!(
             guard.release_background_owner_if_current("session-a", &owner, rebound, None),
             BackgroundOwnerRelease::Released {
                 sidecar_stopped: false,
                 completion_claim: None,
+                drain: None,
             }
-        );
+        ));
     }
 
     #[test]
@@ -712,22 +747,30 @@ pub fn cancel_background_completion(
 /// Start background completion for a session
 #[tauri::command]
 #[allow(non_snake_case)]
-pub fn cmd_start_background_completion(
+pub async fn cmd_start_background_completion(
     app_handle: AppHandle,
     state: tauri::State<'_, ManagedSidecarManager>,
     sessionId: String,
 ) -> Result<BackgroundCompletionResult, String> {
-    start_background_completion(&app_handle, &state, &sessionId)
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        start_background_completion(&app_handle, &manager, &sessionId)
+    })
+    .await
+    .map_err(|error| format!("Background completion start task failed: {error:?}"))?
 }
 
 /// Cancel background completion for a session (when user reconnects)
 #[tauri::command]
 #[allow(non_snake_case)]
-pub fn cmd_cancel_background_completion(
+pub async fn cmd_cancel_background_completion(
     state: tauri::State<'_, ManagedSidecarManager>,
     sessionId: String,
 ) -> Result<bool, String> {
-    cancel_background_completion(&state, &sessionId)
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || cancel_background_completion(&manager, &sessionId))
+        .await
+        .map_err(|error| format!("Background completion cancel task failed: {error:?}"))?
 }
 
 /// Get session IDs that have active background completions

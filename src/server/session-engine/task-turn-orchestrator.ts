@@ -329,6 +329,7 @@ export function createTaskTurnOrchestrator() {
               queueId: payload.queueId,
               turnOwner: { kind: 'task', id: payload.taskId },
               beforeDispatch: prepared.beforeDispatch ?? dispatchGuard,
+              requiredSystemSkill: prepared.requiredSystemSkill,
             });
             if (!turnResult.success) {
               return {

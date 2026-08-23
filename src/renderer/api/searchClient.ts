@@ -38,10 +38,16 @@ export interface SessionSearchHit {
 }
 
 export interface FileSearchResult {
+    folderHits: FolderSearchHit[];
     hits: FileSearchHit[];
+    totalFolders: number;
     totalFiles: number;
-    totalMatches: number;
     queryTimeMs: number;
+}
+
+export interface FolderSearchHit {
+    path: string;
+    name: string;
 }
 
 export interface FileSearchHit {
@@ -85,7 +91,7 @@ export async function searchWorkspaceFiles(
     maxMatchesPerFile = 10,
 ): Promise<FileSearchResult> {
     if (!query.trim()) {
-        return { hits: [], totalFiles: 0, totalMatches: 0, queryTimeMs: 0 };
+        return { folderHits: [], hits: [], totalFolders: 0, totalFiles: 0, queryTimeMs: 0 };
     }
     return invoke<FileSearchResult>('cmd_search_workspace_files', {
         query,

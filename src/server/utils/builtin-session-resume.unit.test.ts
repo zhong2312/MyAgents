@@ -37,7 +37,7 @@ describe('decideBuiltinSessionResume', () => {
   });
 
   it('resumes when sdkSessionId records a registered SDK session', async () => {
-    const sdkProbe = probe([]);
+    const sdkProbe = probe([{ type: 'user' }]);
 
     const decision = await decideBuiltinSessionResume({
       meta: meta({ sdkSessionId: 'sdk-session-1' }),
@@ -51,7 +51,38 @@ describe('decideBuiltinSessionResume', () => {
       resumeSessionId: 'sdk-session-1',
       reason: 'sdk-session-id',
     });
-    expect(sdkProbe).not.toHaveBeenCalled();
+    expect(sdkProbe).toHaveBeenCalledWith('sdk-session-1', { dir: '/tmp/workspace', limit: 1 });
+  });
+
+  it('creates the exact persisted SDK candidate when its transcript does not exist yet', async () => {
+    const sdkProbe = probe([]);
+
+    const decision = await decideBuiltinSessionResume({
+      meta: meta({ sdkSessionId: 'replacement-sdk-session' }),
+      currentRuntime: 'builtin',
+      agentDir: '/tmp/workspace',
+      probeSdkTranscript: sdkProbe,
+    });
+
+    expect(decision).toEqual({ shouldResume: false, reason: 'no-sdk-transcript' });
+    expect(sdkProbe).toHaveBeenCalledWith('replacement-sdk-session', {
+      dir: '/tmp/workspace',
+      limit: 1,
+    });
+  });
+
+  it('fails closed when the exact SDK candidate cannot be probed', async () => {
+    const failure = new Error('permission denied');
+    const sdkProbe = vi.fn().mockRejectedValue(failure);
+
+    const decision = await decideBuiltinSessionResume({
+      meta: meta({ sdkSessionId: 'replacement-sdk-session' }),
+      currentRuntime: 'builtin',
+      agentDir: '/tmp/workspace',
+      probeSdkTranscript: sdkProbe,
+    });
+
+    expect(decision).toEqual({ shouldResume: false, reason: 'probe-error', error: failure });
   });
 
   it('recovers unified sessions whose SDK transcript exists before sdkSessionId was saved', async () => {

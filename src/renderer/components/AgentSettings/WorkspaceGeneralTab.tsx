@@ -6,9 +6,8 @@ import { useTranslation } from 'react-i18next';
 import { useConfig } from '@/hooks/useConfig';
 import { useToast } from '@/components/Toast';
 import { useAgentStatuses } from '@/hooks/useAgentStatuses';
-import { getAgentById, disableAgentAndStopChannels, enableAgentAndStartChannels, reconcilePersistedAgentWorkspaceIdentities } from '@/config/services/agentConfigService';
+import { getAgentById, setProactiveAgentEnabled, reconcilePersistedAgentWorkspaceIdentities } from '@/config/services/agentConfigService';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
-import { DEFAULT_HEARTBEAT_CONFIG, DEFAULT_MEMORY_AUTO_UPDATE_CONFIG } from '../../../shared/types/im';
 import WorkspaceBasicsSection from './WorkspaceBasicsSection';
 import AgentChannelsSection from './sections/AgentChannelsSection';
 import AgentHeartbeatSection from './sections/AgentHeartbeatSection';
@@ -16,18 +15,25 @@ import AgentMemoryUpdateSection from './sections/AgentMemoryUpdateSection';
 import AgentMemoryEvolutionSection from './sections/AgentMemoryEvolutionSection';
 import AgentTasksSection from './sections/AgentTasksSection';
 import { Settings2, HeartPulse } from 'lucide-react';
+import type { ChannelType } from '../../../shared/types/agent';
 
 interface WorkspaceGeneralTabProps {
   agentDir: string;
+  initialAddChannelPlatform?: ChannelType;
+  onInitialAddChannelPlatformConsumed?: () => void;
 }
 
-export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabProps) {
+export default function WorkspaceGeneralTab({
+  agentDir,
+  initialAddChannelPlatform,
+  onInitialAddChannelPlatformConsumed,
+}: WorkspaceGeneralTabProps) {
   const { t } = useTranslation('settings');
   const { config, projects, patchProject, refreshConfig } = useConfig();
   const project = projects.find(p => workspacePathsEqual(p.path, agentDir));
   const agent = project?.agentId ? getAgentById(config, project.agentId) : undefined;
-  const isProactive = !!(project?.isAgent && agent?.enabled);
-  const { statuses, refresh: refreshStatuses } = useAgentStatuses(isProactive);
+  const isProactive = agent?.enabled === true;
+  const { statuses, refresh: refreshStatuses } = useAgentStatuses(!!agent);
   const toast = useToast();
   const toastRef = useRef(toast);
   toastRef.current = toast;
@@ -50,54 +56,35 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
     if (!project || toggling) return;
     setToggling(true);
     try {
-      if (agent && !agent.enabled) {
-        // Upgrade existing basicAgent to proactive mode
-        await enableAgentAndStartChannels(agent.id, {
-          heartbeat: agent.heartbeat ?? {
-            ...DEFAULT_HEARTBEAT_CONFIG,
-            enabled: true,
-          },
-          memoryAutoUpdate: agent.memoryAutoUpdate ?? { ...DEFAULT_MEMORY_AUTO_UPDATE_CONFIG },
-        });
-        if (!project.isAgent) {
-          await patchProject(project.id, { isAgent: true });
-        }
-        toastRef.current.success(t('agentSettings.general.enabled'));
-      } else if (!agent) {
+      if (!agent) {
         const identity = await reconcilePersistedAgentWorkspaceIdentities();
         const created = identity.agentProjections.find(item => item.projectId === project.id)?.agent;
         if (!created) throw new Error(`Could not create Agent for Project '${project.id}'.`);
-        await enableAgentAndStartChannels(created.id, {
-          heartbeat: { ...DEFAULT_HEARTBEAT_CONFIG, enabled: true },
-          memoryAutoUpdate: { ...DEFAULT_MEMORY_AUTO_UPDATE_CONFIG },
-        });
+        await setProactiveAgentEnabled(created.id, true);
         await patchProject(project.id, { isAgent: true });
         toastRef.current.success(t('agentSettings.general.enabled'));
-      } else if (agent.enabled) {
-        // Disable — stop all running channels first
-        const stoppedCount = await disableAgentAndStopChannels(agent);
-        toastRef.current.success(
-          stoppedCount > 0
-            ? t('agentSettings.general.disabledWithChannels', { count: stoppedCount })
-            : t('agentSettings.general.disabled'),
-        );
       } else {
-        // Re-enable — auto-restart channels that have credentials (setupCompleted)
-        const startedCount = await enableAgentAndStartChannels(agent.id);
-        toastRef.current.success(
-          startedCount > 0
-            ? t('agentSettings.general.enabledWithChannels', { count: startedCount })
-            : t('agentSettings.general.enabled'),
-        );
-        if (isMountedRef.current) await refreshStatuses();
-        if (isMountedRef.current) setToggling(false);
-        await refreshConfig();
-        return;
+        const nextEnabled = !agent.enabled;
+        await setProactiveAgentEnabled(agent.id, nextEnabled);
+        if (nextEnabled && !project.isAgent) {
+          await patchProject(project.id, { isAgent: true });
+        }
+        toastRef.current.success(t(
+          nextEnabled ? 'agentSettings.general.enabled' : 'agentSettings.general.disabled',
+        ));
       }
       await refreshConfig();
       if (isMountedRef.current) await refreshStatuses();
     } catch (e) {
       console.error('[WorkspaceGeneralTab] Toggle proactive failed:', e);
+      // The disk write may have committed before a runtime/managed-task
+      // projection failed. Re-read authority before rendering the failure.
+      try {
+        await refreshConfig();
+        if (isMountedRef.current) await refreshStatuses();
+      } catch (refreshError) {
+        console.error('[WorkspaceGeneralTab] Failed to refresh proactive state:', refreshError);
+      }
       toastRef.current.error(t('agentSettings.general.operationFailed'));
     } finally {
       if (isMountedRef.current) setToggling(false);
@@ -204,13 +191,9 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
             </button>
           </div>
 
-          {/* Sub-sections: Channels / Heartbeat / Tasks */}
+          {/* Proactive children stay folded while the master is off. */}
           {isProactive && agent && (
             <>
-              <div className="mt-6 border-t border-[var(--line)] pt-5">
-                <AgentChannelsSection agent={agent} status={status} onAgentChanged={handleAgentChanged} />
-              </div>
-
               <div className="mt-6 border-t border-[var(--line)] pt-5">
                 <AgentHeartbeatSection agent={agent} workspacePath={project.path} onAgentChanged={handleAgentChanged} />
               </div>
@@ -227,12 +210,13 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
                   onAgentChanged={handleAgentChanged}
                 />
               </div>
-
-              <div className="mt-6 border-t border-[var(--line)] pt-5">
-                <AgentTasksSection workspacePath={project.path} />
-              </div>
             </>
           )}
+        </div>
+
+        {/* Card 4: Tasks — independent from Proactive Agent mode */}
+        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+          <AgentTasksSection workspacePath={project.path} />
         </div>
       </div>
     </div>

@@ -104,7 +104,7 @@ describe('Message — user bubble spacing', () => {
       />
     );
 
-    const images = Array.from(container.querySelectorAll('img'));
+    const images = Array.from(container.querySelectorAll('img:not([data-file-icon-id])'));
     expect(images).toHaveLength(2);
     for (const image of images) {
       expect(image).toHaveClass('h-full', 'w-auto', 'max-w-none', 'object-contain');

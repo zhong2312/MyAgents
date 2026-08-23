@@ -41,9 +41,7 @@
 
 因此 Global 不会为了 Settings 或 Provider 一次性操作创建虚假的当前 Session，也不会启动持久 Query 或恢复 Runtime；Session 进程也不会重复运行应用级 retention timer 和 migration scan。Skill seed 仍是可重复执行的共享初始化：更新后第一个启动的进程可能是 Session，它在接收 turn 前必须能够看到必需的 bundled skills，不能依赖另一个进程已经完成初始化。
 
-`globalThis.__myagentsDeferredInit` 是路由级就绪检查：`sidecar-composition.ts` 会在调用 handler 或解析请求体前拒绝未知路由和角色不匹配的路由；其余允许的路由除 `/health`、`/refs/:id` 外，还要等待延迟初始化完成。稳定运行后，两次检查都只是内存判断。Browser/Vite 的单进程开发模式由 `start_dev.sh --dev-union` 显式启用；生产环境只有 Rust 传入的 `global|session` 两种角色。
-
-> 注：v0.2.0 后期已迁移到 `DeferredInitState` 状态机 + 三分 readiness endpoints，详见 `pit_of_success.md` 的「DeferredInitState」节。
+`DeferredInitState` 是路由级就绪权威：`sidecar-composition.ts` 会在调用 handler 或解析请求体前拒绝未知路由和角色不匹配的路由；其余允许的路由除 `/health`、`/refs/:id` 外，由 route gate 读取状态机，未就绪时返回结构化 503。`/health/live`、`/health/ready`、`/health/functional` 分别表达存活、就绪和功能状态；初始化失败只写入这一状态机，不再维护第二条 Promise 失败通道。稳定运行后，这些检查都只是内存判断。Browser/Vite 的单进程开发模式由 `start_dev.sh --dev-union` 显式启用；生产环境只有 Rust 传入的 `global|session` 两种角色。详见 `pit_of_success.md` 的「DeferredInitState」节。
 
 **`warmupShellPath()` 异步化：** interactive `zsh -i -l` 的 PATH 检测从同步 `execSync` 改成异步 `execFile`，防止阻塞事件循环 → starve TCP accept。
 

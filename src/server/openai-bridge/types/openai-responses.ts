@@ -43,10 +43,12 @@ export interface ResponsesInputFunctionCall {
 }
 
 export type ResponsesInputContentPart =
-  | { type: 'input_text'; text: string }
-  | { type: 'input_image'; image_url: string; detail?: string }
+  | { type: 'input_text'; text: string; prompt_cache_breakpoint?: ResponsesPromptCacheBreakpoint }
+  | { type: 'input_image'; image_url: string; detail?: string; prompt_cache_breakpoint?: ResponsesPromptCacheBreakpoint }
   | { type: 'output_text'; text: string }
   | { type: 'refusal'; refusal: string };
+
+export type ResponsesPromptCacheBreakpoint = { mode: 'explicit' };
 
 export interface ResponsesInputFunctionCallOutput {
   type: 'function_call_output';
@@ -123,6 +125,7 @@ export interface ResponsesUsage {
   total_tokens: number;
   input_tokens_details?: {
     cached_tokens?: number;
+    cache_write_tokens?: number;
   };
   output_tokens_details?: {
     reasoning_tokens?: number;

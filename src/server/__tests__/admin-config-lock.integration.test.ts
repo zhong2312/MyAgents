@@ -84,7 +84,9 @@ describe("admin config lock", () => {
     ).href;
 
     mkdirSync(lockDir, { recursive: true });
-    writeFileSync(join(lockDir, "owner"), `node:${process.pid}:0\n`, "utf-8");
+    // A legacy 2-tuple is enough to prove the owner process is alive without
+    // conflating this timeout fixture with v1 start-time diagnostics.
+    writeFileSync(join(lockDir, "owner"), `node:${process.pid}\n`, "utf-8");
 
     try {
       const { stdout } = await execFileAsync(

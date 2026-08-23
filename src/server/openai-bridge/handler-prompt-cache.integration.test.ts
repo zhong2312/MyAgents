@@ -1,4 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createBridgeHandler } from './handler';
@@ -23,6 +26,63 @@ const anthropicReq: AnthropicRequest = {
   max_tokens: 32,
 };
 
+const markedAnthropicReq: AnthropicRequest = {
+  model: 'claude-sonnet-4-6',
+  system: [{
+    type: 'text',
+    text: 'stable system',
+    cache_control: { type: 'ephemeral' },
+  }],
+  messages: [{
+    role: 'user',
+    content: [{
+      type: 'text',
+      text: 'hello',
+      cache_control: { type: 'ephemeral' },
+    }],
+  }],
+  max_tokens: 32,
+};
+
+const toolImageAnthropicReq: AnthropicRequest = {
+  model: 'claude-sonnet-4-6',
+  system: [{
+    type: 'text',
+    text: 'stable system',
+    cache_control: { type: 'ephemeral' },
+  }],
+  messages: [
+    {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'tool-image', name: 'see', input: {} }],
+    },
+    {
+      role: 'user',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'tool-image',
+        content: [{
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: 'image/png',
+            data: Buffer.from('same-image').toString('base64'),
+          },
+        }],
+      }],
+    },
+  ],
+  max_tokens: 32,
+};
+
+const temporaryWorkspaces: string[] = [];
+
+afterEach(() => {
+  for (const workspace of temporaryWorkspaces.splice(0)) {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 const okResponsesBody = {
   id: 'resp_test',
   object: 'response',
@@ -39,7 +99,7 @@ const okResponsesBody = {
     input_tokens: 12,
     output_tokens: 1,
     total_tokens: 13,
-    input_tokens_details: { cached_tokens: 7 },
+    input_tokens_details: { cached_tokens: 7, cache_write_tokens: 2 },
   },
 };
 
@@ -57,7 +117,7 @@ const okChatBody = {
     prompt_tokens: 12,
     completion_tokens: 1,
     total_tokens: 13,
-    prompt_tokens_details: { cached_tokens: 7 },
+    prompt_tokens_details: { cached_tokens: 7, cache_write_tokens: 2 },
   },
 };
 
@@ -116,6 +176,7 @@ async function callBridge(
   const handler = createBridgeHandler({
     getUpstreamConfig: async () => upstream,
     logger,
+    workspacePath,
   });
   return handler(new Request('http://127.0.0.1/bridge/test/v1/messages', {
     method: 'POST',
@@ -144,9 +205,17 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
     };
 
     const firstResponse = await callBridge(upstream);
-    const firstBody = await firstResponse.json() as { usage?: { cache_read_input_tokens?: number } };
+    const firstBody = await firstResponse.json() as {
+      usage?: {
+        input_tokens?: number;
+        cache_read_input_tokens?: number;
+        cache_creation_input_tokens?: number;
+      };
+    };
     expect(firstResponse.status).toBe(200);
+    expect(firstBody.usage?.input_tokens).toBe(3);
     expect(firstBody.usage?.cache_read_input_tokens).toBe(7);
+    expect(firstBody.usage?.cache_creation_input_tokens).toBe(2);
     await expect(callBridge(upstream).then((res) => res.status)).resolves.toBe(200);
 
     expect(fake.seen).toHaveLength(2);
@@ -168,10 +237,12 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
       upstreamFormat: 'responses',
     };
 
-    await expect(callBridge(upstream).then((res) => res.status)).resolves.toBe(200);
+    await expect(callBridge(upstream, null, markedAnthropicReq).then((res) => res.status)).resolves.toBe(200);
 
     expect(fake.seen).toHaveLength(1);
     expect('prompt_cache_key' in fake.seen[0].body).toBe(false);
+    expect(fake.seen[0].body.instructions).toBe('stable system');
+    expect(JSON.stringify(fake.seen[0].body)).not.toContain('prompt_cache_breakpoint');
   });
 
   it('translates a JSON completion even when the downstream requested streaming', async () => {
@@ -245,7 +316,8 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
       },
     }));
 
-    let disabled = false;
+    let keyDisabled = false;
+    let breakpointsDisabled = false;
     const logs: string[] = [];
     const upstream: UpstreamConfig = {
       providerId: 'strict-provider',
@@ -256,16 +328,18 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
       cacheAffinity: {
         sessionId: 'raw-session-id',
         promptCacheKeyMode: 'session',
-        disablePromptCacheKey: () => { disabled = true; },
+        disablePromptCacheKey: () => { keyDisabled = true; },
+        disablePromptCacheBreakpoints: () => { breakpointsDisabled = true; },
       },
     };
 
-    const res = await callBridge(upstream, (msg) => logs.push(msg));
+    const res = await callBridge(upstream, (msg) => logs.push(msg), markedAnthropicReq);
     const text = await res.text();
     const rawKey = String(fake.seen[0].body.prompt_cache_key);
 
     expect(res.status).toBe(400);
-    expect(disabled).toBe(false);
+    expect(keyDisabled).toBe(false);
+    expect(breakpointsDisabled).toBe(false);
     expect(fake.seen).toHaveLength(1);
     for (const output of [logs.join('\n'), text]) {
       expect(output).not.toContain(rawKey);
@@ -276,13 +350,14 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
     }
   });
 
-  it('does not retry non-schema statuses even if the body mentions prompt_cache_key', async () => {
+  it.each([401, 429, 500])('does not retry HTTP %s even if the body names both cache field families', async (status) => {
     fake = await startFakeUpstream(() => ({
-      status: 500,
-      body: { error: { message: 'Unknown parameter: prompt_cache_key' } },
+      status,
+      body: { error: { message: 'Unknown prompt_cache_key and unsupported prompt_cache_breakpoint' } },
     }));
 
-    let disabled = false;
+    let keyDisabled = false;
+    let breakpointsDisabled = false;
     const upstream: UpstreamConfig = {
       providerId: 'strict-provider',
       baseUrl: fake.baseUrl,
@@ -292,15 +367,247 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
       cacheAffinity: {
         sessionId: 'raw-session-id',
         promptCacheKeyMode: 'session',
-        disablePromptCacheKey: () => { disabled = true; },
+        disablePromptCacheKey: () => { keyDisabled = true; },
+        disablePromptCacheBreakpoints: () => { breakpointsDisabled = true; },
       },
     };
 
-    const res = await callBridge(upstream);
+    const res = await callBridge(upstream, null, markedAnthropicReq);
 
-    expect(res.status).toBe(500);
-    expect(disabled).toBe(false);
+    expect(res.status).toBe(status);
+    expect(keyDisabled).toBe(false);
+    expect(breakpointsDisabled).toBe(false);
     expect(fake.seen).toHaveLength(1);
+  });
+
+  it('downgrades cache key and breakpoint capabilities independently, then keeps both disabled', async () => {
+    fake = await startFakeUpstream((body, seen) => {
+      if (seen.length === 1) {
+        return {
+          status: 400,
+          body: { error: { param: 'prompt_cache_key', message: 'Unsupported parameter' } },
+        };
+      }
+      if (seen.length === 2) {
+        return {
+          status: 422,
+          body: {
+            error: {
+              param: 'input[0].content[0].prompt_cache_breakpoint',
+              message: 'Unsupported field',
+            },
+          },
+        };
+      }
+      return { status: 200, body: okResponsesBody };
+    });
+
+    let keyDisabled = false;
+    let breakpointsDisabled = false;
+    const upstream = (): UpstreamConfig => ({
+      providerId: 'strict-provider',
+      baseUrl: fake!.baseUrl,
+      apiKey: 'sk-test',
+      model: 'gpt-5.5',
+      upstreamFormat: 'responses',
+      cacheAffinity: {
+        sessionId: 'raw-session-id',
+        promptCacheKeyMode: 'session',
+        promptCacheKeyDisabled: keyDisabled,
+        disablePromptCacheKey: () => { keyDisabled = true; },
+        promptCacheBreakpointsDisabled: breakpointsDisabled,
+        disablePromptCacheBreakpoints: () => { breakpointsDisabled = true; },
+      },
+    });
+
+    await expect(callBridge(upstream(), null, markedAnthropicReq).then(res => res.status)).resolves.toBe(200);
+    await expect(callBridge(upstream(), null, markedAnthropicReq).then(res => res.status)).resolves.toBe(200);
+
+    expect(keyDisabled).toBe(true);
+    expect(breakpointsDisabled).toBe(true);
+    expect(fake.seen).toHaveLength(4);
+    expect(fake.seen[0].body.prompt_cache_key).toBeDefined();
+    expect(JSON.stringify(fake.seen[0].body)).toContain('prompt_cache_breakpoint');
+    expect('prompt_cache_key' in fake.seen[1].body).toBe(false);
+    expect(JSON.stringify(fake.seen[1].body)).toContain('prompt_cache_breakpoint');
+    for (const request of fake.seen.slice(2)) {
+      expect('prompt_cache_key' in request.body).toBe(false);
+      expect(request.body.instructions).toBe('stable system');
+      expect(JSON.stringify(request.body)).not.toContain('prompt_cache_breakpoint');
+      expect(JSON.stringify(request.body)).not.toContain('prompt_cache_options');
+    }
+  });
+
+  it('falls back when Responses rejects structured content through an exact param path', async () => {
+    fake = await startFakeUpstream((_body, seen) => seen.length === 1
+      ? {
+          status: 422,
+          body: {
+            error: {
+              param: 'input[0].content',
+              message: 'Input should be a valid string',
+            },
+          },
+        }
+      : { status: 200, body: okResponsesBody });
+
+    let breakpointsDisabled = false;
+    const upstream: UpstreamConfig = {
+      providerId: 'strict-provider',
+      baseUrl: fake.baseUrl,
+      apiKey: 'sk-test',
+      model: 'gpt-5.5',
+      upstreamFormat: 'responses',
+      cacheAffinity: {
+        sessionId: 'raw-session-id',
+        promptCacheKeyMode: 'session',
+        promptCacheKeyDisabled: true,
+        disablePromptCacheBreakpoints: () => { breakpointsDisabled = true; },
+      },
+    };
+
+    await expect(callBridge(upstream, null, markedAnthropicReq).then(res => res.status)).resolves.toBe(200);
+
+    expect(breakpointsDisabled).toBe(true);
+    expect(fake.seen).toHaveLength(2);
+    expect(fake.seen[0].body.input).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'developer' }),
+    ]));
+    expect(fake.seen[1].body.instructions).toBe('stable system');
+  });
+
+  it('reuses tool-result image materialization across source retranslations', async () => {
+    fake = await startFakeUpstream((_body, seen) => {
+      if (seen.length === 1) {
+        return { status: 400, body: { error: { message: 'Unknown parameter: prompt_cache_key' } } };
+      }
+      if (seen.length === 2) {
+        return {
+          status: 400,
+          body: {
+            error: {
+              param: 'input[0].content[0].prompt_cache_breakpoint',
+              message: 'Unsupported field',
+            },
+          },
+        };
+      }
+      return { status: 200, body: okResponsesBody };
+    });
+    const workspace = mkdtempSync(join(tmpdir(), 'myagents-cache-retry-'));
+    temporaryWorkspaces.push(workspace);
+    const upstream: UpstreamConfig = {
+      providerId: 'strict-provider',
+      baseUrl: fake.baseUrl,
+      apiKey: 'sk-test',
+      model: 'gpt-5.5',
+      upstreamFormat: 'responses',
+      cacheAffinity: {
+        sessionId: 'raw-session-id',
+        promptCacheKeyMode: 'session',
+        disablePromptCacheKey: () => {},
+        disablePromptCacheBreakpoints: () => {},
+      },
+    };
+
+    await expect(callBridge(upstream, null, toolImageAnthropicReq, workspace).then(res => res.status))
+      .resolves.toBe(200);
+
+    const outputs = fake.seen.map(({ body }) => {
+      const input = body.input as Array<Record<string, unknown>>;
+      return input.find(item => item.type === 'function_call_output')?.output;
+    });
+    expect(new Set(outputs).size).toBe(1);
+    expect(readdirSync(join(workspace, 'myagents_files', 'temp'))).toHaveLength(1);
+  });
+
+  it('redacts echoed requests after prompt_cache_key has been removed', async () => {
+    fake = await startFakeUpstream((body, seen) => {
+      if (seen.length === 1) {
+        return { status: 400, body: { error: { message: 'Unknown parameter: prompt_cache_key' } } };
+      }
+      if (seen.length === 2) {
+        return {
+          status: 422,
+          body: {
+            error: {
+              param: 'input[0].content[0].prompt_cache_breakpoint',
+              message: 'Unsupported field',
+            },
+          },
+        };
+      }
+      return {
+          status: 400,
+          body: { error: { message: `invalid payload echo ${JSON.stringify(body)}` } },
+      };
+    });
+    let keyDisabled = false;
+    let breakpointsDisabled = false;
+    const logs: string[] = [];
+    const upstream: UpstreamConfig = {
+      providerId: 'strict-provider',
+      baseUrl: fake.baseUrl,
+      apiKey: 'sk-test',
+      model: 'gpt-5.5',
+      upstreamFormat: 'responses',
+      cacheAffinity: {
+        sessionId: 'raw-session-id',
+        promptCacheKeyMode: 'session',
+        disablePromptCacheKey: () => { keyDisabled = true; },
+        disablePromptCacheBreakpoints: () => { breakpointsDisabled = true; },
+      },
+    };
+
+    const response = await callBridge(upstream, message => logs.push(message), markedAnthropicReq);
+    const returned = await response.text();
+
+    expect(response.status).toBe(400);
+    expect(keyDisabled).toBe(true);
+    expect(breakpointsDisabled).toBe(true);
+    expect(fake.seen).toHaveLength(3);
+    for (const output of [logs.join('\n'), returned]) {
+      expect(output).not.toContain('stable system');
+      expect(output).not.toContain('hello');
+      expect(output).not.toContain('"input"');
+    }
+  });
+
+  it('redacts request echoes in HTTP-200 response.failed payloads', async () => {
+    fake = await startFakeUpstream((body) => ({
+      status: 200,
+      body: {
+        id: 'resp_failed',
+        object: 'response',
+        status: 'failed',
+        model: 'gpt-5.5',
+        output: [],
+        error: { code: 'provider_failed', message: `echo ${JSON.stringify(body)}` },
+      },
+    }));
+    const logs: string[] = [];
+    const upstream: UpstreamConfig = {
+      providerId: 'strict-provider',
+      baseUrl: fake.baseUrl,
+      apiKey: 'sk-test',
+      model: 'gpt-5.5',
+      upstreamFormat: 'responses',
+      cacheAffinity: {
+        sessionId: 'raw-session-id',
+        promptCacheKeyMode: 'session',
+        promptCacheKeyDisabled: true,
+      },
+    };
+
+    const response = await callBridge(upstream, message => logs.push(message), markedAnthropicReq);
+    const returned = await response.text();
+
+    expect(response.status).toBe(502);
+    for (const output of [logs.join('\n'), returned]) {
+      expect(output).not.toContain('stable system');
+      expect(output).not.toContain('hello');
+      expect(output).not.toContain('"input"');
+    }
   });
 });
 
@@ -324,9 +631,17 @@ describe('OpenAI bridge Chat Completions prompt_cache_key', () => {
     };
 
     const firstResponse = await callBridge(upstream);
-    const firstBody = await firstResponse.json() as { usage?: { cache_read_input_tokens?: number } };
+    const firstBody = await firstResponse.json() as {
+      usage?: {
+        input_tokens?: number;
+        cache_read_input_tokens?: number;
+        cache_creation_input_tokens?: number;
+      };
+    };
     expect(firstResponse.status).toBe(200);
+    expect(firstBody.usage?.input_tokens).toBe(3);
     expect(firstBody.usage?.cache_read_input_tokens).toBe(7);
+    expect(firstBody.usage?.cache_creation_input_tokens).toBe(2);
     await expect(callBridge(upstream).then((res) => res.status)).resolves.toBe(200);
 
     expect(fake.seen).toHaveLength(2);
@@ -348,10 +663,14 @@ describe('OpenAI bridge Chat Completions prompt_cache_key', () => {
       upstreamFormat: 'chat_completions',
     };
 
-    await expect(callBridge(upstream).then((res) => res.status)).resolves.toBe(200);
+    await expect(callBridge(upstream, null, markedAnthropicReq).then((res) => res.status)).resolves.toBe(200);
 
     expect(fake.seen).toHaveLength(1);
     expect('prompt_cache_key' in fake.seen[0].body).toBe(false);
+    expect(fake.seen[0].body.messages).toEqual(expect.arrayContaining([
+      { role: 'system', content: 'stable system' },
+    ]));
+    expect(JSON.stringify(fake.seen[0].body)).not.toContain('prompt_cache_breakpoint');
   });
 
   it('retries once without prompt_cache_key and disables later injection for the same bridge', async () => {
@@ -395,6 +714,94 @@ describe('OpenAI bridge Chat Completions prompt_cache_key', () => {
     expect(joinedLogs).not.toContain('raw-session-id');
     expect(joinedLogs).not.toContain('sk-test');
     expect(joinedLogs).not.toContain(JSON.stringify(fake.seen[0].body));
+  });
+
+  it('falls back from structured system content only for an exact schema rejection', async () => {
+    fake = await startFakeUpstream((_body, seen) => seen.length === 1
+      ? {
+          status: 400,
+          body: {
+            error: {
+              param: 'messages[1].content',
+              message: 'Input should be a valid string',
+            },
+          },
+        }
+      : { status: 200, body: okChatBody });
+
+    let disabled = false;
+    const upstream = (): UpstreamConfig => ({
+      providerId: 'strict-chat-provider',
+      baseUrl: fake!.baseUrl,
+      apiKey: 'sk-test',
+      model: 'chat-model',
+      upstreamFormat: 'chat_completions',
+      cacheAffinity: {
+        sessionId: 'raw-session-id',
+        promptCacheKeyMode: 'session',
+        promptCacheKeyDisabled: true,
+        promptCacheBreakpointsDisabled: disabled,
+        disablePromptCacheBreakpoints: () => { disabled = true; },
+      },
+    });
+
+    await expect(callBridge(upstream(), null, markedAnthropicReq).then(res => res.status)).resolves.toBe(200);
+    await expect(callBridge(upstream(), null, markedAnthropicReq).then(res => res.status)).resolves.toBe(200);
+
+    expect(disabled).toBe(true);
+    expect(fake.seen).toHaveLength(3);
+    expect(JSON.stringify(fake.seen[0].body)).toContain('prompt_cache_breakpoint');
+    expect(fake.seen[1].body.messages).toEqual(expect.arrayContaining([
+      { role: 'system', content: 'stable system' },
+    ]));
+    expect(JSON.stringify(fake.seen[1].body)).not.toContain('prompt_cache_breakpoint');
+    expect(JSON.stringify(fake.seen[2].body)).not.toContain('prompt_cache_breakpoint');
+  });
+
+  it('does not downgrade for a content-array rejection when legacy translation has the same shape', async () => {
+    fake = await startFakeUpstream(() => ({
+      status: 400,
+      body: {
+        error: {
+          param: 'messages[0].content',
+          message: 'Input should be a valid string',
+        },
+      },
+    }));
+    let breakpointsDisabled = false;
+    const upstream: UpstreamConfig = {
+      providerId: 'strict-chat-provider',
+      baseUrl: fake.baseUrl,
+      apiKey: 'sk-test',
+      model: 'chat-model',
+      upstreamFormat: 'chat_completions',
+      cacheAffinity: {
+        sessionId: 'raw-session-id',
+        promptCacheKeyMode: 'session',
+        promptCacheKeyDisabled: true,
+        disablePromptCacheBreakpoints: () => { breakpointsDisabled = true; },
+      },
+    };
+    const multimodalRequest: AnthropicRequest = {
+      model: 'claude-sonnet-4-6',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'describe this' },
+          {
+            type: 'image',
+            source: { type: 'url', url: 'https://example.com/image.png' },
+          },
+        ],
+      }],
+      max_tokens: 32,
+    };
+
+    const response = await callBridge(upstream, null, multimodalRequest);
+
+    expect(response.status).toBe(400);
+    expect(breakpointsDisabled).toBe(false);
+    expect(fake.seen).toHaveLength(1);
   });
 });
 

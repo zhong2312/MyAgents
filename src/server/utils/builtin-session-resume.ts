@@ -1,5 +1,6 @@
 import type { RuntimeType } from '../../shared/types/runtime';
 import type { SessionMetadata } from '../types/session';
+import { resolveBuiltinSdkSessionId } from './session-runtime-identity';
 
 export type SdkTranscriptProbe = (
   sessionId: string,
@@ -43,28 +44,21 @@ export async function decideBuiltinSessionResume(params: {
     return { shouldResume: false, reason: 'external-runtime' };
   }
 
-  if (params.meta.sdkSessionId) {
-    return {
-      shouldResume: true,
-      resumeSessionId: params.meta.sdkSessionId,
-      reason: 'sdk-session-id',
-    };
-  }
-
-  if (!params.meta.unifiedSession) {
+  const candidate = resolveBuiltinSdkSessionId(params.meta);
+  if (!candidate) {
     return { shouldResume: false, reason: 'no-sdk-marker' };
   }
 
   try {
-    const messages = await params.probeSdkTranscript(params.meta.id, {
+    const messages = await params.probeSdkTranscript(candidate, {
       dir: params.agentDir,
       limit: 1,
     });
     if (messages.length > 0) {
       return {
         shouldResume: true,
-        resumeSessionId: params.meta.id,
-        reason: 'unified-transcript',
+        resumeSessionId: candidate,
+        reason: params.meta.sdkSessionId ? 'sdk-session-id' : 'unified-transcript',
       };
     }
     return { shouldResume: false, reason: 'no-sdk-transcript' };

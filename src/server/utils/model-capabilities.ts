@@ -72,6 +72,17 @@ import { stripModelSuffix } from '../../shared/contextUsage';
 // where it has zero transitive deps by construction.
 import { PRESET_PROVIDERS } from '../../shared/config-types';
 
+export type ModelCapabilitySource = 'preset' | 'custom' | 'discovered' | 'litellm';
+
+/** Modality kinds we recognize. Mirrors OpenAI / OpenRouter convention. */
+export type ModalityKind = 'text' | 'image' | 'video' | 'audio';
+type NonTextModalityKind = Exclude<ModalityKind, 'text'>;
+
+export interface ModelModalitySupportEvidence {
+  supported: boolean;
+  source: ModelCapabilitySource;
+}
+
 export interface ModelCapability {
   contextLength?: number;
   maxOutputTokens?: number;
@@ -83,11 +94,14 @@ export interface ModelCapability {
    * filters and the modality badges in the model picker without re-research.
    */
   inputModalities?: string[];
-  source: 'preset' | 'custom' | 'discovered' | 'litellm';
+  /**
+   * Per-modality evidence. Unlike `inputModalities`, this can safely represent
+   * LiteLLM's partial boolean flags (for example vision known, audio unknown)
+   * without turning every omitted flag into an unsupported capability.
+   */
+  inputModalitySupport?: Partial<Record<NonTextModalityKind, ModelModalitySupportEvidence>>;
+  source: ModelCapabilitySource;
 }
-
-/** Modality kinds we recognize. Mirrors OpenAI / OpenRouter convention. */
-export type ModalityKind = 'text' | 'image' | 'video' | 'audio';
 
 // Safety caps for malicious / runaway inputs. A rogue ~/.myagents/providers/
 // directory with thousands of files would otherwise freeze the event loop
@@ -140,15 +154,76 @@ function coerceModalities(v: unknown): string[] | undefined {
   return seen.size > 0 ? [...seen] : undefined;
 }
 
+const NON_TEXT_MODALITY_KINDS: readonly NonTextModalityKind[] = ['image', 'video', 'audio'];
+
+function completeModalityEvidence(
+  modalities: readonly string[],
+  source: ModelCapabilitySource,
+): NonNullable<ModelCapability['inputModalitySupport']> {
+  return Object.fromEntries(
+    NON_TEXT_MODALITY_KINDS.map(kind => [kind, { supported: modalities.includes(kind), source }]),
+  ) as NonNullable<ModelCapability['inputModalitySupport']>;
+}
+
+function readBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+/**
+ * LiteLLM exposes modality support in two shapes:
+ *   - `supported_modalities`: a complete input list on newer entries;
+ *   - per-modality booleans (`supports_vision`, `supports_audio_input`, ...).
+ *
+ * Prefer a boolean when present because it is the field LiteLLM consumers use
+ * for feature gating; otherwise fall back to membership in the complete list.
+ * Missing booleans without a list stay unknown rather than being interpreted
+ * as `false`.
+ */
+function readLiteLLMModalityEvidence(
+  entry: Record<string, unknown>,
+): {
+  inputModalities?: string[];
+  inputModalitySupport?: ModelCapability['inputModalitySupport'];
+} {
+  const supportedModalities = coerceModalities(entry.supported_modalities);
+  const supportByKind: Partial<Record<NonTextModalityKind, boolean | undefined>> = {
+    image: readBoolean(entry.supports_vision) ?? readBoolean(entry.supports_image_input),
+    video: readBoolean(entry.supports_video_input),
+    audio: readBoolean(entry.supports_audio_input),
+  };
+  const inputModalitySupport = Object.fromEntries(
+    NON_TEXT_MODALITY_KINDS.flatMap(kind => {
+      const supported = supportByKind[kind] ?? (
+        supportedModalities ? supportedModalities.includes(kind) : undefined
+      );
+      return typeof supported === 'boolean'
+        ? [[kind, { supported, source: 'litellm' as const }]]
+        : [];
+    }),
+  ) as ModelCapability['inputModalitySupport'];
+  return {
+    inputModalities: supportedModalities,
+    inputModalitySupport: Object.keys(inputModalitySupport ?? {}).length > 0
+      ? inputModalitySupport
+      : undefined,
+  };
+}
+
 /** Best-effort extract {contextLength, maxOutputTokens, inputModalities} from a JSON-ish model entry. */
-function readCapability(entry: unknown, source: ModelCapability['source']): ModelCapability | null {
+function readCapability(entry: unknown, source: ModelCapabilitySource): ModelCapability | null {
   if (!entry || typeof entry !== 'object') return null;
   const e = entry as Record<string, unknown>;
   const ctx = coercePositiveFinite(e.contextLength);
   const out = coercePositiveFinite(e.maxOutputTokens);
   const mods = coerceModalities(e.inputModalities);
   if (!ctx && !out && !mods) return null;
-  return { contextLength: ctx, maxOutputTokens: out, inputModalities: mods, source };
+  return {
+    contextLength: ctx,
+    maxOutputTokens: out,
+    inputModalities: mods,
+    inputModalitySupport: mods ? completeModalityEvidence(mods, source) : undefined,
+    source,
+  };
 }
 
 /**
@@ -175,10 +250,19 @@ function mergeCapabilityInto(
     map.set(modelId, cap);
     return;
   }
+  const inputModalitySupport = Object.fromEntries(
+    NON_TEXT_MODALITY_KINDS.flatMap(kind => {
+      const evidence = existing.inputModalitySupport?.[kind] ?? cap.inputModalitySupport?.[kind];
+      return evidence ? [[kind, evidence]] : [];
+    }),
+  ) as ModelCapability['inputModalitySupport'];
   map.set(modelId, {
     contextLength: existing.contextLength ?? cap.contextLength,
     maxOutputTokens: existing.maxOutputTokens ?? cap.maxOutputTokens,
     inputModalities: existing.inputModalities ?? cap.inputModalities,
+    inputModalitySupport: Object.keys(inputModalitySupport ?? {}).length > 0
+      ? inputModalitySupport
+      : undefined,
     source: existing.source, // keep the highest-priority source's label
   });
 }
@@ -186,7 +270,7 @@ function mergeCapabilityInto(
 function ingestProviderList(
   providers: unknown,
   map: Map<string, ModelCapability>,
-  source: ModelCapability['source'],
+  source: ModelCapabilitySource,
 ): void {
   if (!Array.isArray(providers)) return;
   for (const p of providers) {
@@ -289,7 +373,8 @@ function loadPresetCustomModels(home: string): Record<string, unknown> | null {
  *    models omit it; they're lowest-priority and only fill genuine gaps).
  *  - Maps `max_input_tokens` → contextLength (fallback `max_tokens`),
  *    `max_output_tokens` → maxOutputTokens (reusing coercePositiveFinite so
- *    string numbers / bogus values are handled identically to other sources).
+ *    string numbers / bogus values are handled identically to other sources),
+ *    and retains LiteLLM's modality flags even on entries with no token data.
  *  - Indexes each model under its literal key AND, for `provider/model` keys,
  *    a safe provider-stripped tail — so our bare `deepseek-chat` can match
  *    LiteLLM's `deepseek/deepseek-chat` without making one provider's limit
@@ -315,8 +400,17 @@ export function parseLiteLLMCatalog(raw: unknown): Map<string, ModelCapability> 
     if (mode && !LITELLM_LLM_MODES.has(mode)) continue;
     const contextLength = coercePositiveFinite(e.max_input_tokens) ?? coercePositiveFinite(e.max_tokens);
     const maxOutputTokens = coercePositiveFinite(e.max_output_tokens);
-    if (!contextLength && !maxOutputTokens) continue;
-    const cap: ModelCapability = { contextLength, maxOutputTokens, source: 'litellm' };
+    const modality = readLiteLLMModalityEvidence(e);
+    if (!contextLength && !maxOutputTokens && !modality.inputModalitySupport) continue;
+    const cap: ModelCapability = {
+      ...(contextLength ? { contextLength } : {}),
+      ...(maxOutputTokens ? { maxOutputTokens } : {}),
+      ...(modality.inputModalities ? { inputModalities: modality.inputModalities } : {}),
+      ...(modality.inputModalitySupport
+        ? { inputModalitySupport: modality.inputModalitySupport }
+        : {}),
+      source: 'litellm',
+    };
     if (!out.has(key)) out.set(key, cap);
     const slash = key.lastIndexOf('/');
     const tail = slash >= 0 && slash < key.length - 1 ? key.slice(slash + 1) : key;
@@ -338,13 +432,42 @@ export function parseLiteLLMCatalog(raw: unknown): Map<string, ModelCapability> 
     return values.size === 1 ? values.values().next().value : undefined;
   };
 
+  const consensusModality = (
+    candidates: ParsedCatalogEntry[],
+    kind: NonTextModalityKind,
+  ): ModelModalitySupportEvidence | undefined => {
+    const evidence = candidates
+      .map(candidate => candidate.cap.inputModalitySupport?.[kind])
+      .filter((value): value is ModelModalitySupportEvidence => Boolean(value));
+    if (evidence.length === 0) return undefined;
+    const values = new Set(evidence.map(value => value.supported));
+    return values.size === 1 ? { supported: evidence[0].supported, source: 'litellm' } : undefined;
+  };
+
   for (const candidates of entriesByFoldedTail.values()) {
     const canonical = candidates.filter(candidate => candidate.isUnqualified);
     const authority = canonical.length > 0 ? canonical : candidates;
     const contextLength = consensusField(authority, 'contextLength');
     const maxOutputTokens = consensusField(authority, 'maxOutputTokens');
-    if (!contextLength && !maxOutputTokens) continue;
-    const alias: ModelCapability = { contextLength, maxOutputTokens, source: 'litellm' };
+    const inputModalitySupport = Object.fromEntries(
+      NON_TEXT_MODALITY_KINDS.flatMap(kind => {
+        const evidence = consensusModality(authority, kind);
+        return evidence ? [[kind, evidence]] : [];
+      }),
+    ) as ModelCapability['inputModalitySupport'];
+    if (
+      !contextLength
+      && !maxOutputTokens
+      && Object.keys(inputModalitySupport ?? {}).length === 0
+    ) continue;
+    const alias: ModelCapability = {
+      ...(contextLength ? { contextLength } : {}),
+      ...(maxOutputTokens ? { maxOutputTokens } : {}),
+      ...(Object.keys(inputModalitySupport ?? {}).length > 0
+        ? { inputModalitySupport }
+        : {}),
+      source: 'litellm',
+    };
     for (const tail of new Set(candidates.map(candidate => candidate.tail))) {
       if (!out.has(tail)) out.set(tail, alias);
     }
@@ -590,6 +713,38 @@ export function lookupModelCapability(modelId: string | undefined | null): Model
   return buildRegistry().get(bare);
 }
 
+export interface ModelModalitySupport {
+  status: 'supported' | 'unsupported' | 'unknown';
+  source?: ModelCapabilitySource;
+}
+
+/**
+ * Return modality evidence without collapsing unknown into either verdict.
+ * This is used by feature pickers that need to distinguish an explicit
+ * provider declaration from a low-priority LiteLLM inference.
+ */
+export function lookupModelModalitySupport(
+  modelId: string | undefined | null,
+  kind: ModalityKind,
+): ModelModalitySupport {
+  if (kind === 'text') return { status: 'supported' };
+  const cap = lookupModelCapability(modelId);
+  const evidence = cap?.inputModalitySupport?.[kind];
+  if (evidence) {
+    return {
+      status: evidence.supported ? 'supported' : 'unsupported',
+      source: evidence.source,
+    };
+  }
+  if (cap?.inputModalities) {
+    return {
+      status: cap.inputModalities.includes(kind) ? 'supported' : 'unsupported',
+      source: cap.source,
+    };
+  }
+  return { status: 'unknown' };
+}
+
 /**
  * Threshold above which we tag a model with `[1m]` — the SDK's
  * MODEL_CONTEXT_WINDOW_DEFAULT (200K). Anything the registry declares LARGER
@@ -726,8 +881,9 @@ export function modelSupportsModality(
   modelId: string | undefined | null,
   kind: ModalityKind,
 ): boolean {
-  if (kind === 'text') return true;
-  const cap = lookupModelCapability(modelId);
-  if (!cap || !cap.inputModalities) return true; // unknown → optimistic
-  return cap.inputModalities.includes(kind);
+  const evidence = lookupModelModalitySupport(modelId, kind);
+  // LiteLLM is a provider-unknown fallback. A negative row must not veto the
+  // active provider's same-named offering; only provider-owned declarations
+  // are authoritative enough to reject an attachment.
+  return evidence.status !== 'unsupported' || evidence.source === 'litellm';
 }

@@ -13,13 +13,14 @@
  * 2. Explicit `onSave`/`onRevealFile` props — when caller provides save logic directly
  *    (e.g. Settings panels editing `~/.myagents/agents/...`)
  */
-import { AtSign, Check, Copy, Edit2, Expand, Eye, FileText, FolderOpen, Loader2, LocateFixed, MoreHorizontal, X } from 'lucide-react';
+import { AtSign, Check, Copy, Edit2, Expand, Eye, FolderOpen, Loader2, LocateFixed, MoreHorizontal, X } from 'lucide-react';
 import Tip from './Tip';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
+import { FileIcon } from '@/components/file-icon';
 import { useWorkspaceChangeSignal } from '@/hooks/useWorkspaceChangeSignal';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import type { RichDocKind } from '../../shared/fileTypes';
@@ -1205,7 +1206,7 @@ export default function FilePreviewModal({
             if (!previewSource.trim()) {
                 return (
                     <div className="flex h-full flex-col items-center justify-center gap-3 bg-[var(--paper-elevated)] text-[var(--ink-muted)]">
-                        <FileText className="h-10 w-10 opacity-20" />
+                        <FileIcon name={name} size="display" />
                         <p className="text-sm">{t('workspaceFiles.filePreview.emptyDocument')}</p>
                         {canEdit && (
                             <button type="button" onClick={() => setMdViewMode('edit')}
@@ -1257,8 +1258,8 @@ export default function FilePreviewModal({
                 <div className="relative z-10 grid flex-shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 px-4 py-2 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-3 after:bg-gradient-to-b after:from-[var(--paper-elevated)] after:to-[var(--paper-elevated-a0)]">
                     {/* Left: file info */}
                     <div className="flex min-w-0 items-center gap-2">
-                        <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-[var(--accent-warm-muted)]">
-                            <FileText className="h-3.5 w-3.5 text-[var(--accent)]" />
+                        <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center">
+                            <FileIcon name={name} size="regular" />
                         </div>
                         <FilenameSlot
                             name={name}
@@ -1337,8 +1338,8 @@ export default function FilePreviewModal({
                 <div className="grid flex-shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 border-b border-[var(--line)] px-5 py-4 bg-[var(--paper-elevated)]">
                     {/* Left: file info */}
                     <div className="flex min-w-0 items-center gap-3">
-                        <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--accent-warm-muted)]">
-                            <FileText className="h-4 w-4 text-[var(--accent)]" />
+                        <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center">
+                            <FileIcon name={name} size="display" />
                         </div>
                         <div className="min-w-0">
                             <div className="flex items-center gap-3">

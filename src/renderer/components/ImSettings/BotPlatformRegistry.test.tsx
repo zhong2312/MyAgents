@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { InstalledPlugin } from '../../../shared/types/im';
+import type { Project } from '@/config/types';
 import BotPlatformRegistry from './BotPlatformRegistry';
 
 const invokeMock = vi.fn();
@@ -71,19 +72,19 @@ describe('BotPlatformRegistry', () => {
       return Promise.reject(new Error(`Unexpected invoke: ${command}`));
     });
 
-    render(<BotPlatformRegistry />);
+    render(<BotPlatformRegistry projects={[]} onAddToWorkspace={vi.fn()} />);
 
     await waitFor(() => {
-      expect(within(promotedCard('企业微信')).getByRole('button', { name: '点击安装' })).toBeEnabled();
-      expect(within(promotedCard('微信')).getByRole('button', { name: '点击安装' })).toBeEnabled();
+      expect(within(promotedCard('企业微信')).getByRole('button', { name: '安装' })).toBeEnabled();
+      expect(within(promotedCard('微信')).getByRole('button', { name: '安装' })).toBeEnabled();
     });
 
-    fireEvent.click(within(promotedCard('企业微信')).getByRole('button', { name: '点击安装' }));
+    fireEvent.click(within(promotedCard('企业微信')).getByRole('button', { name: '安装' }));
     await waitFor(() => {
       expect(within(promotedCard('企业微信')).getByRole('button', { name: '安装中' })).toBeDisabled();
     });
 
-    fireEvent.click(within(promotedCard('微信')).getByRole('button', { name: '点击安装' }));
+    fireEvent.click(within(promotedCard('微信')).getByRole('button', { name: '安装' }));
 
     await waitFor(() => {
       expect(within(promotedCard('企业微信')).getByRole('button', { name: '安装中' })).toBeDisabled();
@@ -95,6 +96,8 @@ describe('BotPlatformRegistry', () => {
     await waitFor(() => {
       expect(within(promotedCard('企业微信')).getByRole('button', { name: '安装中' })).toBeDisabled();
       expect(within(promotedCard('微信')).getByText('v1.0.0')).toBeInTheDocument();
+      expect(within(promotedCard('微信')).getByRole('button', { name: '添加到工作区' })).toBeEnabled();
+      expect(screen.queryByRole('heading', { name: '选择工作区' })).not.toBeInTheDocument();
     });
 
     wecomInstall.resolve(plugin('wecom-openclaw-plugin', '@wecom/wecom-openclaw-plugin'));
@@ -103,5 +106,34 @@ describe('BotPlatformRegistry', () => {
       expect(within(promotedCard('企业微信')).getByText('v1.0.0')).toBeInTheDocument();
       expect(within(promotedCard('微信')).getByText('v1.0.0')).toBeInTheDocument();
     });
+  });
+
+  it('opens the workspace picker from an available bot and returns the chosen project and platform', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'cmd_list_openclaw_plugins') return Promise.resolve([]);
+      return Promise.reject(new Error(`Unexpected invoke: ${command}`));
+    });
+    const project: Project = {
+      id: 'mino',
+      name: 'mino',
+      path: '/workspace/mino',
+      providerId: null,
+      permissionMode: null,
+    };
+    const onAddToWorkspace = vi.fn();
+
+    render(
+      <BotPlatformRegistry
+        projects={[project]}
+        onAddToWorkspace={onAddToWorkspace}
+      />,
+    );
+
+    await waitFor(() => expect(within(promotedCard('Telegram')).getByRole('button', { name: '添加到工作区' })).toBeEnabled());
+    fireEvent.click(within(promotedCard('Telegram')).getByRole('button', { name: '添加到工作区' }));
+    expect(screen.getByRole('heading', { name: '选择 Agent 工作区' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /mino/u }));
+
+    expect(onAddToWorkspace).toHaveBeenCalledWith('telegram', project);
   });
 });

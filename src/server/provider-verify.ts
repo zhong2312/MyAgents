@@ -609,7 +609,7 @@ export function checkAnthropicSubscription(): SubscriptionStatus {
  * Verify Anthropic subscription by sending a test request via SDK.
  * Uses the same SDK path as normal chat requests.
  */
-export async function verifySubscription(): Promise<SubscriptionVerifyResult> {
+export async function verifySubscription(model?: string): Promise<SubscriptionVerifyResult> {
   console.log('[subscription/verify] Starting SDK verification...');
   // PRD #124: subscription path doesn't need a bridge — SDK talks to
   // api.anthropic.com directly. `buildClaudeSessionEnv()` is now pure
@@ -629,10 +629,11 @@ export async function verifySubscription(): Promise<SubscriptionVerifyResult> {
   // CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST for anthropic-sub, so the native
   // Claude Code runtime consumes the same local login state as `claude` CLI.
   const officialSubscriptionProvider: ProviderEnv = { providerId: SUBSCRIPTION_PROVIDER_ID };
-  const env = buildClaudeSessionEnv(officialSubscriptionProvider, undefined, {
+  const env = buildClaudeSessionEnv(officialSubscriptionProvider, model, {
     providerId: SUBSCRIPTION_PROVIDER_ID,
   });
   return verifyViaSdk(env, {
+    model,
     sessionId: randomUUID(),
     providerId: SUBSCRIPTION_PROVIDER_ID,
     logPrefix: 'subscription/verify',

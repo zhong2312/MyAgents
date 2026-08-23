@@ -33,7 +33,7 @@ import { workspacePathsEqual } from '../shared/workspacePath';
 import { ensureDirSync } from './utils/fs-utils';
 import { withFileLock } from './utils/file-lock';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
-import { normalizeSessionRuntimeIdentity } from './utils/session-runtime-identity';
+import { normalizeSessionRuntimeIdentity, resolveBuiltinSdkSessionId } from './utils/session-runtime-identity';
 import { resolveLastVisibleTurnPreview } from './utils/session-message-preview';
 
 const MYAGENTS_DIR = join(homedir(), '.myagents');
@@ -116,9 +116,9 @@ function dedupeSessionMetadata(sessions: SessionMetadata[]): SessionMetadata[] {
  * paths in SessionStore to be async, and callers cascade `await` accordingly.
  *
  * Stale-recovery rules (delegated to withFileLock):
- *   - lockdir owner file format: `node:<pid>` / `rust:<pid>` / `renderer:<ts>`
- *   - lockdir age > LOCK_STALE_MS AND owner pid dead → broken automatically.
- *   - renderer:* owners (no observable pid) → age-only break.
+ *   - valid Node/Rust owner with a confirmed-dead PID → break immediately.
+ *   - valid live or liveness-unknown process owner → retain regardless of age.
+ *   - missing, renderer, or malformed owner → break only after LOCK_STALE_MS.
  *
  * Lock hold time is ~1ms per call (single append + sessions.json stats update).
  */
@@ -1191,22 +1191,61 @@ export async function loadSessionTranscript(sessionId: string): Promise<SessionT
 }
 
 export type ConversationMutationResult =
-    | { success: true; metadata: SessionMetadata; messages: SessionMessage[] }
+    | { success: true; metadata: SessionMetadata; messages: SessionMessage[]; cursor: TranscriptWriteCursor }
     | {
         success: false;
         reason: 'precondition_failed' | 'storage_consistency_error' | 'write_error';
         error: string;
     };
 
+type CodexRewindIntent = Extract<PendingConversationMutation, { kind: 'codex-rewind' }>;
+type BuiltinRewindIntent = Extract<PendingConversationMutation, { kind: 'builtin-rewind' }>;
+
+function conversationMutationSuccess(
+    sessionId: string,
+    metadata: SessionMetadata,
+    messages: SessionMessage[],
+): ConversationMutationResult {
+    return {
+        success: true,
+        metadata,
+        messages,
+        cursor: issueTranscriptCursor(
+            sessionId,
+            messages.length,
+            getTranscriptFileIdentity(getSessionFilePath(sessionId)),
+        ),
+    };
+}
+
 function finalizeCodexRewindMetadata(
     current: SessionMetadata,
-    intent: PendingConversationMutation,
+    intent: CodexRewindIntent,
     messages: SessionMessage[],
 ): SessionMetadata {
     const { preview } = resolveLastVisibleTurnPreview(messages);
     return {
         ...current,
         runtimeSessionId: intent.replacementRuntimeSessionId ?? undefined,
+        pendingConversationMutation: undefined,
+        runtimeUsageTotals: undefined,
+        lastContextUsage: undefined,
+        stats: calculateSessionStats(messages),
+        lastMessagePreview: preview,
+    };
+}
+
+function finalizeBuiltinRewindMetadata(
+    current: SessionMetadata,
+    intent: BuiltinRewindIntent,
+    messages: SessionMessage[],
+): SessionMetadata {
+    const { preview } = resolveLastVisibleTurnPreview(messages);
+    return {
+        ...current,
+        sdkSessionId: intent.replacementSdkSessionId,
+        unifiedSession: false,
+        forkFrom: undefined,
         pendingConversationMutation: undefined,
         runtimeUsageTotals: undefined,
         lastContextUsage: undefined,
@@ -1227,11 +1266,15 @@ async function resolvePendingConversationMutationLocked(
         }
         const current = all[index];
         const intent = current.pendingConversationMutation;
-        if (!intent) return { success: true, metadata: current, messages };
-        if (intent.schemaVersion !== 1 || intent.kind !== 'codex-rewind') {
+        if (!intent) return conversationMutationSuccess(sessionId, current, messages);
+        if (intent.schemaVersion !== 1 || (intent.kind !== 'codex-rewind' && intent.kind !== 'builtin-rewind')) {
             return { success: false, reason: 'storage_consistency_error', error: 'Unknown conversation mutation intent' };
         }
-        if (current.runtimeSessionId !== intent.sourceRuntimeSessionId) {
+
+        const sourceBindingMatches = intent.kind === 'codex-rewind'
+            ? current.runtimeSessionId === intent.sourceRuntimeSessionId
+            : (resolveBuiltinSdkSessionId(current) ?? null) === intent.sourceSdkSessionId;
+        if (!sourceBindingMatches) {
             return {
                 success: false,
                 reason: 'storage_consistency_error',
@@ -1243,13 +1286,15 @@ async function resolvePendingConversationMutationLocked(
             const restored = { ...current, pendingConversationMutation: undefined };
             all[index] = restored;
             atomicWriteSessionsFile(JSON.stringify(all, null, 2));
-            return { success: true, metadata: restored, messages };
+            return conversationMutationSuccess(sessionId, restored, messages);
         }
         if (messages.length === intent.targetMessageCount) {
-            const completed = finalizeCodexRewindMetadata(current, intent, messages);
+            const completed = intent.kind === 'codex-rewind'
+                ? finalizeCodexRewindMetadata(current, intent, messages)
+                : finalizeBuiltinRewindMetadata(current, intent, messages);
             all[index] = completed;
             atomicWriteSessionsFile(JSON.stringify(all, null, 2));
-            return { success: true, metadata: completed, messages };
+            return conversationMutationSuccess(sessionId, completed, messages);
         }
         return {
             success: false,
@@ -1259,7 +1304,7 @@ async function resolvePendingConversationMutationLocked(
     });
 }
 
-/** Resolve the bounded Codex rewind intent before a Session may resume or send. */
+/** Resolve a bounded rewind intent before a Session may resume or send. */
 export async function resolvePendingConversationMutation(
     sessionId: string,
 ): Promise<ConversationMutationResult> {
@@ -1338,6 +1383,114 @@ export async function commitCodexConversationRewind(input: {
                     recovered.success
                     && recovered.messages.length === input.targetMessages.length
                     && recovered.messages.every((message, index) => message.id === input.targetMessages[index]?.id)
+                ) return recovered;
+                if (!recovered.success && recovered.reason === 'storage_consistency_error') return recovered;
+                return {
+                    success: false,
+                    reason: 'write_error',
+                    error: error instanceof Error ? error.message : String(error),
+                };
+            }
+        });
+    } catch (error) {
+        return {
+            success: false,
+            reason: error instanceof MalformedSessionTranscriptError
+                ? 'storage_consistency_error'
+                : 'write_error',
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
+}
+
+/**
+ * Atomically bind a shortened builtin transcript to one exact replacement SDK
+ * identity. Product Session identity is deliberately not writable here.
+ */
+export async function commitBuiltinConversationRewind(input: {
+    sessionId: string;
+    cursor: TranscriptWriteCursor;
+    sourceSdkSessionId: string | null;
+    replacementSdkSessionId: string;
+    targetMessageId: string;
+    targetMessageCount: number;
+}): Promise<ConversationMutationResult> {
+    ensureStorageDir();
+    if (input.sourceSdkSessionId === input.replacementSdkSessionId) {
+        return { success: false, reason: 'precondition_failed', error: 'Replacement SDK identity must be fresh' };
+    }
+
+    const intent: BuiltinRewindIntent = {
+        schemaVersion: 1,
+        kind: 'builtin-rewind',
+        sourceSdkSessionId: input.sourceSdkSessionId,
+        replacementSdkSessionId: input.replacementSdkSessionId,
+        sourceMessageCount: input.cursor.persistedMessageCount,
+        targetMessageCount: input.targetMessageCount,
+    };
+
+    try {
+        return await withSessionFileLock(input.sessionId, async () => {
+            const filePath = getSessionFilePath(input.sessionId);
+            const currentFile = getTranscriptFileIdentity(filePath);
+            if (!cursorMatches(input.sessionId, input.cursor, currentFile)) {
+                return {
+                    success: false,
+                    reason: 'precondition_failed',
+                    error: 'stale-cursor: Session transcript changed after the cursor was issued',
+                };
+            }
+
+            const source = readJsonlSnapshot(filePath);
+            if (source.hasMalformedRows) throw new MalformedSessionTranscriptError(input.sessionId);
+            if (source.messages.length !== input.cursor.persistedMessageCount) {
+                return {
+                    success: false,
+                    reason: 'precondition_failed',
+                    error: 'stale-cursor: Cursor message count does not match durable transcript',
+                };
+            }
+
+            const derived = deriveTranscriptMutationTarget(source.messages, {
+                kind: 'builtin-rewind',
+                targetMessageId: input.targetMessageId,
+                targetMessageCount: input.targetMessageCount,
+            });
+            if (!derived.ok || !derived.target || derived.target.length >= source.messages.length) {
+                return {
+                    success: false,
+                    reason: 'precondition_failed',
+                    error: derived.ok ? 'Rewind target is not a strict transcript prefix' : derived.error,
+                };
+            }
+
+            const intentWritten = await withSessionsLock(async () => {
+                const all = readSessionsIndexForWrite();
+                const index = all.findIndex(session => session.id === input.sessionId);
+                if (index < 0) return false;
+                const current = all[index];
+                if (
+                    (current.runtime ?? 'builtin') !== 'builtin'
+                    || (resolveBuiltinSdkSessionId(current) ?? null) !== input.sourceSdkSessionId
+                    || current.pendingConversationMutation
+                ) return false;
+                all[index] = { ...current, pendingConversationMutation: intent };
+                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                return true;
+            });
+            if (!intentWritten) {
+                return { success: false, reason: 'precondition_failed', error: 'Session binding changed before rewind' };
+            }
+
+            try {
+                atomicRewriteSessionMessages(input.sessionId, derived.target);
+                return await resolvePendingConversationMutationLocked(input.sessionId);
+            } catch (error) {
+                const recovered = await resolvePendingConversationMutationLocked(input.sessionId);
+                if (
+                    recovered.success
+                    && recovered.messages.length === derived.target.length
+                    && recovered.messages.every((message, index) => message.id === derived.target?.[index]?.id)
                 ) return recovered;
                 if (!recovered.success && recovered.reason === 'storage_consistency_error') return recovered;
                 return {
@@ -1726,9 +1879,12 @@ export async function updateSessionMetadata(
         | 'lastMessagePreview'
         | 'titleSource'
         | 'titleGenAttempts'
+        | 'forkFrom'
         | 'runtime'
         | 'runtimeSource'
         | 'runtimeSessionId'
+        | 'managedCodexExtensionProtocolVersion'
+        | 'managedCodexHostCatalogFingerprint'
         | 'runtimeUsageTotals'
         | 'lastContextUsage'
         | 'model'

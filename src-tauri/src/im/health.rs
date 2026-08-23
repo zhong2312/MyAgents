@@ -113,41 +113,39 @@ impl HealthManager {
     pub async fn persist(&self) -> Result<(), String> {
         let _write_guard = self.persist_write.lock().await;
         let mut state = self.state.lock().await;
-        state.last_persisted = chrono::Utc::now().to_rfc3339();
-
-        let json =
-            serde_json::to_string_pretty(&*state).map_err(|e| format!("Serialize error: {}", e))?;
-
-        // Ensure parent directory exists
-        if let Some(parent) = self.persist_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create health dir: {}", e))?;
-        }
-
-        std::fs::write(&self.persist_path, json)
-            .map_err(|e| format!("Failed to write health state: {}", e))?;
-
+        let mut next = state.clone();
+        next.last_persisted = chrono::Utc::now().to_rfc3339();
+        write_health_state(&self.persist_path, &next)?;
+        *state = next;
         Ok(())
     }
 
-    async fn persist_active_sessions(&self, sessions: Vec<ImActiveSession>) -> Result<(), String> {
+    /// Serialize a peer-binding transition with every other active-session
+    /// projection. Callers that mutate a Router transactionally acquire this
+    /// guard before the Router lock, matching `persist_router_active_sessions`.
+    pub(crate) async fn lock_active_sessions_projection(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.active_sessions_projection)
+            .lock_owned()
+            .await
+    }
+
+    /// Persist an already-snapshotted Router state while the caller owns the
+    /// active-session projection guard. This keeps binding mutation, durable
+    /// projection, and rollback on one authority path without a second store.
+    pub(crate) async fn persist_active_sessions_snapshot(
+        &self,
+        sessions: Vec<ImActiveSession>,
+    ) -> Result<(), String> {
         let _write_guard = self.persist_write.lock().await;
         let mut state = self.state.lock().await;
-        state.active_sessions = sessions;
-        state.last_persisted = chrono::Utc::now().to_rfc3339();
-
-        let json =
-            serde_json::to_string_pretty(&*state).map_err(|e| format!("Serialize error: {}", e))?;
-        drop(state);
-
-        if let Some(parent) = self.persist_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create health dir: {}", e))?;
-        }
-
-        std::fs::write(&self.persist_path, json)
-            .map_err(|e| format!("Failed to write health state: {}", e))?;
-
+        let mut next = state.clone();
+        next.active_sessions = sessions;
+        next.last_persisted = chrono::Utc::now().to_rfc3339();
+        // Commit the durable projection before publishing the matching
+        // in-memory snapshot. A failed write therefore leaves both authorities
+        // on the prior binding and needs no second, failure-prone rollback IO.
+        write_health_state(&self.persist_path, &next)?;
+        *state = next;
         Ok(())
     }
 
@@ -168,15 +166,12 @@ impl HealthManager {
                     _ = tick.tick() => {
                         let _write_guard = persist_write.lock().await;
                         let mut s = state.lock().await;
-                        s.last_persisted = chrono::Utc::now().to_rfc3339();
-                        let json = serde_json::to_string_pretty(&*s).unwrap_or_default();
-                        drop(s);
-
-                        if let Some(parent) = persist_path.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        if let Err(e) = std::fs::write(&persist_path, &json) {
+                        let mut next = s.clone();
+                        next.last_persisted = chrono::Utc::now().to_rfc3339();
+                        if let Err(e) = write_health_state(&persist_path, &next) {
                             ulog_warn!("[im-health] Failed to persist: {}", e);
+                        } else {
+                            *s = next;
                         }
                     }
                     _ = shutdown_rx.changed() => {
@@ -189,6 +184,17 @@ impl HealthManager {
             }
         })
     }
+}
+
+fn write_health_state(path: &Path, state: &ImHealthState) -> Result<(), String> {
+    let json =
+        serde_json::to_vec_pretty(state).map_err(|error| format!("Serialize error: {error}"))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create health dir: {error}"))?;
+    }
+    crate::workspace_files::path_safety::atomic_write_file(path, &json)
+        .map_err(|error| format!("Failed to write health state: {error}"))
 }
 
 fn summarize_active_sessions(sessions: &[ImActiveSession]) -> String {
@@ -216,14 +222,14 @@ pub(crate) async fn persist_router_active_sessions(
     router: &Arc<Mutex<SessionRouter>>,
     context: &str,
 ) -> Result<(), String> {
-    let _projection_guard = health.active_sessions_projection.lock().await;
+    let _projection_guard = health.lock_active_sessions_projection().await;
     let sessions = {
         let router_guard = router.lock().await;
         router_guard.active_sessions()
     };
     let count = sessions.len();
     let summary = summarize_active_sessions(&sessions);
-    match health.persist_active_sessions(sessions).await {
+    match health.persist_active_sessions_snapshot(sessions).await {
         Ok(()) => Ok(()),
         Err(e) => {
             ulog_warn!(
@@ -734,6 +740,63 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(path).expect("state file"))
                 .expect("state json");
         assert_eq!(disk_state.active_sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_projection_write_does_not_publish_the_staged_binding_in_memory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // An existing directory cannot be replaced by the atomic file rename,
+        // giving this test a deterministic write failure on every platform.
+        let health = HealthManager::new(dir.path().to_path_buf());
+        health
+            .set_active_sessions(vec![ImActiveSession {
+                session_key: "agent:a:feishu:private:user".to_string(),
+                session_id: "session-a".to_string(),
+                source_type: ImSourceType::Private,
+                source_id: Some("user".to_string()),
+                source_display_name: None,
+                last_sender_name: None,
+                workspace_path: "/tmp/workspace".to_string(),
+                message_count: 1,
+                metadata_birth_pending: false,
+                metadata_indexed: true,
+                last_active: chrono::Utc::now().to_rfc3339(),
+            }])
+            .await;
+        let mut staged = health.get_state().await.active_sessions;
+        staged[0].session_id = "session-b".to_string();
+
+        assert!(health
+            .persist_active_sessions_snapshot(staged)
+            .await
+            .is_err());
+        assert_eq!(
+            health.get_state().await.active_sessions[0].session_id,
+            "session-a"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_new_binding_round_trips_through_the_existing_health_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let health = HealthManager::new(path.clone());
+        let session_key = "agent:a:feishu:private:user";
+        let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        router.upsert_peer_session(peer(session_key, "session-a"));
+
+        let transition = router.stage_new_session_binding(session_key);
+        health
+            .persist_active_sessions_snapshot(router.active_sessions())
+            .await
+            .expect("persist pending binding");
+
+        let restored = HealthManager::new(path).get_state().await;
+        let pending = restored.active_sessions.first().expect("pending binding");
+        assert_eq!(pending.session_id, transition.target_session_id());
+        assert_eq!(pending.message_count, 0);
+        assert!(pending.metadata_birth_pending);
+        assert!(!pending.metadata_indexed);
     }
 
     #[test]

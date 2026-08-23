@@ -98,7 +98,8 @@ pub(crate) use session_lifecycle::{
     ensure_session_sidecar_with_runtime_identity_override,
     ensure_session_sidecar_with_runtime_identity_override_lifecycle,
     ensure_session_sidecar_with_runtime_identity_override_lifecycle_held,
-    has_persisted_session_owner, SessionLifecycleGuard,
+    finish_runtime_drift_transition, finish_session_owner_release, has_persisted_session_owner,
+    SessionLifecycleGuard,
 };
 #[allow(unused_imports)]
 pub use session_lifecycle::{
@@ -127,7 +128,49 @@ use types::{
     owner_prefers_live_agent_runtime, resolve_runtime_for_owner, sidecar_removal_event_policy,
     ExistingSidecarReuse,
 };
-pub(crate) use types::{DispatchGate, DispatchLease, SessionCompletionClaim};
+
+/// Probe the next process-wide Sidecar port without retaining lifecycle state.
+/// Callers clone the allocator handle while the manager is locked, then perform
+/// the bounded socket probes after releasing that lock.
+pub(crate) fn allocate_sidecar_port(counter: &AtomicU16) -> Result<u16, String> {
+    const MAX_ATTEMPTS: u32 = 200;
+
+    for _ in 0..MAX_ATTEMPTS {
+        let port = next_sidecar_port_candidate(counter);
+        if is_port_available(port) {
+            return Ok(port);
+        }
+    }
+
+    Err(format!(
+        "No available port found after {} attempts",
+        MAX_ATTEMPTS
+    ))
+}
+
+fn next_sidecar_port_candidate(counter: &AtomicU16) -> u16 {
+    let mut observed = counter.load(Ordering::SeqCst);
+    loop {
+        let candidate = if (BASE_PORT..=BASE_PORT + PORT_RANGE).contains(&observed) {
+            observed
+        } else {
+            BASE_PORT
+        };
+        let next = if candidate == BASE_PORT + PORT_RANGE {
+            BASE_PORT
+        } else {
+            candidate + 1
+        };
+        match counter.compare_exchange(observed, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return candidate,
+            Err(actual) => observed = actual,
+        }
+    }
+}
+pub(crate) use types::{
+    DispatchDrain, DispatchGate, DispatchLease, DispatchReplacement, SessionCompletionClaim,
+    SessionGenerationDrain, SidecarRetirement,
+};
 pub use types::{RuntimeDriftResult, SessionSidecar, SidecarInstance, SidecarOwner, SidecarState};
 
 // Ensure file descriptor limit is increased only once (unix only)
@@ -271,7 +314,8 @@ fn append_sidecar_entrypoint_args(
 mod sidecar_process_role_tests {
     use super::{
         append_sidecar_entrypoint_args, append_sidecar_role_arg,
-        configure_session_delete_authority, SidecarProcessRole, SESSION_DELETE_AUTHORITY_ENV,
+        configure_session_delete_authority, next_sidecar_port_candidate, SidecarProcessRole,
+        BASE_PORT, PORT_RANGE, SESSION_DELETE_AUTHORITY_ENV,
     };
     use std::path::Path;
 
@@ -282,6 +326,31 @@ mod sidecar_process_role_tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn concurrent_port_candidate_wrap_never_rolls_the_counter_back() {
+        let counter =
+            std::sync::Arc::new(std::sync::atomic::AtomicU16::new(BASE_PORT + PORT_RANGE));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let threads = (0..16)
+            .map(|_| {
+                let counter = std::sync::Arc::clone(&counter);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    next_sidecar_port_candidate(&counter)
+                })
+            })
+            .collect::<Vec<_>>();
+        let candidates = threads
+            .into_iter()
+            .map(|thread| thread.join().expect("allocator thread"))
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(candidates.len(), 16);
+        assert!(candidates.contains(&(BASE_PORT + PORT_RANGE)));
+        assert!(candidates.contains(&BASE_PORT));
     }
 
     #[test]

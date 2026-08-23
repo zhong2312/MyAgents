@@ -7,6 +7,10 @@ import type { Stream } from 'node:stream';
 
 import type { McpServerDefinition } from '../../shared/config-types';
 import { buildMcpSubprocessEnv } from '../session-core/mcp-env-policy';
+import {
+  McpTemplateResolutionError,
+  resolveRemoteMcpTransportConfig,
+} from '../session-core/mcp-template-resolution';
 import { resolveNpxMcpInvocation } from './mcp-command';
 
 export const MCP_CONNECTION_TEST_TIMEOUT_MS = 15_000;
@@ -52,18 +56,18 @@ interface ProbeTransport {
   resolvedCommand?: string;
 }
 
-function resolveRemoteMcpUrl(server: McpServerDefinition): URL {
-  if (!server.url) {
-    throw new McpConnectionTestError(`MCP server '${server.id}' has no URL configured`);
-  }
-  const resolvedUrl = server.url.replace(
-    /\{\{(\w+)\}\}/g,
-    (_, key: string) => server.env?.[key] ?? '',
-  );
+function resolveRemoteMcpConfig(
+  server: McpServerDefinition,
+): { url: URL; headers: Record<string, string> } {
   try {
-    return new URL(resolvedUrl);
-  } catch {
-    throw new McpConnectionTestError(`MCP server '${server.id}' has an invalid URL`);
+    const remote = resolveRemoteMcpTransportConfig(server);
+    return { url: new URL(remote.url), headers: remote.headers };
+  } catch (error) {
+    throw new McpConnectionTestError(
+      error instanceof McpTemplateResolutionError
+        ? error.message
+        : `MCP server '${server.id}' has an invalid URL`,
+    );
   }
 }
 
@@ -101,11 +105,11 @@ function createProbeTransport(
     };
   }
 
-  const url = resolveRemoteMcpUrl(server);
-  const requestInit: RequestInit = { headers: server.headers };
+  const remote = resolveRemoteMcpConfig(server);
+  const requestInit: RequestInit = { headers: remote.headers };
   if (server.type === 'http') {
     return {
-      transport: new StreamableHTTPClientTransport(url, {
+      transport: new StreamableHTTPClientTransport(remote.url, {
         requestInit,
         fetch: options.fetch,
       }),
@@ -113,7 +117,7 @@ function createProbeTransport(
   }
   if (server.type === 'sse') {
     return {
-      transport: new SSEClientTransport(url, {
+      transport: new SSEClientTransport(remote.url, {
         requestInit,
         fetch: options.fetch,
         eventSourceInit: options.fetch ? { fetch: options.fetch } : undefined,

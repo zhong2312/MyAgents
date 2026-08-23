@@ -3,8 +3,10 @@
 //! Two Tauri commands surface here:
 //!
 //! * [`cmd_session_new_with_surface_migration`] — desktop user clicks "+新对话"
-//!   on a channel-bound session. The channel's `peer_sessions` binding is
-//!   rotated to a fresh `session_id`. Behaviour matches IM `/new`.
+//!   on a channel-bound session. The exact participating Tab + Agent owners,
+//!   Router binding, and Node Runtime move together to a fresh `session_id`.
+//!   This is deliberately different from IM `/new`, which only rotates the
+//!   Agent binding and leaves every other owner on the source Session.
 //!
 //! * [`cmd_handover_session_to_channel`] — desktop user clicks the 📤 button on
 //!   a pure-desktop session and picks a target channel. The channel's prior
@@ -13,8 +15,8 @@
 //!
 //! Heavy lifting reuses what already exists:
 //!
-//! * [`super::router::SessionRouter::reset_session`] handles the `/api/im/session/new`
-//!   call to the sidecar plus `cmd_upgrade_session_id`.
+//! * [`super::router::SessionRouter::stage_surface_session_migration`] updates
+//!   the single Router authority after exact owner admission.
 //! * [`crate::sidecar::ensure_session_sidecar`] / [`crate::sidecar::release_session_sidecar`]
 //!   manage the `SidecarOwner::Agent` lifetime.
 
@@ -26,10 +28,10 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use super::health::{self, HealthManager};
-use super::router::{parse_session_key, SessionRouter};
+use super::router::{parse_session_key, peer_binding_source_requires_freeze, SessionRouter};
 use super::runtime_change;
 use super::types::{ImSourceType, LastActiveChannel, LastActivePrivateTarget, PeerSession};
-use super::{ImConsumers, ManagedAgents};
+use super::{ImConsumers, ManagedAgents, PeerLocks};
 use crate::sidecar::{
     ensure_session_sidecar_with_lifecycle, release_session_sidecar, ManagedSidecarManager,
     SidecarOwner,
@@ -41,6 +43,20 @@ struct ChannelRuntimeRefs {
     router: std::sync::Arc<tokio::sync::Mutex<SessionRouter>>,
     health: std::sync::Arc<HealthManager>,
     consumers: ImConsumers,
+}
+
+async fn acquire_peer_operation_fence(
+    peer_locks: &PeerLocks,
+    session_key: &str,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    let peer_lock = {
+        let mut locks = peer_locks.lock().await;
+        locks
+            .entry(session_key.to_string())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+    peer_lock.lock_owned().await
 }
 
 fn target_consumer_needs_cancel(
@@ -61,12 +77,47 @@ fn target_consumer_needs_cancel(
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
-    use axum::{routing::post, Json, Router};
+    use axum::{
+        routing::{get, post},
+        Json, Router,
+    };
     use serde_json::Value;
-    use tokio::sync::oneshot;
+    use tokio::sync::{oneshot, Mutex as AsyncMutex};
 
-    use super::{freeze_current_via_sidecar, target_consumer_needs_cancel};
+    use super::{
+        acquire_peer_operation_fence, freeze_current_via_sidecar, migrate_surface_via_sidecar,
+        target_consumer_needs_cancel,
+    };
+
+    #[tokio::test]
+    async fn handover_peer_fence_waits_for_an_inflight_im_operation() {
+        let peer_locks = Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
+        let first = acquire_peer_operation_fence(&peer_locks, "agent:a:weixin:private:user").await;
+        let (acquired_tx, mut acquired_rx) = oneshot::channel();
+        let waiter = tauri::async_runtime::spawn({
+            let peer_locks = Arc::clone(&peer_locks);
+            async move {
+                let _second =
+                    acquire_peer_operation_fence(&peer_locks, "agent:a:weixin:private:user").await;
+                let _ = acquired_tx.send(());
+            }
+        });
+
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            acquired_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("handover waiter should acquire the shared fence")
+            .expect("handover waiter should not panic");
+        assert!(acquired_rx.await.is_ok());
+    }
 
     #[test]
     fn target_consumer_cancel_is_required_when_handover_replaces_session() {
@@ -138,6 +189,86 @@ mod tests {
 
         server.abort();
     }
+
+    #[tokio::test]
+    async fn surface_migration_via_sidecar_sends_the_proven_target() {
+        let (tx, rx) = oneshot::channel::<Value>();
+        let tx = Arc::new(Mutex::new(Some(tx)));
+        let app = Router::new().route(
+            "/api/session/surface-migration",
+            post({
+                let tx = tx.clone();
+                move |Json(payload): Json<Value>| {
+                    let tx = tx.clone();
+                    async move {
+                        if let Some(tx) = tx.lock().expect("capture mutex").take() {
+                            let _ = tx.send(payload.clone());
+                        }
+                        Json(serde_json::json!({
+                            "sessionId": payload["targetSessionId"],
+                        }))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let port = listener
+            .local_addr()
+            .expect("test server local addr")
+            .port();
+        let server = tauri::async_runtime::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let target = "6d57334a-44d8-4fe1-a4f2-cd57fc8beb85";
+
+        migrate_surface_via_sidecar(port, target, true, false)
+            .await
+            .expect("surface migration succeeds");
+
+        let payload = rx.await.expect("captured migration payload");
+        assert_eq!(payload["targetSessionId"].as_str(), Some(target));
+        assert_eq!(payload["metadataBirthPending"].as_bool(), Some(true));
+        assert_eq!(payload["metadataIndexed"].as_bool(), Some(false));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn surface_migration_accepts_a_verified_post_commit_error() {
+        let target = "6d57334a-44d8-4fe1-a4f2-cd57fc8beb85";
+        let app = Router::new()
+            .route(
+                "/api/session/surface-migration",
+                post(|| async {
+                    (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "late failure",
+                    )
+                }),
+            )
+            .route(
+                "/api/session-state",
+                get(move || async move { Json(serde_json::json!({ "sessionId": target })) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let port = listener
+            .local_addr()
+            .expect("test server local addr")
+            .port();
+        let server = tauri::async_runtime::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        migrate_surface_via_sidecar(port, target, false, true)
+            .await
+            .expect("verified target is already committed");
+
+        server.abort();
+    }
 }
 
 /// UTF-8-safe shortener for log lines and notification text. The bare
@@ -173,6 +304,59 @@ async fn freeze_current_via_sidecar(
     Ok(())
 }
 
+async fn migrate_surface_via_sidecar(
+    port: u16,
+    target_session_id: &str,
+    metadata_birth_pending: bool,
+    metadata_indexed: bool,
+) -> Result<(), String> {
+    let client = crate::local_http::json_client(Duration::from_secs(30));
+    let url = format!("http://127.0.0.1:{}/api/session/surface-migration", port);
+    let response = client
+        .post(&url)
+        .json(&json!({
+            "targetSessionId": target_session_id,
+            "metadataBirthPending": metadata_birth_pending,
+            "metadataIndexed": metadata_indexed,
+        }))
+        .send()
+        .await;
+    match response {
+        Ok(response) if response.status().is_success() => return Ok(()),
+        Ok(response) => {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            if sidecar_runtime_session_id(&client, port).await.as_deref() == Some(target_session_id)
+            {
+                // The Runtime commit is authoritative even if optional
+                // post-commit work produced a non-success response.
+                return Ok(());
+            }
+            return Err(format!("surface-migration returned {status}: {body}"));
+        }
+        Err(error) => {
+            if sidecar_runtime_session_id(&client, port).await.as_deref() == Some(target_session_id)
+            {
+                // A loopback response can disappear after Node committed.
+                // Verify the identity once instead of rolling Rust back across
+                // an already-committed Runtime.
+                return Ok(());
+            }
+            return Err(format!("surface-migration HTTP send failed: {error}"));
+        }
+    }
+}
+
+async fn sidecar_runtime_session_id(client: &reqwest::Client, port: u16) -> Option<String> {
+    let url = format!("http://127.0.0.1:{port}/api/session-state");
+    let response = client.get(url).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = response.json().await.ok()?;
+    body.get("sessionId")?.as_str().map(str::to_string)
+}
+
 // ============================================================================
 // 1. New conversation with surface migration
 // ============================================================================
@@ -185,25 +369,22 @@ pub struct NewSessionResult {
 
 /// Desktop "+新对话" on a channel-bound session.
 ///
-/// Looks up the agent that owns `session_key`, calls
-/// `router.reset_session(session_key, …)` which:
-///
-///   1. Hits `/api/im/session/new` on the sidecar to mint a fresh `sessionId`
-///   2. Calls `manager.upgrade_session_id(old, new)` so the sidecar keeps
-///      running but is now keyed under the new id
-///   3. Updates `peer_sessions[session_key].session_id = new`
-///
-/// The returned `newSessionId` is what the desktop tab should adopt.
+/// Rust admits this operation only when the source Sidecar has exactly the
+/// participating `Tab(tabId) + Agent(sessionKey)` owners. Router projection is
+/// staged durably before Node mutation, then the same target identity is
+/// adopted by SidecarManager and the SessionEngine facade.
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn cmd_session_new_with_surface_migration<R: Runtime>(
     app: AppHandle<R>,
     oldSessionId: String,
+    tabId: String,
     sessionKey: String,
 ) -> Result<NewSessionResult, String> {
     ulog_info!(
-        "[handover] surface migration: session={} key={}",
+        "[handover] operation=surface_session_migration stage=start session={} tab={} key={}",
         short_id(&oldSessionId),
+        tabId,
         sessionKey,
     );
 
@@ -240,41 +421,175 @@ pub async fn cmd_session_new_with_surface_migration<R: Runtime>(
             let router_guard = ch.bot_instance.router.lock().await;
             if router_guard.has_peer_session(&sessionKey) {
                 drop(router_guard);
-                let snapshot = runtime_change::build_snapshot_from_channel_state(
-                    &ch.bot_instance.runtime,
-                    &ch.bot_instance.current_model,
-                    &ch.bot_instance.permission_mode,
-                    &ch.bot_instance.mcp_servers_json,
-                    &ch.bot_instance.runtime_config,
-                    ch.bot_instance.config.provider_id.clone(),
-                    &ch.bot_instance.current_provider_env,
-                )
-                .await;
-                found = Some((ch.bot_instance.router.clone(), snapshot));
+                found = Some((
+                    ch.bot_instance.router.clone(),
+                    ch.bot_instance.health.clone(),
+                    ch.bot_instance.peer_locks.clone(),
+                ));
                 break;
             }
         }
         found
     };
 
-    let (router_arc, fallback_snapshot) = found_binding.ok_or_else(|| {
+    let (router_arc, health, peer_locks) = found_binding.ok_or_else(|| {
         format!(
             "No active channel binds session_key {}; cannot migrate",
             sessionKey
         )
     })?;
 
-    let new_session_id = {
-        let mut router = router_arc.lock().await;
-        router
-            .reset_session(&sessionKey, &app, manager.inner(), Some(&fallback_snapshot))
-            .await?
+    // Reuse the exact enqueue fence used by `/new`, normal IM turns, and
+    // heartbeat. No second migration mutex/state machine is introduced.
+    let peer_lock = {
+        let mut locks = peer_locks.lock().await;
+        locks
+            .entry(sessionKey.clone())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     };
+    let _peer_guard = peer_lock.lock().await;
+
+    // Match the active-session projection lock order used by every Router
+    // writer. The peer fence excludes `/new` and ordinary IM turns for this
+    // binding until all three identities have converged.
+    let _projection = health.lock_active_sessions_projection().await;
+    let mut router = router_arc.lock().await;
+    let prior = router
+        .peer_session_snapshot(&sessionKey)
+        .ok_or_else(|| format!("No peer binding for {sessionKey}"))?;
+    if prior.session_id != oldSessionId {
+        return Err(format!(
+            "Channel binding changed before migration: expected {}, found {}",
+            short_id(&oldSessionId),
+            short_id(&prior.session_id)
+        ));
+    }
+
+    let new_session_id = uuid::Uuid::new_v4().to_string();
+    let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[
+        oldSessionId.as_str(),
+        new_session_id.as_str(),
+    ])
+    .await;
+    if crate::sidecar::has_persisted_session_owner(&oldSessionId).await?
+        || crate::sidecar::has_persisted_session_owner(&new_session_id).await?
+    {
+        return Err("Cannot migrate a Session with a persistent Goal or task owner".to_string());
+    }
+
+    let sidecar_port = {
+        let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
+        if !manager_guard.surface_session_migration_is_admissible(
+            &oldSessionId,
+            &tabId,
+            &sessionKey,
+        ) {
+            return Err(
+                "Session owners changed; only the current Tab and Channel may migrate together"
+                    .to_string(),
+            );
+        }
+        manager_guard
+            .get_session_port(&oldSessionId)
+            .ok_or_else(|| "Source Sidecar is not ready for surface migration".to_string())?
+    };
+    if prior.sidecar_port != sidecar_port {
+        return Err("Router and SidecarManager disagree on the source Sidecar".to_string());
+    }
+
+    // Stage and durably project B while the Router is fenced. If persistence
+    // fails, exact compare-and-rollback restores A before any Runtime identity
+    // changes.
+    let transition =
+        router.stage_surface_session_migration(&sessionKey, &oldSessionId, &new_session_id)?;
+    if let Err(error) = health
+        .persist_active_sessions_snapshot(router.active_sessions())
+        .await
+    {
+        let rolled_back = router.rollback_peer_binding_transition(&transition);
+        ulog_warn!(
+            "[handover] operation=surface_session_migration stage=persist result=failed old={} new={} rollback={} durable_state=unchanged error={}",
+            short_id(&oldSessionId),
+            short_id(&new_session_id),
+            rolled_back,
+            error
+        );
+        return Err(format!("Failed to save Channel migration: {error}"));
+    }
+
+    let manager_upgraded = manager
+        .lock()
+        .map_err(|error| error.to_string())?
+        .upgrade_session_id_for_surface_migration(
+            &oldSessionId,
+            &new_session_id,
+            &tabId,
+            &sessionKey,
+        );
+    if !manager_upgraded {
+        let rolled_back = router.rollback_peer_binding_transition(&transition);
+        let rollback_persisted = rolled_back
+            && health
+                .persist_active_sessions_snapshot(router.active_sessions())
+                .await
+                .is_ok();
+        ulog_warn!(
+            "[handover] operation=surface_session_migration stage=manager-rekey result=failed old={} new={} rollback={} rollback_persisted={}",
+            short_id(&oldSessionId),
+            short_id(&new_session_id),
+            rolled_back,
+            rollback_persisted
+        );
+        return Err("Sidecar owner admission changed before migration".to_string());
+    }
+
+    if let Err(error) = migrate_surface_via_sidecar(
+        sidecar_port,
+        &new_session_id,
+        prior.metadata_birth_pending,
+        prior.metadata_indexed,
+    )
+    .await
+    {
+        let manager_rolled_back = manager
+            .lock()
+            .map_err(|lock_error| lock_error.to_string())?
+            .upgrade_session_id_for_surface_migration(
+                &new_session_id,
+                &oldSessionId,
+                &tabId,
+                &sessionKey,
+            );
+        let router_rolled_back = router.rollback_peer_binding_transition(&transition);
+        let rollback_persisted = router_rolled_back
+            && health
+                .persist_active_sessions_snapshot(router.active_sessions())
+                .await
+                .is_ok();
+        ulog_warn!(
+            "[handover] operation=surface_session_migration stage=runtime result=failed old={} new={} manager_rollback={} router_rollback={} rollback_persisted={} error={}",
+            short_id(&oldSessionId),
+            short_id(&new_session_id),
+            manager_rolled_back,
+            router_rolled_back,
+            rollback_persisted,
+            error
+        );
+        if !manager_rolled_back || !router_rolled_back || !rollback_persisted {
+            return Err(format!(
+                "Surface migration failed and could not restore its owner snapshot: {error}"
+            ));
+        }
+        return Err(error);
+    }
 
     ulog_info!(
-        "[handover] surface migration done: {} → {}",
+        "[handover] operation=surface_session_migration result=committed old={} new={} tab={} key={}",
         short_id(&oldSessionId),
         short_id(&new_session_id),
+        tabId,
+        sessionKey,
     );
 
     Ok(NewSessionResult { new_session_id })
@@ -362,6 +677,7 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
         router_arc,
         adapter,
         target_health,
+        target_peer_locks,
         agent_workspace,
         last_active_channel,
         last_active_private_target,
@@ -408,6 +724,7 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
             channel.bot_instance.router.clone(),
             channel.bot_instance.adapter.clone(),
             channel.bot_instance.health.clone(),
+            channel.bot_instance.peer_locks.clone(),
             agent.config.resolved_workspace_path.clone(),
             agent.last_active_channel.clone(),
             agent.last_active_private_target.clone(),
@@ -471,6 +788,13 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
         }
     };
     ulog_info!("[handover] step2 target_session_key={}", target_session_key);
+
+    // Serialize the whole owner rotation with ordinary IM enqueue, `/new`,
+    // heartbeat, and surface migration for this exact chat. In particular,
+    // a first IM message must finish its SessionStore materialization before
+    // the source is classified as durable vs unmaterialized below.
+    let _target_peer_guard =
+        acquire_peer_operation_fence(&target_peer_locks, &target_session_key).await;
     let prior_before_handover = {
         let router = router_arc.lock().await;
         router.peer_session_snapshot(&target_session_key)
@@ -539,48 +863,84 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
     // no "old session frozen but IM still bound to it" half-state.
     if let Some(prior) = prior_before_handover.as_ref() {
         if prior.session_id != sessionId {
-            let freeze_result = if prior.sidecar_port != 0 {
+            // Re-read immediately before freeze. The per-peer fence excludes
+            // IM materialization, while this identity check also fails closed
+            // if another supported owner path replaced the source meanwhile.
+            let (prior_for_freeze, prior_metadata_disposition) = {
+                let router = router_arc.lock().await;
+                let current_prior = router.peer_session_snapshot(&target_session_key);
+                let before_identity = Some((prior.session_id.as_str(), prior.sidecar_port));
+                let current_identity = current_prior
+                    .as_ref()
+                    .map(|current| (current.session_id.as_str(), current.sidecar_port));
+                if before_identity != current_identity {
+                    let _ = release_session_sidecar(manager.inner(), &sessionId, &owner);
+                    ulog_warn!(
+                        "[handover] step4b binding changed before freeze; target owner released key={}",
+                        target_session_key
+                    );
+                    return Err(
+                        "Channel binding changed during handover; please retry.".to_string()
+                    );
+                }
+                (
+                    current_prior.expect("binding identity matched an existing source"),
+                    router.classify_peer_session_metadata_for_binding_rotation(&target_session_key),
+                )
+            };
+            let freeze_result = if !peer_binding_source_requires_freeze(prior_metadata_disposition)
+            {
+                ulog_info!(
+                    "[handover] step4b skipped freeze for unmaterialized prior session {} disposition={:?}",
+                    short_id(&prior_for_freeze.session_id),
+                    prior_metadata_disposition,
+                );
+                Ok(())
+            } else if prior_for_freeze.sidecar_port != 0 {
                 freeze_current_via_sidecar(
-                    prior.sidecar_port,
-                    prior.metadata_birth_pending,
-                    prior.metadata_indexed,
+                    prior_for_freeze.sidecar_port,
+                    prior_for_freeze.metadata_birth_pending,
+                    prior_for_freeze.metadata_indexed,
                 )
                 .await
                 .map(|_| {
                     ulog_info!(
                         "[handover] step4b froze prior session {} via sidecar port {}",
-                        short_id(&prior.session_id),
-                        prior.sidecar_port
+                        short_id(&prior_for_freeze.session_id),
+                        prior_for_freeze.sidecar_port
                     );
                 })
             } else {
-                runtime_change::freeze_via_file_lock_status(&prior.session_id, &fallback_snapshot)
-                    .await
-                    .and_then(|outcome| {
-                        runtime_change::resolve_peer_file_lock_freeze_outcome(
-                            outcome,
-                            prior.metadata_birth_pending,
-                            prior.metadata_indexed,
-                            &prior.session_id,
-                        )
-                    })
-                    .map(|disposition| match disposition {
+                runtime_change::freeze_via_file_lock_status(
+                    &prior_for_freeze.session_id,
+                    &fallback_snapshot,
+                )
+                .await
+                .and_then(|outcome| {
+                    runtime_change::resolve_peer_file_lock_freeze_outcome(
+                        outcome,
+                        prior_for_freeze.metadata_birth_pending,
+                        prior_for_freeze.metadata_indexed,
+                        &prior_for_freeze.session_id,
+                    )
+                })
+                .map(|disposition| match disposition {
                         runtime_change::PeerFileLockFreezeDisposition::Frozen => {
                             ulog_info!(
                                 "[handover] step4b froze idle prior session {} via file lock",
-                                short_id(&prior.session_id)
+                                short_id(&prior_for_freeze.session_id)
                             );
                         }
                         runtime_change::PeerFileLockFreezeDisposition::MissingBirthPending => {
                             ulog_info!(
                                 "[handover] step4b skipped freeze for birth-pending prior session {} missing from SessionStore",
-                                short_id(&prior.session_id)
+                                short_id(&prior_for_freeze.session_id)
                             );
                         }
                         runtime_change::PeerFileLockFreezeDisposition::MissingUnindexedPeerSession => {
                             ulog_info!(
                                 "[handover] step4b skipped freeze for unindexed prior peer session {} missing from SessionStore",
-                                short_id(&prior.session_id)
+                                short_id(&prior_for_freeze.session_id)
                             );
                         }
                     })

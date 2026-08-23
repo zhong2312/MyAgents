@@ -763,7 +763,7 @@ Cloud Production 是 migration-first。PRD 0.3.2 定义的 backward-compatible e
 - src/shared/session-origin.ts 的 context normalize/serialize/restore；
 - src/server/session-engine/ 的 origin 与 hidden message facade；
 - builtin/external Runtime 的一致行为；
-- src/cli/myagents.ts、Admin API、Rust Management route 与 CLI_VERSION；
+- src/cli/myagents.ts、当前 app bundle、Admin API 与 Rust Management route；CLI 不再有独立复制版本号；
 - bundled myagents-cli skill；
 - Renderer 的 instruction、multi-subscription、legacy warning 与 visible copy；
 - 登记/编辑弹窗中，名称正下方的“目标与指令”textarea、placeholder、帮助文案与校验；

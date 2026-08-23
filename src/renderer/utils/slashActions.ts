@@ -1,9 +1,9 @@
 // Client-action slash commands
 // ----------------------------------------------------------------------------
 // Most slash commands either insert text into the input (and get sent to the
-// AI, e.g. `/compact`) or are disk-backed skills/commands discovered by the
+// AI (for example builtin SDK `/compact`) or are disk-backed skills/commands discovered by the
 // Rust scanner. A *client-action* command is different: selecting it triggers
-// a renderer-side UI action (e.g. opening the goal/cron panel) and is never
+// a renderer-side UI action (e.g. arming the Goal composer draft) and is never
 // sent to the AI.
 //
 // Such a command's behavior lives entirely in the renderer, so it is also
@@ -15,41 +15,42 @@
 import type { SlashCommand } from '../../shared/slashCommands';
 import { i18n } from '@/i18n';
 
-/** Built-in slash commands whose selection dispatches a renderer-side action. */
+/** Product slash commands whose selection dispatches a renderer-side action. */
 export const CLIENT_ACTION_SLASH_COMMANDS: SlashCommand[] = [
-  { name: 'goal', description: 'Run toward a goal continuously', source: 'builtin', aliases: ['loop'] },
+  { name: 'goal', description: 'Run toward a goal continuously', source: 'client', aliases: ['loop'] },
 ];
 
-const CLIENT_ACTION_ALIAS_TARGETS = new Map<string, string>([
-  ['loop', 'goal'],
-]);
+/** Native Managed Codex action; Chat injects it only for that runtime. */
+export const MANAGED_CODEX_COMPACT_SLASH_COMMAND: SlashCommand = {
+  name: 'compact',
+  description: 'Compress chat history to free context space',
+  source: 'client',
+};
 
-const CLIENT_ACTION_VISIBLE_NAMES = new Set(CLIENT_ACTION_SLASH_COMMANDS.map((cmd) => cmd.name));
-const CLIENT_ACTION_NAMES = new Set([
-  ...CLIENT_ACTION_VISIBLE_NAMES,
-  ...CLIENT_ACTION_ALIAS_TARGETS.keys(),
-]);
-
-function getClientActionSlashCommands(): SlashCommand[] {
-  return CLIENT_ACTION_SLASH_COMMANDS.map((cmd) => ({
+function getClientActionSlashCommands(commands: readonly SlashCommand[]): SlashCommand[] {
+  return commands.map((cmd) => ({
     ...cmd,
     description: String(i18n.t(`chat:input.slashCommands.${cmd.name}`, { defaultValue: cmd.description })),
   }));
 }
 
-export function resolveClientActionName(rawName: string): string | null {
+export function resolveClientActionName(
+  rawName: string,
+  commands: readonly SlashCommand[] = CLIENT_ACTION_SLASH_COMMANDS,
+): string | null {
   const name = rawName.trim().replace(/^\/+/, '').toLowerCase();
-  if (!CLIENT_ACTION_NAMES.has(name)) return null;
-  return CLIENT_ACTION_ALIAS_TARGETS.get(name) ?? name;
+  for (const command of commands) {
+    const commandName = command.name.toLowerCase();
+    if (name === commandName) return commandName;
+    if (command.aliases?.some(alias => alias.toLowerCase() === name)) return commandName;
+  }
+  return null;
 }
 
 /** Whether selecting `cmd` should dispatch a client action instead of inserting text. */
 export function isClientActionCommand(cmd: SlashCommand): boolean {
-  return cmd.source === 'builtin' && resolveClientActionName(cmd.name) !== null;
+  return cmd.source === 'client';
 }
-
-/** Reserved command names — a disk-backed skill/command may not shadow these. */
-const RESERVED_NAMES = new Set(CLIENT_ACTION_NAMES);
 
 /**
  * Merge client-action commands into a fetched slash-command list.
@@ -63,8 +64,14 @@ const RESERVED_NAMES = new Set(CLIENT_ACTION_NAMES);
  *   first-class command, and incoherent with ranking builtins first. Reserving
  *   guarantees `/goal` and its `/loop` alias always resolve to their action.
  */
-export function withClientActionCommands(commands: SlashCommand[], enabled: boolean): SlashCommand[] {
+export function withClientActionCommands(
+  commands: SlashCommand[],
+  enabled: boolean,
+  additionalCommands: readonly SlashCommand[] = [],
+): SlashCommand[] {
   if (!enabled) return commands;
-  const kept = commands.filter((c) => !RESERVED_NAMES.has(c.name));
-  return [...kept, ...getClientActionSlashCommands()];
+  const clientCommands = [...CLIENT_ACTION_SLASH_COMMANDS, ...additionalCommands];
+  const reservedNames = new Set(clientCommands.flatMap(command => [command.name, ...(command.aliases ?? [])]));
+  const kept = commands.filter((c) => !reservedNames.has(c.name));
+  return [...kept, ...getClientActionSlashCommands(clientCommands)];
 }

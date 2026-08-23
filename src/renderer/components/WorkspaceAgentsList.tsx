@@ -353,7 +353,7 @@ export default function WorkspaceAgentsList({
 // AgentRow — v0.1.69 polish: migrated from the single-column row layout
 // to the V2 "compact card" spec so the Workspace 技能 tab renders Skills /
 // Commands / Sub-Agents in one consistent 2-col grid. Matches SkillCard's
-// padding (px-3.5 py-3), title size (14px), inline toggle, and
+// padding (px-3.5 py-3), icon-first identity, title size (14px), inline toggle, and
 // `min-h-[2.6em]` description reserve that keeps same-row cards aligned.
 //
 // Row-specific affordances (delete for local, remove-ref for global) live
@@ -383,10 +383,10 @@ function AgentRow({
             onClick={onClick}
         >
             <div className="flex items-center gap-2">
+                <Bot data-capability-type-icon="agent" className="h-3.5 w-3.5 shrink-0 text-violet-500" />
                 <h4 className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">
                     {agent.name}
                 </h4>
-                <Bot className="h-3.5 w-3.5 shrink-0 text-violet-500" />
                 {isGlobalRef && (
                     <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium tracking-[0.04em] text-[var(--ink-muted)]">
                         {t('agentSettings.capabilities.scopeUser')}

@@ -206,7 +206,9 @@ import {
 } from "@/utils/notificationBadgeRegistry";
 import { applyTerminalSessionToTabs } from "@/utils/sessionTermination";
 import {
+  createSessionResourceTransitionState,
   deleteSessionThroughAppOwner,
+  isSessionOpening,
   tryClaimSessionResourceTransition,
   type SessionResourceTransitionClaim,
 } from "@/utils/sessionDeletionCoordinator";
@@ -239,6 +241,7 @@ import type { SessionMetadata } from "@/api/sessionClient";
 import type { RuntimeSource, RuntimeType } from "../shared/types/runtime";
 import {
   agentUsesManagedCodexProvider,
+  createRuntimeBackedProviderIdentity,
   isRuntimeBackedProvider,
   toProviderExecutionIntent,
   type RuntimeBackedProviderIdentity,
@@ -469,11 +472,13 @@ interface TabContentProps {
   isLoading: boolean;
   error: string | null;
   /**
-   * When true, render only a cheap placeholder instead of the (heavy) tab
-   * content. Set for a freshly created tab so its full subtree (e.g. the
-   * Launcher: BrandSection + SimpleChatInput + selectors) does NOT mount
-   * inside the synchronous click commit —
-   * that mount is what janked the "+" / Cmd+T action. handleNewTab clears
+   * When true, postpone the heavy view subtree. Non-Chat tabs render a cheap
+   * placeholder; Chat tabs still mount their real TabProvider so Session/SSE/
+   * owner lifecycle is live, but render only ChatBootOverlay until reveal.
+   * Set for a freshly created tab so its full subtree (e.g. the Launcher:
+   * BrandSection + SimpleChatInput + selectors) does NOT mount inside the
+   * synchronous click commit —
+   * that mount is what janked the "+" / Cmd+T action. Active-tab projection clears
    * the flag right after the placeholder paints (runAfterNextPaint), so React
    * mounts the real content in a prompt normal-priority commit off the click
    * frame. (NOT a low-priority transition — that gets starved by background
@@ -1959,8 +1964,31 @@ export default function App() {
                 `[App] Tab.sessionId reset for terminated session ${sessionId}`,
               );
             }
-            return next as typeof prev;
-          });
+            // Presence check for the same-generation edge case. Readiness is
+            // intentionally irrelevant here; any live entry means don't clear.
+            if (await hasSessionSidecar(sessionId)) {
+              console.log(
+                `[App] Ignoring stale terminal event for ${sessionId} (gen=${generation}) — live sidecar entry present`
+              );
+              return;
+            }
+            if (isSessionOpening(sessionResourceTransitionsRef.current, sessionId)) return;
+            if (sessionResourceTransitionsRef.current.openingRevision !== openingRevision) continue;
+            if (!mountedRef.current) return;
+
+            // Commit in the same synchronous boundary as the stable revision
+            // check so a later opening observes the terminal projection.
+            flushSync(() => {
+              setTabs((prev) => {
+                const next = applyTerminalSessionToTabs(prev, sessionId);
+                if (next !== prev) {
+                  console.log(`[App] Tab.sessionId reset for terminated session ${sessionId}`);
+                }
+                return next as typeof prev;
+              });
+            });
+            return;
+          }
         },
         listenerAc.signal,
       );
@@ -3299,9 +3327,11 @@ export default function App() {
   // "恢复对话" is a bulk entry into the same live existing-Session path used
   // by normal history navigation. Validate every candidate under its Session
   // opening admission first, then commit one final tabs/active projection so
-  // every restored Chat mounts TabProvider from its first render. Owner work is
-  // independent per target; failures are removed together from the latest Tab
-  // list so concurrent results cannot overwrite one another or newer user work.
+  // every restored Chat mounts TabProvider from its first render. Heavy Chat
+  // children stay deferred: only the active one reveals after the shell paints,
+  // while inactive ones reveal on first selection. Owner work is independent
+  // per target; failures are removed together from the latest Tab list so
+  // concurrent results cannot overwrite one another or newer user work.
   const handleRestoreLastSession = useCallback(async () => {
     const candidate = restoreCandidateRef.current;
     setRestorePillCount(0);
@@ -3372,6 +3402,11 @@ export default function App() {
 
     track("restore_last_session", { count: addedTargets.length });
     flushSync(() => {
+      setDeferredMountTabIds((current) => {
+        const next = new Set(current);
+        addedTargets.forEach(({ tab }) => next.add(tab.id));
+        return next;
+      });
       // Compose after any queued field-only updates (for example another
       // existing Tab settling pending → adopt) instead of replacing them with
       // the pre-await render mirror captured by the restore plan.
@@ -3408,6 +3443,14 @@ export default function App() {
     });
     if (failedTabIds.size === 0) return;
 
+    const remaining = tabsRef.current.filter((tab) => !failedTabIds.has(tab.id));
+    const nextTabs = remaining.length > 0 ? remaining : [createNewTab()];
+    const currentActiveTabId = activeTabIdRef.current;
+    const nextActiveTabId = currentActiveTabId && nextTabs.some((tab) => tab.id === currentActiveTabId)
+      ? currentActiveTabId
+      : (previousActiveTabId && nextTabs.some((tab) => tab.id === previousActiveTabId)
+          ? previousActiveTabId
+          : nextTabs.at(-1)!.id);
     flushSync(() => {
       const remaining = tabsRef.current.filter(
         (tab) => !failedTabIds.has(tab.id),

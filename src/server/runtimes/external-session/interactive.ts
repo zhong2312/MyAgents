@@ -24,6 +24,12 @@ export function getExternalActiveRequestId(): string | null {
   return activeRequestId;
 }
 
+export function getExternalImBridgeTurnContext(): import('../../session-core/im-bridge-types').ImBridgeTurnContext | null {
+  return activeRequestId
+    ? imRequestRegistry.get(activeRequestId)?.imBridgeTurnContext ?? null
+    : null;
+}
+
 export function setExternalActiveRequestId(requestId: string | null | undefined): void {
   activeRequestId = requestId ?? null;
 }

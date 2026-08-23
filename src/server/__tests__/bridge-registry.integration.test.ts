@@ -26,6 +26,8 @@ import {
   lookupBridge,
   hasBridge,
   listBridges,
+  arePromptCacheBreakpointsDisabled,
+  disablePromptCacheBreakpoints,
   disablePromptCacheKey,
   isPromptCacheKeyDisabled,
   _clearRegistryForTests,
@@ -194,20 +196,27 @@ describe('bridge-registry — diagnostics', () => {
   });
 });
 
-describe('bridge-registry — prompt_cache_key downgrade state', () => {
-  it('keeps the unsupported-field downgrade on same-token re-register and clears it on unregister', async () => {
+describe('bridge-registry — prompt-cache capability state', () => {
+  it('keeps independent downgrades on same-token re-register and clears them on unregister', async () => {
     registerBridge('tok-cache', () => ({ ...baseConfig }), 'session:cache');
     expect(isPromptCacheKeyDisabled('tok-cache')).toBe(false);
+    expect(arePromptCacheBreakpointsDisabled('tok-cache')).toBe(false);
 
     disablePromptCacheKey('tok-cache');
     expect(isPromptCacheKeyDisabled('tok-cache')).toBe(true);
+    expect(arePromptCacheBreakpointsDisabled('tok-cache')).toBe(false);
+
+    disablePromptCacheBreakpoints('tok-cache');
+    expect(arePromptCacheBreakpointsDisabled('tok-cache')).toBe(true);
 
     registerBridge('tok-cache', () => ({ ...baseConfig, model: 'new-model' }), 'session:cache-restart');
     expect((await lookupBridge('tok-cache'))!.model).toBe('new-model');
     expect(isPromptCacheKeyDisabled('tok-cache')).toBe(true);
+    expect(arePromptCacheBreakpointsDisabled('tok-cache')).toBe(true);
 
     unregisterBridge('tok-cache');
     expect(isPromptCacheKeyDisabled('tok-cache')).toBe(false);
+    expect(arePromptCacheBreakpointsDisabled('tok-cache')).toBe(false);
   });
 });
 

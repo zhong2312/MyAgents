@@ -116,6 +116,8 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
 
         // Load skill data
         useEffect(() => {
+            let cancelled = false;
+
             const loadSkill = async () => {
                 setLoading(true);
                 try {
@@ -125,6 +127,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                     const response = await api.get<{ success: boolean; skill: SkillDetail; error?: string }>(
                         `/api/skill/${encodeURIComponent(name)}?scope=${scope}${agentDirParam}`
                     );
+                    if (cancelled) return;
                     if (response.success && response.skill) {
                         setSkill(response.skill);
                         const fm = response.skill.frontmatter;
@@ -160,29 +163,34 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                         setOriginalAgent(ag);
                         setArgumentHint(argHint);
                         setOriginalArgumentHint(argHint);
-                        // 如果是新建技能模式，自动进入编辑状态
-                        if (startInEditMode) {
-                            setIsEditing(true);
-                        }
+                        // 新建的普通 Skill 自动进入编辑；切换到其它详情时同步退出旧编辑态。
+                        setIsEditing(startInEditMode && !response.skill.systemOwned);
                     } else {
                         toastRef.current.error(response.error || tRef.current('resourceDetail.common.loadFailed'));
                     }
                 } catch {
+                    if (cancelled) return;
                     toastRef.current.error(tRef.current('resourceDetail.common.loadFailed'));
                 } finally {
-                    setLoading(false);
+                    if (!cancelled) setLoading(false);
                 }
             };
             loadSkill();
+            return () => {
+                cancelled = true;
+            };
         }, [name, scope, agentDir, startInEditMode, api, isInTabContext]);
 
         // Outside-click + Escape are handled by the `<Popover>` primitive
         // on each dropdown below.
 
+        const canEdit = skill?.systemOwned !== true;
+
         const handleEdit = useCallback((field?: 'name' | 'description' | 'body') => {
+            if (!canEdit) return;
             setFocusField(field || 'name');
             setIsEditing(true);
-        }, []);
+        }, [canEdit]);
 
         // 处理进入编辑模式后的焦点（仅处理 name 和 description，body 由 MonacoEditor autoFocus 处理）
         useEffect(() => {
@@ -399,7 +407,14 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                 {/* Header */}
                 <div className="flex flex-shrink-0 items-center justify-between border-b border-[var(--line)] bg-[var(--paper-inset)]/50 px-6 py-2">
                     <div className="min-w-0 flex-1">
-                        <h3 className="truncate text-lg font-semibold text-[var(--ink)]">{skillName || name}</h3>
+                        <div className="flex min-w-0 items-center gap-2">
+                            <h3 className="truncate text-lg font-semibold text-[var(--ink)]">{skillName || name}</h3>
+                            {scope === 'user' && (
+                                <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
+                                    {t('agentSettings.capabilities.scopeUser')}
+                                </span>
+                            )}
+                        </div>
                         <div className="mt-0.5 flex items-center gap-2">
                             <span
                                 className={`max-w-[300px] truncate font-mono text-xs ${pathChanged ? 'text-[var(--accent)]' : 'text-[var(--ink-muted)]'}`}
@@ -450,7 +465,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                     {t('resourceDetail.common.save')}
                                 </button>
                             </div>
-                        ) : (
+                        ) : canEdit ? (
                             <button
                                 key="view"
                                 type="button"
@@ -460,7 +475,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                 <Edit2 className="h-4 w-4" />
                                 {t('resourceDetail.common.edit')}
                             </button>
-                        )}
+                        ) : null}
                     </div>
                 </div>
 

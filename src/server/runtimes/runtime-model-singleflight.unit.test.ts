@@ -62,4 +62,26 @@ describe('runtime model query single-flight', () => {
     await expect(queryRuntimeModelsSingleFlight('builtin', queryer)).resolves.toEqual([]);
     expect(queryer).not.toHaveBeenCalled();
   });
+
+  it('aborts the owned query only after every subscriber has cancelled', async () => {
+    const first = new AbortController();
+    const second = new AbortController();
+    let ownerSignal!: AbortSignal;
+    const queryer = vi.fn((signal: AbortSignal) => new Promise<unknown[]>((_, reject) => {
+      ownerSignal = signal;
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }));
+
+    const a = queryRuntimeModelsSingleFlight('gemini', queryer, undefined, first.signal);
+    const b = queryRuntimeModelsSingleFlight('gemini', queryer, undefined, second.signal);
+    first.abort(new Error('first cancelled'));
+
+    await expect(a).rejects.toThrow('first cancelled');
+    expect(ownerSignal.aborted).toBe(false);
+
+    second.abort(new Error('second cancelled'));
+    await expect(b).rejects.toThrow('second cancelled');
+    expect(ownerSignal.aborted).toBe(true);
+    expect(queryer).toHaveBeenCalledTimes(1);
+  });
 });

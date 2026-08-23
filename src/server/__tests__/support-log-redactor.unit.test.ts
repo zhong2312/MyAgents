@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createLogRedactor } from '../../../bundled-agents/myagents_helper/.claude/skills/support/scripts/redact-log-output.mjs';
+import { createLogRedactor } from '../../../bundled-agents/myagents_helper/.claude/skills/support/scripts/redact-log-core.mjs';
 
 function runRedactor(input: string): string {
   const redact = createLogRedactor();

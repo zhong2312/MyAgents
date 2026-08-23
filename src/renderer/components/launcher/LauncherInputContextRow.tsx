@@ -6,11 +6,10 @@
 //
 // Visual: the inner buttons (`WorkspaceSelector`, `RuntimeSelector`) are
 // reused as-is — they already carry the chevron / icon / hover-text-color
-// styling needed in the chat-tab toolbar. We layer a subtle resting
-// background on top via a wrapper so the chips read as distinct affordances
-// against the launcher's cream background. The inner button's
-// `hover:bg-[var(--hover-bg)]` cleanly overrides the wrapper's lighter
-// resting tint on hover; the user perceives one chip with a deepening bg.
+// styling needed in the chat-tab toolbar. The wrapper shares the launcher's
+// elevated input surface and border, while using a much lighter shadow so the
+// chips read as subordinate context attached to the composer rather than a
+// second floating panel.
 // Pre-PRD-0.2.7 polish iteration removed the "Agent 工作区" / "Runtime"
 // text labels — the icons + content already convey what each chip is.
 
@@ -42,20 +41,15 @@ interface LauncherInputContextRowProps {
   onRuntimeChange?: (runtime: RuntimeType) => void;
 }
 
-// Resting → hover deepening contract: chip starts on the lighter `--hover-bg`
-// (7% warm-brown tint) so it's barely there but distinguishable from the
-// cream page; hover lands on the heavier `--paper-inset` (solid beige). The
-// inner button's hardcoded `hover:bg-[var(--hover-bg)]` would normally
-// paint over the wrapper's bg on hover, defeating the deepening — we
-// override with `[&_button:hover]:!bg-transparent` so the wrapper's hover
-// bg is what the user sees. `!` forces precedence over the button's class.
-//
-// `shadow-md` matches the input panel above (`SimpleChatInput.tsx`'s root
-// `shadow-md`) so the chip row reads as the same elevation tier — without
-// it the chips appear "flat against the page" while the input "floats",
-// breaking the unified-surface feel.
+// Resting → hover → focus contract: the resting surface matches
+// `SimpleChatInput` (`--paper-elevated` + `--line`), hover uses the semantic
+// hover tint, and focus/open deepens to `--paper-inset`. The inner buttons
+// already paint their own hover background, so force those backgrounds
+// transparent and let the wrapper own one continuous material transition.
+// `shadow-xs` is deliberate: the large composer keeps `shadow-md`; a small
+// context control using the same shadow would create a disproportionate halo.
 const CHIP_WRAPPER_CLASS =
-  'inline-flex items-center rounded-lg bg-[var(--hover-bg)] shadow-md transition-colors hover:bg-[var(--paper-inset)] [&_button:hover]:!bg-transparent';
+  'inline-flex items-center rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xs transition-[background-color,border-color,box-shadow] duration-150 hover:border-[var(--line-strong)] hover:bg-[var(--hover-bg)] hover:shadow-sm focus-within:border-[var(--line-strong)] focus-within:bg-[var(--paper-inset)] focus-within:shadow-sm [&_button:hover]:!bg-transparent';
 
 export default memo(function LauncherInputContextRow({
   projects,
@@ -70,7 +64,7 @@ export default memo(function LauncherInputContextRow({
   onRuntimeChange,
 }: LauncherInputContextRowProps) {
   return (
-    <div className="flex items-center gap-2 text-sm text-[var(--ink-muted)]">
+    <div className="flex items-center gap-2 pl-3 text-sm text-[var(--ink-muted)]">
       <div className={CHIP_WRAPPER_CLASS}>
         <WorkspaceSelector
           projects={projects}

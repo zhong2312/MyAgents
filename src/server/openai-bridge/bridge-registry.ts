@@ -101,6 +101,8 @@ interface Entry {
   description: string;
   /** Sticky per-token compatibility downgrade for prompt_cache_key. */
   promptCacheKeyDisabled: boolean;
+  /** Sticky per-token compatibility downgrade for explicit cache breakpoints. */
+  promptCacheBreakpointsDisabled: boolean;
 }
 
 const registry = new Map<string, Entry>();
@@ -128,6 +130,7 @@ export function registerBridge(
     registeredAt: Date.now(),
     description,
     promptCacheKeyDisabled: existing?.promptCacheKeyDisabled ?? false,
+    promptCacheBreakpointsDisabled: existing?.promptCacheBreakpointsDisabled ?? false,
   });
 }
 
@@ -171,6 +174,15 @@ export function disablePromptCacheKey(token: string): void {
 
 export function isPromptCacheKeyDisabled(token: string): boolean {
   return registry.get(token)?.promptCacheKeyDisabled ?? false;
+}
+
+export function disablePromptCacheBreakpoints(token: string): void {
+  const entry = registry.get(token);
+  if (entry) entry.promptCacheBreakpointsDisabled = true;
+}
+
+export function arePromptCacheBreakpointsDisabled(token: string): boolean {
+  return registry.get(token)?.promptCacheBreakpointsDisabled ?? false;
 }
 
 /**

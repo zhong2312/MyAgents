@@ -6,7 +6,6 @@ import {
   ChevronRight,
   CircleAlert,
   Download,
-  FileText,
   Folder,
   Link,
   Loader2,
@@ -38,6 +37,7 @@ import {
   type SpaceSkillUrlPreview,
 } from "@/api/spaceCloud";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import { FileIcon } from "@/components/file-icon";
 import Markdown from "@/components/Markdown";
 import OverlayBackdrop from "@/components/OverlayBackdrop";
 import { useToast } from "@/components/Toast";
@@ -1528,7 +1528,7 @@ function SkillDetailWorkspace({
               {formatBytes(previewFile.sizeBytes)}
             </div>
           </div>
-          <FileText className="h-4 w-4 text-[var(--ink-subtle)]" />
+          <FileIcon name={previewFile.name} size="regular" />
         </header>
         <div className="min-h-[460px] bg-[var(--paper-elevated)]">
           {fileLoading ? (
@@ -1592,7 +1592,11 @@ function SkillDetailWorkspace({
                   ) : (
                     <span className="h-4 w-4 shrink-0" />
                   )}
-                  <Folder className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
+                  <FileIcon
+                    name={file.name}
+                    nodeKind="directory"
+                    expanded={isExpanded}
+                  />
                   <span className="min-w-0 truncate font-semibold text-[var(--ink-secondary)]">
                     {file.name}
                   </span>
@@ -1616,7 +1620,7 @@ function SkillDetailWorkspace({
                 className="flex min-w-0 flex-1 items-center gap-2.5"
                 style={{ paddingLeft: `${depth * 1.25 + 1.625}rem` }}
               >
-                <FileText className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
+                <FileIcon name={file.name} />
                 <span
                   className={`min-w-0 truncate font-medium ${isSelected ? "text-[var(--ink)]" : "text-[var(--ink-muted)]"}`}
                 >

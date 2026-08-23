@@ -121,13 +121,25 @@ fn resolve_agent_runtime_identity_by_id_from_value(
         .as_array()?
         .iter()
         .find(|agent| agent.get("id").and_then(serde_json::Value::as_str) == Some(agent_id))?;
-    if agent.get("providerId").and_then(|v| v.as_str()) == Some(CODEX_SUBSCRIPTION_PROVIDER_ID)
-        && managed_codex_provider_ready(cfg)
-    {
-        return Some(RuntimeIdentity::new(
-            Some("codex"),
-            Some("managed-provider"),
-        ));
+    let runtime = agent
+        .get("runtime")
+        .and_then(|value| value.as_str())
+        .unwrap_or("builtin");
+    let runtime_source = agent
+        .get("runtimeConfig")
+        .and_then(|value| value.as_object())
+        .and_then(|config| config.get("source"))
+        .and_then(|value| value.as_str());
+    let managed_codex_selected = agent.get("providerId").and_then(|value| value.as_str())
+        == Some(CODEX_SUBSCRIPTION_PROVIDER_ID)
+        && (runtime == "builtin"
+            || (runtime == "codex" && runtime_source == Some("managed-provider")));
+    if managed_codex_selected {
+        return Some(if managed_codex_provider_ready(cfg) {
+            RuntimeIdentity::new(Some("codex"), Some("managed-provider"))
+        } else {
+            RuntimeIdentity::new(Some("builtin"), None)
+        });
     }
     // Gate: multi-agent runtime feature must be explicitly enabled
     // for user-managed external runtimes. Managed Codex provider
@@ -139,15 +151,12 @@ fn resolve_agent_runtime_identity_by_id_from_value(
     {
         return Some(RuntimeIdentity::new(Some("builtin"), None));
     }
-    if let Some(runtime) = agent.get("runtime").and_then(|v| v.as_str()) {
-        if runtime != "builtin" {
-            let runtime_source = agent
-                .get("runtimeConfig")
-                .and_then(|v| v.as_object())
-                .and_then(|o| o.get("source"))
-                .and_then(|v| v.as_str());
-            return Some(RuntimeIdentity::new(Some(runtime), runtime_source));
-        }
+    if runtime != "builtin" {
+        // Only the readable legacy Managed Codex shape may retain this source.
+        // Other explicit runtimes win over dormant provider/source fields,
+        // matching the renderer/server Agent-template projection.
+        let explicit_runtime_source = runtime_source.filter(|source| *source != "managed-provider");
+        return Some(RuntimeIdentity::new(Some(runtime), explicit_runtime_source));
     }
     Some(RuntimeIdentity::new(Some("builtin"), None))
 }
@@ -522,6 +531,109 @@ mod tests {
 
         let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "extra-builtin")
             .expect("exact builtin identity must remain explicit");
+        assert_eq!(identity.runtime, "builtin");
+        assert_eq!(identity.runtime_source, None);
+    }
+
+    #[test]
+    fn managed_codex_provider_only_owns_managed_compatible_agent_shapes() {
+        let config = serde_json::json!({
+            "multiAgentRuntime": true,
+            "managedCodexProviderDevGate": true,
+            "managedCodexRuntimeInstall": {
+                "usable": true
+            },
+            "managedCodexAuth": {
+                "status": "valid",
+                "authMethod": "chatgpt"
+            },
+            "agents": [
+                { "id": "current", "runtime": "builtin", "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID },
+                {
+                    "id": "legacy",
+                    "runtime": "codex",
+                    "runtimeConfig": { "source": "managed-provider" },
+                    "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID
+                },
+                { "id": "system-codex", "runtime": "codex", "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID },
+                { "id": "claude-code", "runtime": "claude-code", "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID },
+                {
+                    "id": "gemini",
+                    "runtime": "gemini",
+                    "runtimeConfig": { "source": "managed-provider" },
+                    "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID
+                },
+                { "id": "ordinary-provider", "runtime": "gemini", "providerId": "anthropic-api" }
+            ]
+        });
+
+        for agent_id in ["current", "legacy"] {
+            let identity = resolve_agent_runtime_identity_by_id_from_value(&config, agent_id)
+                .expect("managed Agent identity");
+            assert_eq!(identity.runtime, "codex");
+            assert_eq!(identity.runtime_source.as_deref(), Some("managed-provider"));
+        }
+
+        for (agent_id, expected_runtime) in [
+            ("system-codex", "codex"),
+            ("claude-code", "claude-code"),
+            ("gemini", "gemini"),
+            ("ordinary-provider", "gemini"),
+        ] {
+            let identity = resolve_agent_runtime_identity_by_id_from_value(&config, agent_id)
+                .expect("explicit external Agent identity");
+            assert_eq!(identity.runtime, expected_runtime);
+            assert_eq!(identity.runtime_source.as_deref(), Some("system-cli"));
+        }
+    }
+
+    #[test]
+    fn dormant_managed_provider_does_not_bypass_external_runtime_gate() {
+        let config = serde_json::json!({
+            "multiAgentRuntime": false,
+            "managedCodexProviderDevGate": true,
+            "managedCodexRuntimeInstall": {
+                "usable": true
+            },
+            "managedCodexAuth": {
+                "status": "valid",
+                "authMethod": "chatgpt"
+            },
+            "agents": [
+                { "id": "gemini", "runtime": "gemini", "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID }
+            ]
+        });
+
+        let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "gemini")
+            .expect("feature gate fallback identity");
+        assert_eq!(identity.runtime, "builtin");
+        assert_eq!(identity.runtime_source, None);
+    }
+
+    #[test]
+    fn legacy_managed_codex_shape_does_not_bypass_provider_readiness() {
+        let config = serde_json::json!({
+            "multiAgentRuntime": true,
+            "managedCodexProviderDevGate": true,
+            "managedCodexRuntimeInstall": {
+                "usable": true
+            },
+            "managedCodexAuth": {
+                "status": "invalid",
+                "authMethod": "chatgpt"
+            },
+            "agents": [
+                {
+                    "id": "legacy",
+                    "runtime": "codex",
+                    "runtimeConfig": { "source": "managed-provider" },
+                    "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID
+                }
+            ]
+        });
+
+        let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "legacy")
+            .expect("unready managed provider fallback identity");
         assert_eq!(identity.runtime, "builtin");
         assert_eq!(identity.runtime_source, None);
     }

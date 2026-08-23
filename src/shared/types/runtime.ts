@@ -693,6 +693,35 @@ export interface RuntimeDiagnosticIssue {
   hint?: string;
 }
 
+export type RuntimeExtensionApplyState =
+  | 'unchanged'
+  | 'applied'
+  | 'pending_next_start'
+  | 'deferred_until_idle'
+  | 'not_applicable'
+  | 'unsupported'
+  | 'failed';
+
+export interface RuntimeExtensionComponentStatus {
+  component: string;
+  id?: string;
+  state: RuntimeExtensionApplyState;
+  code: string;
+  message?: string;
+  /**
+   * True when a direct configuration action should explain how to apply this
+   * degradation. This is not a passive Chat-banner severity signal.
+   */
+  requiresUserAction?: boolean;
+}
+
+export interface RuntimeExtensionDiagnostics {
+  desiredRevision: string;
+  effectiveRevision: string | null;
+  state: RuntimeExtensionApplyState;
+  components: RuntimeExtensionComponentStatus[];
+}
+
 /**
  * Effective env snapshot for the runtime subprocess. Sanitised for display:
  *  - `proxy.http/https/all` are URLs without embedded credentials.
@@ -747,6 +776,8 @@ export interface RuntimeDiagnostics {
   apps?: RuntimeAppInfo[];
   status: RuntimeDiagnosticsStatus;
   issues?: RuntimeDiagnosticIssue[];
+  /** MyAgents product-extension projection consumed by this Runtime process. */
+  extensions?: RuntimeExtensionDiagnostics;
   /** ISO-8601 UTC string. */
   timestamp: string;
 }

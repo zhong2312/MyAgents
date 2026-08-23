@@ -32,6 +32,7 @@ const LIVE_RESTORE_EVENTS = new Set([
   'chat:subagent-tool-result-start',
   'chat:subagent-tool-result-delta',
   'chat:subagent-tool-result-complete',
+  'chat:subagent-status',
   'chat:subagent-tool-attachment-update',
   'chat:message-sdk-uuid',
   'chat:messages-retracted',

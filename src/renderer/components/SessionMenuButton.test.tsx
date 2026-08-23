@@ -125,7 +125,9 @@ describe('SessionMenuButton', () => {
     renderMenu({ availableChannels: [privateTarget, groupTarget] });
 
     fireEvent.click(screen.getByRole('button', { name: '对话操作' }));
-    fireEvent.click(screen.getByRole('button', { name: /绑定聊天机器人/ }));
+    const continueInBot = screen.getByRole('button', { name: '在聊天机器人继续此对话' });
+    expect(continueInBot.querySelector('[data-session-menu-submenu-chevron]')).toHaveClass('h-4', 'w-4');
+    fireEvent.click(continueInBot);
     fireEvent.click(screen.getByText('群聊 · Product Crew'));
 
     await waitFor(() => {
@@ -158,7 +160,7 @@ describe('SessionMenuButton', () => {
     renderMenu({ availableChannels: [groupTarget] });
 
     fireEvent.click(screen.getByRole('button', { name: 'Chat actions' }));
-    fireEvent.click(screen.getByRole('button', { name: /Bind chat bot/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue in chat bot' }));
 
     expect(screen.getByText('Group · Product Crew')).toBeInTheDocument();
     expect(screen.getByText('飞书')).toBeInTheDocument();

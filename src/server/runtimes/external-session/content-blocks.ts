@@ -1,5 +1,11 @@
 import { buildFilePatchDisplayDescriptor } from '../../../shared/toolDisplay/filePatch';
 import type { ToolAttachment } from '../../../shared/types/tool-attachment';
+import {
+  finalizeResidualSubagentCall,
+  isTerminalSubagentLifecycleStatus,
+  type SubagentLifecycle,
+  type SubagentLifecycleStatus,
+} from '../../../shared/types/subagent-lifecycle';
 import type { ExternalAssistantSnapshotState, PersistContentBlock, PersistSubagentCall } from './types';
 
 let currentAssistantText = '';
@@ -13,6 +19,7 @@ let pendingThinkingStartedAt = 0;
 const pendingToolInputs = new Map<string, { name: string; inputJson: string }>();
 const childToolToParent = new Map<string, string>();
 const pendingSubagentCallsByParent = new Map<string, PersistSubagentCall[]>();
+const pendingSubagentLifecyclesByParent = new Map<string, SubagentLifecycle>();
 const subagentAttachmentParents = new Map<string, string>();
 const pendingSubagentAttachmentUpdates = new Map<string, Array<{
   pendingId: string;
@@ -35,6 +42,7 @@ export function resetExternalContentState(): void {
   pendingToolInputs.clear();
   childToolToParent.clear();
   pendingSubagentCallsByParent.clear();
+  pendingSubagentLifecyclesByParent.clear();
   subagentAttachmentParents.clear();
   pendingSubagentAttachmentUpdates.clear();
   pendingTopLevelAttachmentUpdates.clear();
@@ -134,6 +142,10 @@ export function getExternalPendingSubagentCallsByParent(): Map<string, PersistSu
   return pendingSubagentCallsByParent;
 }
 
+export function getExternalPendingSubagentLifecyclesByParent(): Map<string, SubagentLifecycle> {
+  return pendingSubagentLifecyclesByParent;
+}
+
 export function getExternalSubagentAttachmentParents(): Map<string, string> {
   return subagentAttachmentParents;
 }
@@ -179,6 +191,102 @@ export function attachExternalPendingSubagentCalls(
     else parentTool.subagentCalls.push(call);
   }
   pendingSubagentCallsByParent.delete(parentToolUseId);
+}
+
+function mergeSubagentLifecycle(
+  current: SubagentLifecycle | undefined,
+  status: SubagentLifecycleStatus,
+  observedAt: number,
+): SubagentLifecycle {
+  const safeObservedAt = Number.isFinite(observedAt) && observedAt > 0 ? observedAt : Date.now();
+  if (current && isTerminalSubagentLifecycleStatus(current.status)) return current;
+  if (status === 'running') {
+    return current ?? { status, startedAt: safeObservedAt };
+  }
+  const startedAt = current?.startedAt ?? safeObservedAt;
+  return {
+    status,
+    startedAt,
+    finishedAt: Math.max(startedAt, safeObservedAt),
+  };
+}
+
+export function attachExternalPendingSubagentLifecycle(
+  parentToolUseId: string,
+  parentTool: NonNullable<PersistContentBlock['tool']>,
+): void {
+  const pending = pendingSubagentLifecyclesByParent.get(parentToolUseId);
+  if (!pending) return;
+  parentTool.subagentLifecycle = parentTool.subagentLifecycle
+    ? mergeSubagentLifecycle(
+        parentTool.subagentLifecycle,
+        pending.status,
+        pending.status === 'running' ? pending.startedAt : pending.finishedAt ?? pending.startedAt,
+      )
+    : { ...pending };
+  pendingSubagentLifecyclesByParent.delete(parentToolUseId);
+}
+
+export function applyExternalSubagentLifecycle(input: {
+  parentToolUseId: string;
+  status: SubagentLifecycleStatus;
+  observedAt: number;
+}): SubagentLifecycle {
+  const parent = findExternalToolBlockById(input.parentToolUseId);
+  if (parent?.tool) {
+    attachExternalPendingSubagentLifecycle(input.parentToolUseId, parent.tool);
+    parent.tool.subagentLifecycle = mergeSubagentLifecycle(
+      parent.tool.subagentLifecycle,
+      input.status,
+      input.observedAt,
+    );
+    return parent.tool.subagentLifecycle;
+  }
+
+  const merged = mergeSubagentLifecycle(
+    pendingSubagentLifecyclesByParent.get(input.parentToolUseId),
+    input.status,
+    input.observedAt,
+  );
+  pendingSubagentLifecyclesByParent.set(input.parentToolUseId, merged);
+  return merged;
+}
+
+export function finalizeExternalSubagentLifecyclesForTurn(input: {
+  status: 'failed' | 'interrupted';
+  observedAt: number;
+}): Array<{ parentToolUseId: string; lifecycle: SubagentLifecycle }> {
+  const updates: Array<{ parentToolUseId: string; lifecycle: SubagentLifecycle }> = [];
+  for (const block of currentContentBlocks) {
+    const tool = block.tool;
+    if (block.type !== 'tool_use' || !tool?.subagentLifecycle) continue;
+    if (tool.subagentLifecycle.status === 'running') {
+      tool.subagentLifecycle = mergeSubagentLifecycle(
+        tool.subagentLifecycle,
+        input.status,
+        input.observedAt,
+      );
+      updates.push({ parentToolUseId: tool.id, lifecycle: tool.subagentLifecycle });
+    }
+    if (tool.subagentCalls) {
+      tool.subagentCalls = tool.subagentCalls.map(call => (
+        finalizeResidualSubagentCall(call, input.status)
+      ));
+    }
+  }
+  for (const [parentToolUseId, calls] of pendingSubagentCallsByParent) {
+    pendingSubagentCallsByParent.set(
+      parentToolUseId,
+      calls.map(call => finalizeResidualSubagentCall(call, input.status)),
+    );
+  }
+  for (const [parentToolUseId, lifecycle] of pendingSubagentLifecyclesByParent) {
+    if (lifecycle.status !== 'running') continue;
+    const terminal = mergeSubagentLifecycle(lifecycle, input.status, input.observedAt);
+    pendingSubagentLifecyclesByParent.set(parentToolUseId, terminal);
+    updates.push({ parentToolUseId, lifecycle: terminal });
+  }
+  return updates;
 }
 
 export function findExternalSubagentCall(
@@ -353,6 +461,7 @@ export function finalizeExternalToolUseInput(toolUseId: string): boolean {
     const display = buildFilePatchDisplayDescriptor(block.tool);
     if (display) block.tool.display = display;
     attachExternalPendingSubagentCalls(toolUseId, block.tool);
+    attachExternalPendingSubagentLifecycle(toolUseId, block.tool);
   }
   currentContentBlocks.push(block);
   pendingToolInputs.delete(toolUseId);
@@ -566,6 +675,7 @@ export function flushExternalPendingToolInputsForTurn(): ExternalInterruptedSuba
       const display = buildFilePatchDisplayDescriptor(block.tool);
       if (display) block.tool.display = display;
       attachExternalPendingSubagentCalls(toolId, block.tool);
+      attachExternalPendingSubagentLifecycle(toolId, block.tool);
     }
     currentContentBlocks.push(block);
     pendingToolInputs.delete(toolId);
@@ -611,6 +721,7 @@ function clonePersistContentBlock(block: PersistContentBlock): PersistContentBlo
           input: { ...block.tool.input },
           attachments: block.tool.attachments ? block.tool.attachments.map((attachment) => ({ ...attachment })) : undefined,
           subagentCalls: block.tool.subagentCalls ? block.tool.subagentCalls.map((call) => ({ ...call })) : undefined,
+          subagentLifecycle: block.tool.subagentLifecycle ? { ...block.tool.subagentLifecycle } : undefined,
         }
       : undefined,
   };
@@ -631,11 +742,25 @@ function attachPendingSubagentCallsToSnapshot(
   }
 }
 
+function attachPendingSubagentLifecycleToSnapshot(
+  parentToolUseId: string,
+  parentTool: NonNullable<PersistContentBlock['tool']>,
+  pendingLifecyclesByParent: ReadonlyMap<string, SubagentLifecycle> | undefined,
+): void {
+  const pending = pendingLifecyclesByParent?.get(parentToolUseId);
+  if (pending) parentTool.subagentLifecycle = { ...pending };
+}
+
 export function buildExternalAssistantSnapshotContent(state: ExternalAssistantSnapshotState): string | null {
   const blocks: PersistContentBlock[] = state.contentBlocks.map((block) => {
     const cloned = clonePersistContentBlock(block);
     if (cloned.tool) {
       attachPendingSubagentCallsToSnapshot(cloned.tool.id, cloned.tool, state.pendingSubagentCallsByParent);
+      attachPendingSubagentLifecycleToSnapshot(
+        cloned.tool.id,
+        cloned.tool,
+        state.pendingSubagentLifecyclesByParent,
+      );
     }
     return cloned;
   });
@@ -667,6 +792,11 @@ export function buildExternalAssistantSnapshotContent(state: ExternalAssistantSn
       const display = buildFilePatchDisplayDescriptor(block.tool);
       if (display) block.tool.display = display;
       attachPendingSubagentCallsToSnapshot(toolId, block.tool, state.pendingSubagentCallsByParent);
+      attachPendingSubagentLifecycleToSnapshot(
+        toolId,
+        block.tool,
+        state.pendingSubagentLifecyclesByParent,
+      );
     }
     blocks.push(block);
   }
@@ -690,6 +820,7 @@ export function buildCurrentExternalAssistantSnapshotContent(): string | null {
     pendingToolInputs,
     childToolToParent,
     pendingSubagentCallsByParent,
+    pendingSubagentLifecyclesByParent,
     currentAssistantText,
   });
 }

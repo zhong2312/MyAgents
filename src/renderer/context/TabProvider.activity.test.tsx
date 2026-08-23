@@ -3,9 +3,17 @@ import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SseEventMetadata } from '@/api/SseConnection';
-import { tryClaimSessionResourceTransition } from '@/utils/sessionDeletionCoordinator';
+import {
+  createSessionResourceTransitionState,
+  tryClaimSessionResourceTransition,
+} from '@/utils/sessionDeletionCoordinator';
 import { useTabState } from './TabContext';
-import TabProvider, { handleApiResponse } from './TabProvider';
+import type { Message } from '@/types/chat';
+import TabProvider, {
+  applySubagentLifecycleUpdate,
+  finalizeMessageSubagentProjection,
+  handleApiResponse,
+} from './TabProvider';
 
 type EventHandler = (
   eventName: string,
@@ -46,6 +54,8 @@ const sseHarness = vi.hoisted(() => {
 const tauriHarness = vi.hoisted(() => ({
   proxyFetch: vi.fn(),
   ensureSessionSidecar: vi.fn(async () => undefined),
+  isTauri: false,
+  listeners: new Map<string, (event: { payload: unknown }) => void>(),
 }));
 
 vi.mock('@/api/SseConnection', () => ({
@@ -66,11 +76,15 @@ vi.mock('@/config/services/appConfigService', () => ({
 
 vi.mock('@/analytics', () => ({
   track: vi.fn(),
-  consumePendingSessionBirth: vi.fn(),
-  peekPendingSessionBirth: vi.fn(),
+  consumePendingSessionBirth: vi.fn((_tabId: string, fallback: unknown) => fallback),
+  peekPendingSessionBirth: vi.fn((_tabId: string, fallback: unknown) => fallback),
   setPendingSessionBirth: vi.fn(),
   hashAgentNameSync: () => null,
-  birthContextForSurface: vi.fn(),
+  birthContextForSurface: vi.fn((surface: string) => ({
+    surface,
+    entryIntent: 'unknown',
+    hasInitialMessage: false,
+  })),
 }));
 
 vi.mock('@/utils/frontendLogger', () => ({
@@ -87,13 +101,26 @@ vi.mock('@/api/tauriClient', () => ({
     path: string,
     init?: RequestInit,
   ) => tauriHarness.proxyFetch(`http://127.0.0.1:1234${path}`, init)),
-  isTauri: () => false,
+  isTauri: () => tauriHarness.isTauri,
   getSessionActivation: vi.fn(async () => null),
   getSessionPort: vi.fn(async () => null),
   ensureSessionSidecar: tauriHarness.ensureSessionSidecar,
   resetTabServerUrlCache: vi.fn(),
   setActiveCorrelation: vi.fn(),
   setFocusedCorrelationTabId: vi.fn(),
+}));
+
+vi.mock('@/utils/tauriListen', () => ({
+  listenWithCleanup: vi.fn(async (
+    eventName: string,
+    listener: (event: { payload: unknown }) => void,
+  ) => {
+    tauriHarness.listeners.set(eventName, listener);
+    return {
+      unlisten: () => tauriHarness.listeners.delete(eventName),
+      isRegistered: () => tauriHarness.listeners.has(eventName),
+    };
+  }),
 }));
 
 function Probe() {
@@ -107,6 +134,8 @@ function Probe() {
     streamingMessage,
     systemInitInfo,
     queuedMessages,
+    agentError,
+    isConnected,
     adoptMigratedSession,
     resetSession,
     retryCurrentSessionRestore,
@@ -126,6 +155,7 @@ function Probe() {
           initModel: systemInitInfo?.model ?? null,
         })}
       </output>
+      <output data-testid="connected">{String(isConnected)}</output>
       <output data-testid="init-tools">{JSON.stringify(systemInitInfo?.tools ?? [])}</output>
       <output data-testid="streaming-content">{JSON.stringify(streamingMessage?.content ?? null)}</output>
       <output data-testid="session-loading">{String(isSessionLoading)}</output>
@@ -136,6 +166,7 @@ function Probe() {
         runtimeTurnAnchor: message.runtimeTurnAnchor ?? null,
       })))}</output>
       <output data-testid="queue-ids">{JSON.stringify(queuedMessages.map(item => item.queueId))}</output>
+      <output data-testid="agent-error">{agentError ?? ''}</output>
       <output data-testid="retry-restore-target-present">{JSON.stringify(retryRestoreTargetPresent)}</output>
       <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
       <button type="button" onClick={() => void resetSession()}>reset session</button>
@@ -192,6 +223,81 @@ function readStreamingContent(): string | unknown[] | null {
 
 const allowSessionOpening = () => () => undefined;
 
+function collabMessage(status: 'running' | 'completed' = 'running'): Message {
+  return {
+    id: 'assistant-collab',
+    role: 'assistant',
+    timestamp: new Date(0),
+    content: [{
+      type: 'tool_use',
+      tool: {
+        id: 'spawn-card',
+        name: 'CollabAgent',
+        input: { tool: 'spawnAgent' },
+        streamIndex: 0,
+        subagentLifecycle: status === 'running'
+          ? { status, startedAt: 100 }
+          : { status, startedAt: 100, finishedAt: 200 },
+        subagentCalls: [{ id: 'nested', name: 'Thinking', input: {}, isLoading: true }],
+      },
+    }],
+  };
+}
+
+describe('TabProvider sub-agent lifecycle projection', () => {
+  it('applies a lifecycle update to archived message content and ignores a late regression', () => {
+    const completed = applySubagentLifecycleUpdate(
+      collabMessage(),
+      'spawn-card',
+      { status: 'completed', startedAt: 100, finishedAt: 250 },
+    );
+    expect(completed?.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tool: expect.objectContaining({
+          subagentLifecycle: { status: 'completed', startedAt: 100, finishedAt: 250 },
+        }),
+      }),
+    ]));
+    expect(applySubagentLifecycleUpdate(
+      completed!,
+      'spawn-card',
+      { status: 'running', startedAt: 300 },
+    )).toBe(completed);
+  });
+
+  it('fails closed on root success and recursively closes residual nested calls', () => {
+    const finalized = finalizeMessageSubagentProjection(collabMessage(), 'completed', 500);
+    const content = finalized.content as Exclude<Message['content'], string>;
+    expect(content[0].tool?.subagentLifecycle).toEqual({
+      status: 'failed',
+      startedAt: 100,
+      finishedAt: 500,
+    });
+    expect(content[0].tool?.subagentCalls?.[0]).toMatchObject({
+      isLoading: false,
+      isError: true,
+    });
+  });
+
+  it('preserves an explicit child terminal while closing stale nested trace flags', () => {
+    const finalized = finalizeMessageSubagentProjection(collabMessage('completed'), 'failed', 500);
+    const content = finalized.content as Exclude<Message['content'], string>;
+    expect(content[0].tool?.subagentLifecycle?.status).toBe('completed');
+    expect(content[0].tool?.subagentCalls?.[0].isLoading).toBe(false);
+  });
+
+  it('renders a resultless nested call as interrupted when the root is stopped', () => {
+    const finalized = finalizeMessageSubagentProjection(collabMessage(), 'stopped', 500);
+    const content = finalized.content as Exclude<Message['content'], string>;
+    expect(content[0].tool?.subagentLifecycle?.status).toBe('interrupted');
+    expect(content[0].tool?.subagentCalls?.[0]).toMatchObject({
+      isLoading: false,
+      isError: true,
+      result: 'Interrupted',
+    });
+  });
+});
+
 describe('TabProvider session activity ownership', () => {
   it('preserves structured operation error codes across the Tab API boundary', async () => {
     const response = new Response(JSON.stringify({
@@ -216,6 +322,42 @@ describe('TabProvider session activity ownership', () => {
     sseHarness.state.eventHandler = null;
     sseHarness.state.statusHandler = null;
     tauriHarness.proxyFetch.mockRejectedValue(new Error('Unexpected proxyFetch call'));
+    tauriHarness.isTauri = false;
+    tauriHarness.listeners.clear();
+  });
+
+  it('marks the live connection down across a Rust-owned Sidecar replacement', async () => {
+    tauriHarness.isTauri = true;
+    render(
+      <TabProvider
+        tabId="tab-sidecar-restart"
+        agentDir="/tmp/workspace"
+        sessionId="pending-sidecar-restart"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('connected')).toHaveTextContent('true'));
+    const restartListener = await waitFor(() => {
+      const listener = tauriHarness.listeners.get('session-sidecar:restarted');
+      expect(listener).toBeDefined();
+      return listener!;
+    });
+
+    act(() => {
+      restartListener({
+        payload: { sessionId: 'pending-sidecar-restart', port: 43210 },
+      });
+    });
+    expect(screen.getByTestId('connected')).toHaveTextContent('false');
+
+    act(() => {
+      sseHarness.state.generation = 2;
+      sseHarness.state.statusHandler?.('connected');
+    });
+    expect(screen.getByTestId('connected')).toHaveTextContent('true');
   });
 
   it('does not reacquire a Tab owner from an SSE status failure', async () => {
@@ -261,6 +403,70 @@ describe('TabProvider session activity ownership', () => {
     expect(tauriHarness.proxyFetch.mock.calls.some(
       ([url]) => String(url).includes('/chat/send'),
     )).toBe(false);
+  });
+
+  it('clears a prior terminal agent error when a new desktop or IM turn is admitted', async () => {
+    tauriHarness.proxyFetch.mockResolvedValue(new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    render(
+      <TabProvider
+        tabId="tab-agent-error-lifecycle"
+        agentDir="/tmp/workspace"
+        sessionId="pending-agent-error-lifecycle"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:agent-error', { message: 'Not logged in' });
+    expect(screen.getByTestId('agent-error')).toHaveTextContent('Not logged in');
+
+    fireEvent.click(screen.getByRole('button', { name: 'send message' }));
+    expect(screen.getByTestId('agent-error')).toBeEmptyDOMElement();
+
+    emit('chat:agent-error', { message: 'New turn auth failure' });
+    emit('chat:message-complete', {
+      assistant_message_id: 'failed-turn-completion',
+    });
+    expect(screen.getByTestId('agent-error')).toHaveTextContent('New turn auth failure');
+
+    emit('chat:agent-error', { message: 'Old provider error' });
+    emit('chat:message-replay', {
+      replayKind: 'live-user-echo',
+      sessionId: 'pending-agent-error-lifecycle',
+      message: {
+        id: 'im-turn-after-error',
+        role: 'user',
+        content: 'new IM turn',
+        timestamp: '2026-08-11T14:35:00.000Z',
+      },
+    });
+    expect(screen.getByTestId('agent-error')).toBeEmptyDOMElement();
+  });
+
+  it('keeps the prior terminal agent error when desktop turn admission is refused', async () => {
+    const refuseSessionOpening = vi.fn(() => null);
+    render(
+      <TabProvider
+        tabId="tab-agent-error-refused"
+        agentDir="/tmp/workspace"
+        sessionId="pending-agent-error-refused"
+        claimSessionOpeningTransition={refuseSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:agent-error', { message: 'Keep this error' });
+    fireEvent.click(screen.getByRole('button', { name: 'send message' }));
+
+    expect(refuseSessionOpening).toHaveBeenCalledWith('pending-agent-error-refused');
+    expect(screen.getByTestId('agent-error')).toHaveTextContent('Keep this error');
   });
 
   it('holds turn admission until the backend accepts the send', async () => {
@@ -685,7 +891,7 @@ describe('TabProvider session activity ownership', () => {
       throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
     });
 
-    const transitions = new Map();
+    const transitions = createSessionResourceTransitionState();
     const transitionOwnerId = 'tab-reset-race';
     const claimSessionOpeningTransition = vi.fn((sessionId: string) => (
       tryClaimSessionResourceTransition(
@@ -775,7 +981,7 @@ describe('TabProvider session activity ownership', () => {
 
     expect(sseHarness.connection.disconnect).not.toHaveBeenCalled();
     expect(sseHarness.connection.connect).not.toHaveBeenCalled();
-    expect(transitions.size).toBe(0);
+    expect(transitions.claims.size).toBe(0);
   });
 
   it('reconciles chat-init assistant snapshots instead of appending them as deltas', async () => {

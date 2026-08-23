@@ -3,66 +3,65 @@ import { i18n } from '@/i18n';
 
 interface ChannelBoundSessionTransitionOptions {
   sessionId: string;
+  tabId: string;
   boundChannel: ChannelSurface;
-  migrateChannelToNewSession: (args: { oldSessionId: string; sessionKey: string }) => Promise<string | null>;
+  migrateChannelToNewSession: (args: { oldSessionId: string; tabId: string; sessionKey: string }) => Promise<string | null>;
   adoptMigratedSession: (newSessionId: string, options: { sidecarAlreadyMigrated: true }) => Promise<boolean>;
-  resetSession: () => Promise<boolean>;
+  releaseMigratedTabOwner: (sessionId: string, tabId: string) => Promise<unknown>;
   reportError: (message: string) => void;
-  allowPlainResetFallback: boolean;
 }
 
-function channelTransitionError(allowPlainResetFallback: boolean): string {
-  return String(i18n.t(
-    allowPlainResetFallback
-      ? 'chat:shell.toasts.channelRebindFailedReset'
-      : 'chat:shell.toasts.channelRebindFailedDeleteCancelled',
-  ));
+function channelTransitionError(): string {
+  return String(i18n.t('chat:shell.toasts.channelRebindFailedNewCancelled'));
 }
 
 /**
  * Move a channel-bound desktop tab to a fresh session.
  *
- * Normal "新对话" can fall back to a plain reset when the channel migration
- * fails, because the user still gets a usable local conversation. Delete
- * preparation cannot: deleting the old session is only safe after the channel
- * binding and Agent owner have actually moved.
+ * Migration is fail-closed. A plain `/chat/reset` would bypass Rust's exact
+ * Tab + Agent admission and can split Runtime identity from owner identity.
  */
 export async function transitionChannelBoundSession(
   options: ChannelBoundSessionTransitionOptions,
 ): Promise<boolean> {
   const {
     sessionId,
+    tabId,
     boundChannel,
     migrateChannelToNewSession,
     adoptMigratedSession,
-    resetSession,
+    releaseMigratedTabOwner,
     reportError,
-    allowPlainResetFallback,
   } = options;
+  let migratedSessionId: string | null = null;
 
   try {
-    const newSessionId = await migrateChannelToNewSession({
+    migratedSessionId = await migrateChannelToNewSession({
       oldSessionId: sessionId,
+      tabId,
       sessionKey: boundChannel.sessionKey,
     });
 
-    if (newSessionId) {
-      console.log(`[Chat] Channel-bound new conversation: ${sessionId.slice(0, 8)} -> ${newSessionId.slice(0, 8)}`);
-      const adopted = await adoptMigratedSession(newSessionId, { sidecarAlreadyMigrated: true });
-      if (!adopted) {
-        throw new Error(`Failed to adopt migrated channel session ${newSessionId}.`);
-      }
-      return true;
+    if (!migratedSessionId) {
+      console.warn('[Chat] migrateChannelToNewSession returned null');
+      reportError(channelTransitionError());
+      return false;
     }
 
-    console.warn('[Chat] migrateChannelToNewSession returned null');
-    reportError(channelTransitionError(allowPlainResetFallback));
-    if (!allowPlainResetFallback) return false;
-    return await resetSession();
+    console.log(`[Chat] Channel-bound new conversation: ${sessionId.slice(0, 8)} -> ${migratedSessionId.slice(0, 8)}`);
+    const adopted = await adoptMigratedSession(migratedSessionId, { sidecarAlreadyMigrated: true });
+    if (!adopted) {
+      throw new Error(`Failed to adopt migrated channel session ${migratedSessionId}.`);
+    }
+    return true;
   } catch (err) {
     console.error('[Chat] Channel surface migration failed:', err);
-    reportError(channelTransitionError(allowPlainResetFallback));
-    if (!allowPlainResetFallback) return false;
-    return await resetSession();
+    if (migratedSessionId) {
+      await releaseMigratedTabOwner(migratedSessionId, tabId).catch((releaseError) => {
+        console.error('[Chat] Failed to release migrated Tab owner after adoption failure:', releaseError);
+      });
+    }
+    reportError(channelTransitionError());
+    return false;
   }
 }

@@ -1,10 +1,13 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Message as MessageType } from '@/types/chat';
+import type { Message as MessageType, ToolUseSimple } from '@/types/chat';
 
 vi.mock('@/context/ImagePreviewContext', () => ({ useImagePreview: () => ({ openPreview: vi.fn() }) }));
 vi.mock('@/analytics', () => ({ track: vi.fn() }));
+vi.mock('@/context/FileActionContext', () => ({
+  useFileAction: () => ({ workspacePath: '/workspace', openFileTarget: vi.fn() }),
+}));
 
 import Message from './Message';
 
@@ -106,5 +109,25 @@ describe('Message — assistant turn meta footer', () => {
     rerender(<Message message={message} />);
 
     expect(screen.queryByRole('button', { name: '分支' })).not.toBeInTheDocument();
+  });
+
+  it('shows the Turn edit capsule only after the assistant message is terminal', () => {
+    const message = assistantMsg({
+      content: [{
+        type: 'tool_use',
+        tool: {
+          id: 'edit-1',
+          name: 'Edit',
+          input: { file_path: 'src/a.ts', old_string: 'a', new_string: 'b' },
+          result: 'completed',
+        } as unknown as ToolUseSimple,
+      }],
+    });
+    const streaming = render(<Message message={message} isLoading />);
+    expect(screen.queryByRole('button', { name: /本轮编辑 1 个文件/ })).not.toBeInTheDocument();
+    streaming.unmount();
+
+    render(<Message message={message} />);
+    expect(screen.getByRole('button', { name: /本轮编辑 1 个文件/ })).toBeInTheDocument();
   });
 });

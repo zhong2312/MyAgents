@@ -30,10 +30,12 @@
 | `src/renderer/` | React 19 + TypeScript + Vite + TailwindCSS；桌面 WebView UI |
 | `src/server/` | Node.js v24 Sidecar；Claude Agent SDK；每 Session 独立实例 |
 | `src/server/plugin-bridge/` | 独立 Node 进程；OpenClaw Plugin Bridge |
-| `src/cli/` | `myagents` CLI，同步到 `~/.myagents/bin/` |
+| `src/cli/` | `myagents` CLI 源码；业务 bundle 随 app 发布，`~/.myagents/bin/` 仅投影薄启动器 |
 | `src/shared/` | renderer / server 共用的纯类型与逻辑 |
 | `src-tauri/` | Tauri v2 Rust 壳、进程与持久化 owner、HTTP/SSE 代理 |
+| `src-tauri/document-worker/` | 独立 Rust 文档转换 Worker；单 job 计算，不拥有队列或持久化 |
 | `bundled-agents/myagents_helper/` | 内置 MA 小助理 |
+| `bundled-workspaces/` | 随 App 发布的只读工作区模板源码；复制出的用户工作区不由此目录升级覆盖 |
 | `specs/` | 当前架构、设计规范、模块技术文档与构建指南 |
 
 Sidecar、Plugin Bridge、MCP Server 与 CLI 共用应用内置的单一 Node.js v24，不依赖用户系统安装的 Node。
@@ -42,7 +44,11 @@ Sidecar、Plugin Bridge、MCP Server 与 CLI 共用应用内置的单一 Node.js
 
 ### Owner 与 authority 优先
 
-任何状态或资源只能有一个明确 owner 和一个权威来源。修复前先回答“谁创建、谁持久化、谁释放、并发时谁裁决”；不要用同步副本、额外 effect 或新 flag 掩盖 owner 错位。
+Owner 和 source of truth 必须针对具体事实、scope 与 lifecycle phase 定义，不能针对一个笼统的产品概念定义。同一产品概念可能同时存在 desired state、Session snapshot 中固化的 execution identity、当前 generation 的 effective runtime state，以及前端派生状态；它们分别回答不同问题，不能相互替代。
+
+后产生或更接近执行层的数据不会因此获得其他状态的写权限。跨表示的转换、比较或写回必须由对应 lifecycle owner 的既有入口裁决；多个进程或语言层需要执行同一判断时，先定义一份权威决策表，能共享 pure policy 就共享，否则用 parity tests 保证一致性。
+
+操作归属按其读写的产品状态和生命周期确定，不按其复用的 SDK、Sidecar 或 facade 确定。修改前回答“谁创建、谁持久化、谁可以修改、谁释放、并发时谁裁决”。
 
 ### Session、Sidecar 与 Tab
 
@@ -82,6 +88,7 @@ Builtin SDK 与 Claude Code / Codex / Gemini 等外部 Runtime 的 session 操�
 | Pit-of-Success helper、跨语言边界、测试分层 | `specs/tech_docs/pit_of_success.md` |
 | Sidecar 冷启动 / pre-warm 性能 | `specs/tech_docs/sidecar_cold_start.md` |
 | Session ID、状态同步、恢复、配置归置 | `specs/tech_docs/session_architecture.md` |
+| 系统提示词组装、场景 Prompt、Workspace 指令注入 | `specs/tech_docs/system_prompt_architecture.md`；逐轮隐藏消息再读 `specs/tech_docs/system_reminder_protocol.md` |
 | Claude Code / Codex / Gemini Runtime | `specs/tech_docs/multi_agent_runtime.md` |
 | Task / Thought / Goal / Cron provider routing | `specs/tech_docs/task_center.md`、`specs/tech_docs/task_provider_routing.md` |
 | Cloud Space / Space Issue / registered agent | `specs/tech_docs/space_cloud.md`；改云 API、鉴权、数据或 quota 时再读 `../MyAgents_space/specs/ARCHITECTURE.md` |
@@ -91,6 +98,7 @@ Builtin SDK 与 Claude Code / Codex / Gemini 等外部 Runtime 的 session 操�
 | Claude Plugin 加载与安装 | `specs/tech_docs/plugin_loading.md` |
 | SDK 权限 hook / 自定义 Tool | `specs/tech_docs/sdk_canUseTool_guide.md`、`specs/tech_docs/sdk_custom_tools_guide.md` |
 | `myagents` CLI、Admin API、内置小助理、system skill | `specs/tech_docs/cli_architecture.md` |
+| 本地文档转换 / AnyDoc / OCR / Document Worker | `specs/tech_docs/document_processing.md` |
 | 前端 UI、布局、交互、字号 | `specs/DESIGN.md` 的相关章节；只在主题工作时追加 `specs/tech_docs/theme_system.md` |
 | React state / effect 稳定性 | `specs/tech_docs/react_stability_rules.md` |
 | Tool Attachment / 富媒体 / 外部 URL | `specs/tech_docs/tool_attachment_pipeline.md` |

@@ -56,8 +56,8 @@ Multi-Agent Runtime 允许用户选择不同的 AI Runtime 驱动 Agent 会话�
 - `runInjectedTurn()`：用于 cron sync、heartbeat、memory update、Goal 等同步注入 turn；等待 turn finalization，并用各 runtime 的真成功信号判定结果。Builtin adapter 只保留 domain dispatch guard 与 turn timeout；MCP soft pre-warm 在所有 builtin entrypoint 共用的 generator dispatch seam 执行。
 - `stopOwnedTurnByQueueId()`：按 domain owner + `queueId` 精确停止 Task/Goal turn。普通 queued item 被明确移除即可成功；若已进入 promotion，则必须等其结算，`not-dispatched | terminated` 才算成功，`dispatched` 且仍是 current turn 时继续精确 stop，`termination-unconfirmed` 返回失败并保留 exact binding。停止 current external turn 使用 `preserveQueue`，不得清掉后续无关 operation。
 - read/config methods：`getRuntimeIdentity()`、`getLiveSessionState()`、`getLatestAssistantResult()`、`getStreamReplaySnapshot()`、`getSessionConfigSnapshot()`、`getLiveSessionOverlay()`、`getSessionCompletionTerminal()` 统一承接 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/api/session/config` 等读取面。
-- common operation methods：`rewindToUserMessage()`、`forkAtAssistantMessage()`、`resetForNewDesktopSession()`、`resetForNewImSession()` 把真正具有共同产品语义的会话操作留在 adapter 内部处理；unsupported runtime 由 adapter 返回能力错误，而不是 route 层手写分支。`updateRuntimeConfig`、`prewarm`、startup restore 与 `retryLastExternalUserMessage` 只属于 external runtime，由 selector seam 的显式 helper 校验 runtime 后调用 native owner，不能为 builtin 增加伪对称 stub，也不能让 route/bootstrap 直接 import external facade。打开既有 Session 属于 App 的 Tab 导航，不是 Runtime operation。
-- queue/config/permission methods：把 route 层从 `agent-session.ts` / `external-session.ts` 的直接分流中解耦；`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/interaction-scenario/set` 对 external runtime 显式 skip，不在 route 层静默判断。
+- common operation methods：`rewindToUserMessage()`、`forkAtAssistantMessage()`、`resetForNewDesktopSession()`、`migrateBoundSurfaceSession()` 把真正具有共同产品语义的会话操作留在 adapter 内部处理；unsupported runtime 由 adapter 返回能力错误，而不是 route 层手写分支。IM `/new` 只轮换 Rust Router 的 Agent binding，不属于 Runtime reset。`updateRuntimeConfig`、`prewarm`、startup restore 与 `retryLastExternalUserMessage` 只属于 external runtime，由 selector seam 的显式 helper 校验 runtime 后调用 native owner，不能为 builtin 增加伪对称 stub，也不能让 route/bootstrap 直接 import external facade。打开既有 Session 属于 App 的 Tab 导航，不是 Runtime operation。
+- queue/config/permission methods：把 route 层从 `agent-session.ts` / `external-session.ts` 的直接分流中解耦。`/api/mcp/set`、`/api/agents/set`、`/api/interaction-scenario/set` 与 `/api/cc-plugin/session-enable` 都走对应 `SessionEngine` 方法；builtin 委托 SDK config owner，Managed Codex 委托 Product Extension reconciler，其它 external source 返回明确的不适用/不支持状态。`/api/provider/set` 继续由 runtime config owner 处理，route 不静默猜 Runtime。
 
 新增“注入 user 消息 / 同步 config / 等待 idle 后判定 completed”的 endpoint 必须优先接入 `SessionEngine`，不要在 `index.ts` 或新 route module 里重新手写 builtin/external 分支。
 
@@ -149,7 +149,7 @@ type RuntimeType = 'builtin' | 'claude-code' | 'codex' | 'gemini';
 | `system-cli` | 用户自行安装并登录的本机 CLI | 实验室「更多 Agent Runtime」里选择 Codex / Claude Code / Gemini |
 | `managed-provider` | MyAgents 管理 runtime 二进制、安装状态与登录状态 | Provider 列表里的 `codex-sub`（Codex 订阅） |
 
-`managed-provider` 不受 `config.multiAgentRuntime` 门控；它由自己的 Provider readiness gate 控制：provider gate 开启、managed runtime 已安装到要求版本、managed Codex auth 有效（`chatgpt` 或兼容的 `access-token`），且 provider 未被禁用。Rust `runtime_identity.rs` 在新 Session、IM 或 Task Sidecar 出生时根据 Agent 的 `providerId:'codex-sub'` 与这些 readiness 字段解析出 `runtime='codex'`、`source='managed-provider'`。
+`managed-provider` 不受 `config.multiAgentRuntime` 门控；它由自己的 Provider readiness gate 控制：provider gate 开启、managed runtime 已安装到要求版本、managed Codex auth 有效（`chatgpt` 或兼容的 `access-token`），且 provider 未被禁用。Rust `runtime_identity.rs` 在新 Session、IM 或 Task Sidecar 出生时，仅将 Agent 当前的 `runtime:'builtin' + providerId:'codex-sub'`（以及可读兼容的旧 `runtime:'codex' + source:'managed-provider'`）投影成 `runtime='codex'`、`source='managed-provider'`；显式 system Codex / Claude Code / Gemini Runtime 胜过遗留的 `codex-sub` 字段。
 
 每次 Rust Sidecar ensure attempt 只解析一次 owner-aware `RuntimeIdentity(runtime + runtimeSource)`；同一次 attempt 的既有进程复用校验与新进程 spawn 必须消费这个同一快照，不能在两者之间重读 Session/Agent 配置。Task 首次 materialize metadata 时，Node 以 live `SessionEngine.getRuntimeIdentity()` 和同一时刻的 live config snapshot 绑定实际进程身份，避免 Rust payload 与 Node 进程发生 TOCTOU 漂移。
 
@@ -287,17 +287,35 @@ Codex 的稳定 v2 协议可以精确适配产品级时间回溯与分支；Syst
 | `personality` | enum? | ❌ 未对接 | |
 | `baseInstructions` | string? | ❌ 未对接 | |
 
-**Codex RPC 日志边界**：`developerInstructions` 是完整系统提示词，`thread/start` / `thread/resume` 调试日志不得输出正文或前缀，只记录 `{present, chars, hash}`；短 SHA-256 仅用于判断两次启动是否使用同一版本。脱敏只作用于日志副本，发给 Codex app-server 的 RPC params 必须保留原始值。
+**Codex RPC / External terminal 日志边界**：`developerInstructions` 是完整系统提示词，`thread/start` / `thread/resume` 调试日志不得输出正文或前缀，只记录 `{present, chars, hash}`；Codex command、path、stderr 与 provider error 的 notification/log 投影遵守同一规则。`external-session.ts` 写 non-success terminal 的 `console` 与 perf trace 时也只记录不可逆摘要，但传给 Chat/IM/turn outcome 的原始 terminal error 保持不变。短 SHA-256 仅用于判断两次诊断是否对应同一值；脱敏只作用于日志副本，发给 Codex app-server 的 RPC params 和用户错误事件必须保留原始值。
 
 **MCP owner 边界**：Codex 的 `thread/start` / `thread/resume` schema 不接受 MCP 配置，但这不等于所有 Codex 会话都只能读取 `~/.codex/`。`runtimeSource:'managed-provider'` 由 MyAgents 持有 app-server 进程，因此在 spawn 时用 `-c mcp_servers.<name>.*=...` 注入当前 workspace 的有效 MCP；`runtimeSource:'system-cli'` 仍由用户自己的 Codex 配置持有 MCP，MyAgents 不覆盖。Managed 注入前必须复用 `utils/mcp-command.ts` 解析绝对 npx 路径、`-y` 与 MyAgents preset 的精确版本，不能和 builtin SDK 路径各自解释同一份 MCP definition。
 
 **Managed transport owner 边界**：Managed Codex 的 app-server launch config 注册 MyAgents 私有 provider id；该 provider 保持 `name:'OpenAI'`、`wire_api:'responses'` 与 `requires_openai_auth:true`，不设置 `base_url` / `env_key`，因此 Codex 仍按现有 ChatGPT 登录态解析官方 Codex endpoint、订阅模型与 entitlement。唯一 transport 差异是 `supports_websockets:false`，让 Responses 从首包开始直接走 HTTPS，不再先做五轮 WebSocket reconnect。新 thread 显式传同一 `modelProvider`；resume 只有在 Session metadata 提供权威 model 时才把 model/provider 成对覆盖，model 未知的 legacy thread 则两者都交给 Codex 持久化 metadata 恢复。Pre-warm 同理优先使用 Session metadata 的 model，而不是 renderer 可能尚未同步完成的 payload。`runtimeSource:'system-cli'` 完全不注入或覆盖 provider。
 
-**标题 utility turn**：自动标题必须从 Session metadata 保留完整 Runtime identity，不能只传 `runtime:'codex'` 后让 `startSession()` 回落到 `system-cli`。Managed Codex 标题使用同一 managed binary / `CODEX_HOME` / auth owner，但显式传空 `mcpServers`，不注入 workspace MCP；同时固定 `suggest`、低 reasoning effort、`maxTurns:1` 和 ephemeral thread。普通 Session 的 MCP 与权限配置不受影响，system-cli Codex 继续由用户自己的原生配置持有。
+**标题 utility turn**：自动标题必须从 Session metadata 保留完整 Runtime identity，不能只传 `runtime:'codex'` 后让 `startSession()` 回落到 `system-cli`。Runtime 启动边界用原子的 `initialTurn { message, clientUserMessageId, images? }` 表达首轮输入：普通产品 Session 使用已持久化 `SessionMessage.id`，标题 utility 自己生成一次性 UUID，禁止传入没有 caller identity 的游离首轮消息。Managed Codex 标题使用同一 managed binary / `CODEX_HOME` / auth owner，但显式传空 `mcpServers`，不注入 workspace MCP；同时固定 `suggest`、低 reasoning effort、`maxTurns:1` 和 ephemeral thread。普通 Session 的 MCP 与权限配置不受影响，system-cli Codex 继续由用户自己的原生配置持有。
 
 **Codex usage owner**：`thread/tokenUsage/updated` 始终保留：其 `last.inputTokens` 是实时 context 占用，`total` 是旧 runtime / 缺失 raw usage 时的 turn 累计 fallback。Codex 0.146+ 在开启 raw events 后还会为每个上游 Responses API completion 发 `rawResponse/completed {threadId, turnId, responseId, usage}`；adapter 在 root turn 内按 `responseId` 去重，累加 provider 回传的 input/output/cached/cache-write，最后在 root terminal 之前只发一个 `semantics:'delta'` usage，交给 `external-session` 既有的 SessionStore / analytics owner。任一 response 的 `usage:null` 或必需 token 字段非法会使整轮 raw 聚合失效并回退 `thread/tokenUsage/updated`，禁止把部分和伪装成精确统计。child thread 的 raw/thread usage 都经过 `isChildThreadGatedMethod()` 丢弃，不污染主 Session；raw payload 与 response id 不跨 adapter 边界。
 
 **Codex 0.144.1 models refresh 历史已知问题**：`codex_models_manager ... timeout waiting for child process to exit` 不是 MyAgents 子进程退出超时。Codex 的 models endpoint 把 transport build + `/models` 请求包在固定 5 秒 timeout 中，而通用 `CodexErr::Timeout` 沿用了 command 场景的错误文案。每个 app-server 的周期 refresh worker 启动即请求、完成后等待 180 秒，因此这一路连续失败时约每 185 秒出现一次；response 携带的新 ETag 还会即时触发 refresh，所以 turn / transport retry 附近也可能出现多条 5 秒 timeout 成簇爆发，不能用 185 秒间隔反推是否为同一问题。MyAgents 不用静态 `model_catalog_json`、cache touch、日志过滤或绕开 provider proxy 来掩盖它：这些方案会分别冻结 entitlement、伪造 freshness、隐藏真实失败或破坏用户代理策略。HTTP-only provider 会移除 WebSocket 失败，并避免重复 WebSocket attempt 带来的 ETag refresh 放大；慢代理下的周期 refresh 与正常 response ETag refresh 仍需等待 Codex 上游提供独立 timeout / 修正文案。
+
+### 项目级 Skill / Command 选择（0.4.7）
+
+`AgentConfig.capabilitySelection` 是唯一持久化 authority；写开关时，当前 workspace 必须经唯一 `Project.agentId` 精确找到唯一 Agent。Runtime 读取不借用这条写入约束：owner 暂缺、重复或 selection 无法读取时采用无 disabled override 的默认集合，不能在消息入队前阻断 Session。`src/server/project-capabilities.ts` 统一扫描项目与 `~/.myagents` 候选，按 canonical name 执行 project > global winner，最后应用 disabled override。Required System Skill 是 canonical name 的启用策略，不是项目来源或目录名的真实性边界：真实项目 Skill 与 Required 同名时仍走同一 winner 规则，winner 强制启用；Skill 的同名、目录名差异或局部解析问题只淘汰对应候选，不得提升为整个 workspace / Session 不可用。设置页展示全部 winner；Chat Sidebar 与输入框只消费同一 Sidecar snapshot 的 enabled 集合。Rust slash scanner只保留无 Sidecar 的 Launcher 兼容读取，不解释项目 selection，也不在读取时改动 projection。
+
+Command 必须区分三类身份：`scope + sourceLocalId` 是选择与持久化身份，frontmatter `name` / 首个 H1 只是展示名，斜杠调用名则由 source root 下的词法文件路径稳定派生（去掉 `.md`，嵌套目录 `/` 映射为 `:`）。调用名允许 Unicode 字母、数字以及 `:` / `_` / `-`，不允许空白或其它标点；因此修改标题或展示名不能暗中改写 Runtime 调用协议。`/api/project-capabilities` 同时返回展示 `name` 与 `invocationName`，输入框和侧栏点击必须插入后者；Managed Codex compiler 与 Launcher 兼容扫描遵守同一规则。任何项目级或全局 Skill / Command 成功写入后都触发统一的 capability invalidation，使已挂载 Chat 重新读取权威 snapshot；不得为某个 Runtime 增加独立扫描、轮询或伪造 SDK 动态事件。
+
+`.claude` symlink 只是跨 Runtime 共用的兼容投影，不是项目选择的执行 authority。MyAgents 只维护指向 `~/.myagents` 的全局安装链接；项目自己的目录或目录 symlink 都是普通 Project Skill。Builtin 在每个 Query birth 将 enabled Skill canonical name 写入 SDK `Options.skills`，并在消息跨 SDK 边界前拒绝 disabled custom Command；revision 变化复用既有 deferred Query replacement，当前 turn 不变。Managed Codex 在每次 turn admission 编译同一 snapshot，在 merge 前过滤 project/global Skill 与 Command，并把 capability revision 纳入 desired/effective revision。System Codex、Claude Code、Gemini 在投影成功时看到相同的 project > global winner；它们的 process lifecycle 记录启动时采用的 effective capability revision，下一次 admission 发现 winner revision 变化就走既有 idle-boundary replacement，不能依赖“当前 Sidecar 是否碰巧执行了链接变更”。Plugin selection 不消费项目 override。
+
+#### 输入框斜杠菜单能力投影
+
+斜杠菜单必须按 Session 的真实 Runtime 能力投影，不能按视觉 chrome 推断。`/goal` 是 MyAgents 自己的 runtime-neutral 客户端动作，所有 Runtime 都保留；工作区 Skill / Command 继续消费各自既有的能力快照。静态 `compact/context/cost/init/pr-comments/release-notes/review/security-review` 列表属于 Claude Agent SDK，只在 `runtime:'builtin'` 的 Session 展示。Managed Codex 即使为了产品一致性使用 builtin 输入 chrome，也不继承这份列表，而是仅额外投影已适配的原生 `/compact`；其他 external Runtime 隐藏全部 Claude SDK 系统指令。
+
+工具菜单区分配置 authority 与 Runtime 状态：MyAgents 托管的 builtin / Managed Codex Session 都以 Product Session 的 workspace 配置提供候选项与开关；`runtime_tool_catalog` 只描述实际 Runtime 已加载的工具，不得在 Runtime 尚未启动或目录尚未上报时反向清空配置 UI。用户自行管理的 system-cli Runtime 不由 MyAgents 写入 MCP 配置，继续以 Runtime 目录只读展示。
+
+锁定的 Codex app-server `0.146.0` 中，`thread/compact/start` 与 `review/start` 分别提供原生压缩和审查 RPC，但两者都会创建 Codex 控制回合。当前仅 `compact` 已接入：Renderer 的 `/compact` 与上下文卡片按钮共用 `/api/session/compact`，route 只调用 SessionEngine facade；external Session owner 负责 idle admission、mutation lease、`chat:status`/`chat:system-status` 与排队消息恢复，Codex adapter 负责 RPC、control turn terminal 及隔离其 item/turn 事件，禁止把压缩写成用户/助手 transcript。RPC/timeout 等不确定失败会重启 runtime 进程边界，明确失败 terminal 则保留进程。`review` 尚未建立对应产品语义，继续隐藏；`context` 已由实时上下文指标承担只读展示但没有等价管理 RPC，`cost` 只有 token usage、没有费用语义，其余 Claude 系统指令没有可忠实映射的 Codex RPC。
+
+Required System Skill 名单仍由 `src/shared/systemSkills.ts` 唯一决定；全局安装完整性只产生候选级诊断，项目 effective snapshot 的 `required` 由 winner 的 canonical name 决定。项目同名目录或目录 symlink 都保留 project provenance、服从既有 project > global 优先级并强制启用；目录名不参与真实性判断，也不得让单个 Skill 候选阻断 Session。投影 helper 只替换可证明指向 `~/.myagents` 的 managed symlink，项目文件与项目 symlink 保持原样；若 Project Skill 以任意目录名声明了相同 canonical name，同步入口移除对应 global link，使共享磁盘视图与 project winner 一致。单个候选或 link 无法读取/刷新时只记录日志，Session 继续启动；Builtin 与 Managed Codex 都从本次 admission 排除受影响 canonical。system-cli 兼容 Runtime 直接扫描共享磁盘，若 OS 拒绝清理既有链接，只能记录该物理歧义并继续，不能为了强行一致而阻断 Session 或新增第二套投影协议。依赖 Required Skill 的任务只检查当前受控 Runtime 是否实际加载该 canonical name，不要求 winner 来自官方全局目录；Managed Codex 以启动后的 `skills/list` read-back 为准，缺失时只拒绝该依赖任务，普通对话和 Session 仍可用。
 
 ### Skills 加载
 
@@ -306,7 +324,24 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 1. 调 `syncProjectUserConfigFiles(workspacePath)`，把 `~/.myagents/skills` 中启用的用户级 skills 同步为工作区 `.claude/skills/*` symlink（与 builtin Claude SDK 共用同一套磁盘桥接逻辑，不另建 Codex 专用目录）。
 2. `initialize` 握手完成后调 Codex app-server RPC `skills/extraRoots/set`，把 `<workspace>/.claude/skills` 作为额外 skill root 注入当前 Codex 进程。
 
-同步失败只记录 warning，Codex 会话继续启动；`.claude/skills` 作为工作区级 extra root 的注入与用户级 symlink 同步解耦，仍会照常尝试。这条路径在 `src/server/runtimes/codex.ts::CodexRuntime.startSession()` 内，因此 `runtimeSource:'managed-provider'`（内置 Codex 订阅）和 `runtimeSource:'system-cli'`（实验室外部 Codex CLI）都会生效。若用户系统 CLI 版本过旧、不支持 `skills/extraRoots/set`，adapter 同样只记录 warning 并继续启动会话；此时 Codex 回落到自身默认 `.agents/skills` 扫描。
+`runtimeSource:'system-cli'` 与 `runtimeSource:'managed-provider'` 都把 Skill 注入当成可选能力：同步、临时目录 materialization、`skills/extraRoots/set`、`skills/list` 或单个 Skill 解析失败只记录 warning，Codex Session 继续启动；Managed 仍走下节的精确 Product Extension projection，但不会把某个 Skill 的异常提升成 Runtime 失败。临时目录使用短序号作为文件系统名称，单个 Skill / Agent 链接或配置写入失败只跳过该候选。`skills/extraRoots/set` 与首次 `skills/list(forceReload:true)` 的 deadline 都是 30 秒；read-back 按 Skill 名称和 canonical source path 验收，其他 root 的同名 Skill 不算该候选成功。统一日志记录两个阶段的耗时、root/expected/visible/error 计数，并以 workspace/extra-root 相对路径及不可逆 message 摘要记录 Codex 返回的 `errors[]`，不持久化 parser 自由文本。parser warning 与缺失候选只进入日志，不出现在 Chat error banner。
+
+### Managed Codex Product Extensions（0.4.6）
+
+这套投影仅适用于 `runtime:'codex' + runtimeSource:'managed-provider'`。MyAgents 仍是 Product Session、配置、Plugin Store、权限与 transcript 的 authority；Codex app-server 只是 Runtime kernel，`system-cli` Codex 继续使用用户自己的配置，不接管其扩展体系。
+
+`SessionEngine` 的 MCP、Agent、interaction scenario 与 enabled-plugin 配置入口统一触发 `external-session/extensions.ts`。Renderer 对 MCP 只提交 ID 选择意图，Sidecar 必须从 `resolveWorkspaceConfig()` 重新取得 executable definition；不得信任 Renderer 传来的 command/env/url。owner 从当前权威来源编译 immutable snapshot，以 `desiredRevision/effectiveRevision` 协调本次进程 generation：无进程为 `pending_next_start`，running turn 为 `deferred_until_idle`，idle 可安全 replacement；连续更新合并到最终 revision，旧 generation 的迟到事件不能回写新状态。新进程启动且 MCP startup barrier 完成 terminal/timeout 观察后更新 effective；单个 Skill/MCP/Agent/Plugin 的失败只进入对应组件结果与 Logs，不能否定整个 Runtime generation。`RuntimeDiagnostics.extensions` 同时携带顶层应用状态与逐组件结果，禁止 external-runtime 伪成功；`pending_next_start` 是下次 send/pre-warm 会自然消费的正常状态，不额外提示，`deferred_until_idle` 只在用户操作入口显示一次等待提示。Chat banner 只展示 Runtime 本身无法启动等顶层失败；逐组件 `failed` / `unsupported` 是可选能力降级，进入结构化诊断与 Logs panel。生产方的 `requiresUserAction` 仅供用户主动修改扩展配置后的单次 toast 使用，不能作为被动 Chat banner 的 severity。
+
+| MyAgents 组件 | Managed Codex 投影 | 关键边界 |
+|---|---|---|
+| Workspace/全局/Plugin Skills | 临时精确目录 → `skills/extraRoots/set` + read-back | project > user > plugin；只投影合并后 enabled 的 canonical、非 symlink、限深限大 `SKILL.md`；正文 digest 进入 revision |
+| Commands | Sidecar admission-time 展开为 runtime prompt | transcript 保留用户原始 `/command args`；`$ARGUMENTS` 只作用于发给 Runtime 的文本 |
+| Agents | 启动时生成临时 native `agents.<role>.config_file` | prompt/model/Skill 可忠实映射；tools/disallowedTools/maxTurns 等字段逐 Agent unsupported，不用 prompt 伪装约束 |
+| 外部 MCP | Managed app-server 启动配置 | stdio/streamable HTTP 由服务端权威 MCP definition 逐 server 原子投影；URL/header 的 `{{ENV_NAME}}` 先经共享 MCP 模板解析，再交给 Settings 探活、Builtin SDK 或 Managed Codex 各自的 transport projector。无法安全表达、transport 不支持或 env key 值冲突时只排除该 server，并以 `extensions.components` 的 `failed` / `unsupported` 进入 Logs panel，其他 MCP 与基础 Session 继续；顶层 generation 仍为 `applied`，因此不出现 blocking Chat banner。secret 值只进入进程 apply fingerprint，不进入 revision/diagnostics，也绝不进入 argv |
+| SDK in-process MCP / IM Bridge | `thread/start.dynamicTools` +反向 `item/tool/call` | Dispatcher 复用标准 MCP handler、现有权限 owner、AbortSignal、timeout、附件与 large-value spill；exactly-once 且绑定 process generation |
+| Plugin | 按 `plugin.json` 的 `skills`/`commands`/`agents`/`mcpServers` 路径与默认目录编译 | 命名组件使用 project > user > plugin；MCP 按 server id 独立合并并显式报告冲突。Hooks/LSP/monitors/bin 和不可表示 transport 逐组件 unsupported，不阻断其它可转换组件 |
+
+协议契约锁定在 app-server `0.146.0`，升级下载锁不能自动放开扩展路径，必须先重新生成 schema 并跑 exact-binary conformance。`thread/start.dynamicTools` 的目录属于 native thread birth：resume 没有替换目录的协议字段。Session metadata 因此只保存 protocol version 与 secret-free catalog fingerprint；相同目录可原生 resume，目录改变或 legacy Session 无法证明一致时返回 `host_tools_catalog_immutable`，要求新建 Product Session。该降级不阻断基础对话：被动恢复时进入结构化诊断与 Logs panel；用户主动配置扩展时可用一次 warning toast 说明新建 Product Session 才能应用。唯一兼容例外是历史 metadata 与当前 desired catalog 都为空，此时没有可漂移的 Host 能力，可继续 resume。不得以 MCP fallback、额外 Extension Host 或第二套 Agent loop 绕过这个限制。
 
 ### 事件映射
 
@@ -338,7 +373,8 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 | `item/tool/requestUserInput` | 映射到 `AskUserQuestion`，答案按 Codex 原生 question id 回传 |
 | `mcpServer/elicitation/request` (`form` / `openai/form`) | 有 schema fields 时映射到 `AskUserQuestion`；`url` / tool approval / generic elicitation 走 `permission_request` |
 | `currentTime/read` | runtime adapter 直接返回 `{currentTimeAt}`，不进入 UI |
-| `item/tool/call` / token refresh / attestation | MyAgents 不托管，显式 error |
+| `item/tool/call` | 仅 Managed Codex 且命中本 generation 的 Host catalog 时进入既有 permission UI 后由 Dispatcher 执行；重复、stale、unknown、timeout 或 stop 都 exactly-once 失败结算 |
+| token refresh / attestation | MyAgents 不托管，显式 error |
 
 IM / Agent Channel 默认不支持桌面结构化提问：若 `hostInteraction.askUserQuestion === 'none'`，Codex `item/tool/requestUserInput` 立即按协议返回空 answers，`mcpServer/elicitation/request` form 立即返回 `action:'cancel'`，并且不登记 `pendingRequests`。`runtimeSource:'managed-provider'` 与 `runtimeSource:'system-cli'` 共享同一个 Codex adapter，因此必须保持一致。
 
@@ -361,7 +397,7 @@ IM / Agent Channel 默认不支持桌面结构化提问：若 `hostInteraction.a
 | `imageGeneration` | `ImageGeneration` | **生图核心**：优先 `savedPath`（零拷贝引用 Codex 自动保存），fallback `result` (base64) 解码落盘 → ToolAttachment[]；content 留 `revisedPrompt` 文字 |
 | `collabAgentToolCall` | `CollabAgent` | tool / prompt / model / senderThreadId / receiverThreadIds 摘要 |
 | `plan` | — (started 走 thinking_start) | text 通过 `item/plan/delta` 流式 |
-| `reasoning` | — (started 走 thinking_start) | summary 通过 `summaryTextDelta` 流式 |
+| `reasoning` | —（started 不渲染；首个 exact summary/content delta 才走 thinking_start） | summary 通过 `summaryTextDelta` 流式 |
 | `enteredReviewMode` / `exitedReviewMode` | — (log level event) | review-mode 进入/退出提示 |
 | `hookPrompt` | — (log level event) | hook 注入的提示 fragment |
 | `contextCompaction` / `agentMessage` / `userMessage` | — | 通过 turn/agentMessage 路径处理 |
@@ -385,7 +421,7 @@ Codex 主 agent 可派生 sub-agent。**sub-agent 是独立的 Codex thread**，
 |---|---|
 | `ItemStartedNotification` / `ItemCompletedNotification` 带顶层 `threadId` | 区分"哪个 agent/线程发出的工具";**子线程的 item 确实带子线程 id 到达本连接**(实测:子 `commandExecution` 带 child threadId) |
 | v1 / Codex 0.135.0：`collabAgentToolCall(spawnAgent).receiverThreadIds` | `item/started` 时为空、`item/completed` 时填入子线程 id；completed 一旦给出 child id 就预留 child lifecycle，避免 root terminal 抢先完成。保留为旧 Codex/System CLI 的兼容关联路径。`wait/sendInput/closeAgent` 仍只引用既有 child，不能重写 spawn 归属 |
-| v2 / Codex 0.144.1：`subAgentActivity { id, kind, agentThreadId, agentPath }` | `started` 是 spawn 的唯一 UI/关联信号，且 `id` 就是原 `spawn_agent` call id；`interacted` / `interrupted` 分别归一为消息与中断协作 trace（interrupt 不伪装成 shutdown）。主线程在新 user turn 联系持久 child 时，该 activity card 成为本 turn 的新容器 |
+| v2 / Codex 0.144.1：`subAgentActivity { id, kind, agentThreadId, agentPath }` | `started` 是 spawn 的唯一 UI/关联信号，且 `id` 就是原 `spawn_agent` call id；`interacted` / `interrupted` 分别归一为消息与中断协作 trace（interrupt 不伪装成 shutdown）。raw discriminator 证明为 trigger-turn 的 follow-up activity 始终成为本 turn 的独立 lifecycle owner，即使同一 child 已在本 root turn 的 spawn 卡下完成；queue-only interaction 仍只是原卡 nested trace |
 | v2 spawn / interaction 时序 | Codex 先创建 child 或提交 inter-agent communication，随后才在 sender emit `subAgentActivity(started/interacted)`；child item 与 activity 存在真实并发窗口。typed `interacted` 同时覆盖 queue-only `send_message` 与触发 turn 的 `followup_task`；Managed Codex 新 thread opt-in 官方 `rawResponseItem/completed`，以同一 `call_id` 锁存原 function name，随后只保留 `queue-only` / `trigger-turn` 这一位语义。raw item 在工具执行前已持久化并 emit，故 trigger reservation 不依赖通知时序猜测 |
 | 子线程 `thread/started` + `Thread.source` | best-effort 的 parent/nickname/role 辅助来源；0.135.0 不发 child `thread/started`，因此不能作为唯一关联信号 |
 | 子线程发**自己的** `turn/started` / `turn/plan/updated` / `turn/completed`(isMain=false) | **必须按 `threadId` 闸掉** —— 否则子线程 turn 完成会提前终结用户 turn + `resetTurnAccumulators()` 清空 `currentContentBlocks`(spawn 卡片 + 嵌套调用),既破坏 turn 完整性又毁掉嵌套；子线程 plan 也不能覆盖主 AgentStatusPanel 的 todo 快照 |
@@ -398,13 +434,15 @@ Codex 主 agent 可派生 sub-agent。**sub-agent 是独立的 Codex thread**，
 - `experimentalApi` handshake 与 `experimentalRawEvents` request 只在 Managed Codex **新 thread** 同时开启；截至 0.146.0，`thread/resume` schema 仍没有 raw-events 参数，System CLI 也必须兼容旧版本。缺少 raw discriminator 时，adapter 不把模糊 `interacted` 猜成 active turn（否则 queue-only 会让 root 永久不完成）。若 root terminal 到达时仍没有 child `turn/started` 给出确定 ownership，adapter 释放该 root terminal 后结束当前 app-server，由既有 session resume 路径重建干净 runtime；不维护跨 turn quarantine，也不允许旧进程的迟到 child 串入下一 turn。
 - root terminal 到达时若 child 仍处于 `subAgentThreadsAwaitingActivity`，说明本 turn 的 parent correlation 不完整；与上述模糊 `interacted` 共用同一个进程边界降级：暂存 root terminal、结束 app-server、在 exit 依次发出 root terminal 与 `session_complete`。没有 quarantine、timer、retry 或跨 turn 猜测。
 - Codex child turn 是独立执行单元，可能晚于 root model 的 terminal。adapter 观察 foreign `turn/started` / `turn/completed`（不把它们上抛为主生命周期），保留 active child 的精确 `(threadId, turnId)`；仍有 child 时暂存 root terminal，最后一个 child settle 后才把既有 `turn_complete` 交给 external-session。成功 terminal 自然等待；中断/失败 terminal 会请求 interrupt 所有 active child 后等待其 terminal。若 force-send 命中已完成 root、尚未完成 child 的窗口，`interruptTurn()` 同样改为中断 child turn；尚未拿到 turnId 的 child 在 `turn/started` 到达时立即执行 pending interrupt。相同 `(threadId, turnId)` 的并发中断 single-flight；RPC 失败后先重验 root/child ownership，只有仍悬挂时才终止 app-server，并在 exit boundary 恰好一次释放原 root terminal。这样完整 nested trace 在同一 assistant turn 持久化，且不破坏 Stop/force-send。
+- 同一份 native child turn observation 还是 lifecycle-eligible `CollabAgent` 的唯一执行 authority。adapter 只在真实 child `turn/started` / terminal 到达时记录本地观察时间，经既有 ancestry 与 activity correlation 映射到顶层父卡，并发出 runtime-neutral `subagent_lifecycle`；spawn / trigger-turn 的预留只保护 root causal fence，不单独制造 `running`。后代 turn 只延迟父卡 terminal，父卡最终结果仍由 direct owner child 决定；queue-only `send_message` 与 wait / interrupt / close 不获得 lifecycle。记录随当前 root turn 的 correlation 一起清空，不建立 Session registry。
+- reasoning summary / content trace 在各自首个 delta 才用 exact `threadId + itemId + summary|content index` 开启，`item/completed(reasoning)` 逐一关闭同一批 exact id。不得重新用通用 `reasoning` suffix 结束，也不得依赖 root terminal 批量补关正常 trace。
 - 异步 `tool_attachment_update` 的最终 owner 是 external-session 的内容状态：若 placeholder/tool 仍在 Codex 因果缓冲中，attachment update 与它一起等待；一旦 tool 已跨过 runtime boundary，后续事件不再依赖 thread map。sub-agent 同时识别 live child-tool latch 与 settled attachment latch；sub-agent 或 top-level update 若早于异步 tool-result normalization，均由 content owner 暂存并在 placeholder 建立时原子应用。完全无 owner 的迟到 update fail-closed，禁止制造 top-level SSE。
 - 主线程 `wait/sendInput/closeAgent` 走 `resolveCollabAgentControlParents(tool, receiverThreadIds, …)`。解析成功时生成合成子 trace id(`originalId::subagent-control::parentToolUseId`)并直接挂 `subAgent`;started 已解析的 parent 集合在 completed 侧优先使用,避免 start/result 分裂。解析不到时 started 不渲染,completed 再解析,仍解析不到才输出一个完整顶层 fallback 卡片(不丢调用)。`status: failed` 透传为 `tool_result.isError=true`。
 - 打标在 `UnifiedEvent` 的工具、文本、思考事件挂 `subAgent: SubAgentScope { parentToolUseId, nickname?, role? }`(见 `types.ts`)。已由控制事件预置的 `subAgent` 不会被 thread-level tagging 覆盖。map 在 root terminal 与所有已观察 child turn settle 后清空；中断/失败 terminal 先请求中断 active children，待 child settlement 后再释放 root terminal。若 child interrupt RPC 无法确认，adapter 终止当前 Codex 进程，并在 exit boundary 依次释放原 root terminal 与 `session_complete`；external-session 据此清理 runtime owner，下一条消息沿既有 resume 路径启动新进程。
 
-**路由（`external-session.ts` facade + `external-session/content-blocks.ts` state owner）**:`tool_use_start` 命中 `event.subAgent` 时归并进父卡片 `subagentCalls[]`;若父卡片仍在 streaming、尚未进入 content blocks,先写 `pendingSubagentCallsByParent`,等父 `tool_use_stop` 持久化时合并,不会退化成顶层平铺。归并后写 `childToolToParent`;后续 `tool_input_delta`/`tool_use_stop`/`tool_result(_delta)` **只按 `childToolToParent` 锁存路由**(不再每条重判 `event.subAgent`),杜绝"先平铺后嵌套"闪烁。子线程 `text_delta` / `thinking_delta` 通过合成 `AgentMessage` / `Thinking` trace 行复用 `chat:subagent-tool-*`(无新增 SSE)。live snapshot (`getExternalLiveAssistantMessage`) 同样跳过 child pending tool 并把 `pendingSubagentCallsByParent` 合并进父卡,所以 Tab 重连/重开不会重新平铺。`PersistContentBlock.tool.subagentCalls` 随父卡片落库,history replay 自动重建嵌套。
+**路由（`external-session.ts` facade + `external-session/content-blocks.ts` state owner）**:`tool_use_start` 命中 `event.subAgent` 时归并进父卡片 `subagentCalls[]`;若父卡片仍在 streaming、尚未进入 content blocks,先写 `pendingSubagentCallsByParent`,等父 `tool_use_stop` 持久化时合并,不会退化成顶层平铺。归并后写 `childToolToParent`;后续 `tool_input_delta`/`tool_use_stop`/`tool_result(_delta)` **只按 `childToolToParent` 锁存路由**(不再每条重判 `event.subAgent`),杜绝"先平铺后嵌套"闪烁。子线程 `text_delta` / `thinking_delta` 通过合成 `AgentMessage` / `Thinking` trace 行复用 `chat:subagent-tool-*`。`subagent_lifecycle` 由同一 content owner 按父卡 id 单调合并；父卡尚未 materialize 时只暂存最小 lifecycle，无论普通 `tool_use_stop` 还是 root flush 首次物化父卡都必须原子附着。每次 root `turn_complete` / `session_complete` 在持久化或丢弃 partial assistant 前递归关闭残余 nested loading，并把缺失 child terminal 的 running 卡 fail closed 为 `failed`，明确用户 Stop 则为 `interrupted`；resultless nested call 使用共享 pure policy 投影为既有 `Failed` / `Interrupted` error result，已有真实结果原样保留。已确认 terminal 不覆盖，root success 绝不合成 child success。实时状态走 critical `chat:subagent-status`，成功 turn 的 `PersistContentBlock.tool.subagentLifecycle` 与 nested trace 一起持久化；失败 / 停止 turn 维持既有不落 partial assistant 的契约。live snapshot (`getExternalLiveAssistantMessage`) 同样合并 pending calls 与 lifecycle，所以 Tab 重连/重开不会重新平铺或丢状态。
 
-**前端**：`isSubagentContainerTool(name)`（`toolBadgeConfig.tsx`，单一真源）把 `CollabAgent` 与 builtin `Task`/`Agent` 一视同仁——`ToolUse` 路由到 `TaskTool`、`ProcessRow` 锚点、`TabProvider` 初始化 `taskStartTime`/`taskStats`。`TaskTool` 对无 JSON 结果的 collab 卡片合成一个 status-aware 统计栏，保证 trace 展开钮可达。
+**前端**：`isSubagentContainerTool(name)`（`toolBadgeConfig.tsx`，单一真源）继续统一路由 `CollabAgent` 与 builtin `Task`/`Agent`；`subagentActivity.ts` 的 pure view helpers 让显式 `CollabAgent.subagentLifecycle` 优先于旧 loading 线索，builtin 行为不变。`TabProvider` 对 streaming 与 archived assistant 都幂等应用 `chat:subagent-status`，并在 root archive 前做同一 fail-closed nested projection；Companion 的既有 SSE reducer 消费同一事件并复用同一 content helper，不从父工具的早停 `isLoading` 猜 child 终态。`TaskTool`、`ProcessRow`、Agent Status Panel 与 Companion 共用该状态：terminal icon 明确、elapsed 固定；Panel 只选当前 live assistant message，root terminal 同批归档时保留该 message 的展示资格，全组 terminal 后只做一份 500 ms linger，再走既有淡出，透明过渡期用原生 `inert` 移除键盘交互。缺少 lifecycle 的旧持久 `CollabAgent` 不从 stale nested loading 复活为 active Agent，也不做 transcript migration。
 
 **仅 Codex 设 `subAgent`**；builtin 走自有 `parent_tool_use_id` 路径，Gemini / Claude Code 不设 → 行为不变。旧的正确 `CollabAgent.subagentCalls` 历史无需迁移。已经平铺落库的历史块不含 thread/card provenance，不能从 MyAgents JSONL 安全反推，故不做启发式回填。**非目标**：sub-agent 工具的多级 UI 嵌套（归并到顶层卡片）、已平铺历史的自动回填。
 
@@ -516,13 +554,14 @@ https://geminicli.com/docs/cli/system-prompt/):它指向一个 markdown 文件,
 
 ### 模型列表动态发现
 
-不硬编码 `GEMINI_MODELS`(常量里只保留一个"默认"占位)。`queryModelsViaAcp()` 策略:
+不硬编码 `GEMINI_MODELS`(常量里只保留一个"默认"占位)。`queryGeminiModelsViaAcp()` 策略:
 
-1. Spawn 短命 `gemini --acp`(cwd = `$HOME`,避免被当前 workspace 配置干扰)
-2. `initialize` 握手 + `session/new`
-3. 从 `result.models.availableModels[]` 读取 `{ modelId, name, description, isDefault }`
-4. 在首位追加一个空值 `default` 条目(交给 Gemini 自选)
-5. Kill 子进程
+1. 先检查非交互鉴权环境，或已选择的 auth 类型及 OAuth credential 存在性；未配置时直接返回可操作错误，绝不 spawn 后台登录向导
+2. Spawn 短命 `gemini --acp`(cwd = `$HOME`,避免被当前 workspace 配置干扰)
+3. `initialize` 握手 + `session/new`
+4. 从 `result.models.availableModels[]` 读取 `{ modelId, name, description, isDefault }`
+5. 在首位追加一个空值 `default` 条目(交给 Gemini 自选)
+6. 无论成功、失败或请求中断，都通过 `killWithEscalation(killTree=true)` 有界关闭进程树和 stdio drain
 
 v0.37.2 实测返回 8 个模型:`auto-gemini-3`、`auto-gemini-2.5`、`gemini-3.1-pro-preview`、
 `gemini-3-flash-preview`、`gemini-3.1-flash-lite-preview`、`gemini-2.5-pro`、
@@ -530,14 +569,15 @@ v0.37.2 实测返回 8 个模型:`auto-gemini-3`、`auto-gemini-2.5`、`gemini-3
 
 **启动稳定性**:`queryModels` 调用前 `await new Promise(r => setTimeout(r, 50))` 让
 stdout reader 先进入 `await read()`,防止 initialize 响应在 handler 注册之前到达的
-竞态;超时由 10s 上调到 30s,覆盖 Gemini Node.js 冷启动 + OAuth 刷新的延迟。
+竞态;超时由 10s 上调到 30s,覆盖 Gemini Node.js 冷启动和已有凭据刷新的延迟。
+同一 runtime/source 的并发发现由 single-flight owner 合并；单个 HTTP 等待者取消只解除自身订阅，最后一个等待者取消才 abort owner 并清理临时进程树。
 
 ### 认证
 
-**完全不由 MyAgents 管理**。Gemini CLI 支持 OAuth、`GEMINI_API_KEY`、Vertex AI 三种方式,
+**凭据完全不由 MyAgents 管理**。Gemini CLI 支持 OAuth、`GEMINI_API_KEY`、Vertex AI 三种方式,
 用户自行在本机完成登录(`gemini` 交互式向导或 shell rc 导出环境变量),MyAgents 子进程
-继承 Sidecar 的环境变量即可。如果用户未登录,`session/new` 会抛 `-32000` RPC 错误,
-前端显示"请先在终端运行 `gemini` 完成登录"。
+只消费既有凭据。短命模型发现会在 spawn 前 fail-closed；它不会替用户启动浏览器登录或写入凭据。
+真实 Session 启动仍由 Gemini CLI 使用本机既有 auth authority，鉴权失败原样返回给会话错误面。
 
 ## External Session Handler (`src/server/runtimes/external-session.ts`)
 
@@ -582,7 +622,7 @@ sendExternalMessage(text, images?, permissionMode?, model?, context?)
 
 桌面 History 不再执行 Runtime 内的 real→real hot-swap。Global Sidebar、Search、通知 / Task deep-link 与开发者 Chat History 都进入 App 的 canonical new / jump / revive 导航：目标已在 Tab 中就跳转，Tab 存在但 Sidecar 已停就复用该 Tab 并由 Rust revive，否则新建从首帧即绑定目标 Session 的 Tab。`codex/system-cli` 与 `codex/managed-provider` 等完整 runtime identity 由目标 Session 自己的 Sidecar 冻结，不需要在当前 Tab 上做兼容性比较。
 
-因此 Renderer 的 persisted restore 只读 `GET /sessions/:id`，不会调用 Node binding mutation；`POST /sessions/switch` 与 `SessionEngine.switchToExistingSession()` 已删除。`cmd_upgrade_session_id(old,new)` 只服务 pending→real、desktop reset 或已确认 surface migration 等同一 Sidecar identity upgrade，不能扩展为 History navigation。
+因此 Renderer 的 persisted restore 只读 `GET /sessions/:id`，不会调用 Node binding mutation；`POST /sessions/switch` 与 `SessionEngine.switchToExistingSession()` 已删除。普通 `cmd_upgrade_session_id(old,new)` 只服务 exact Tab 的 pending→real / desktop reset，不能扩展为 History navigation。桌面绑定 surface 的 real→real 迁移走独立 proof-bearing contract：Rust 先证明 exact `Tab + Agent`，再把同一个 target ID 交给 `SessionEngine.migrateBoundSurfaceSession()`；Builtin 与 External adapter 都不得自行 mint 第二个 ID。IM `/new` 不进入 Runtime facade，只在 Rust 轮换 Agent binding。External adapter 在 target binding 提交后把 metadata publication / pre-warm 失败降为 warning，避免把已提交身份误报为可回滚失败。
 
 所有实际 session identity boundary（桌面「新对话」、pending materialization commit、
 pre-warm、IM reset、external config boundary）必须按 runtime process 存活性清理，
@@ -669,7 +709,7 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 
 Codex middle-turn Rewind 是同一 Tab / Session / Runtime identity，Renderer 的 mount key 不会重新触发上述 POST。因此 durable replacement binding restore 后由 external-session 编排 owner异步复用同一个 `prewarmExternalSession()`；调用发生在 conversation mutation lease 释放后，并在执行前核对当前 lifecycle Session 与 replacement binding，避免迟到预热覆盖后继 Session。第一 Turn Rewind 不走这条优化，因为 fresh prewarm 会产生尚未 materialize、不可跨 app-server resume 的空 thread id；它保持无 binding，等待下一次真实 send fresh-start。
 
-**Managed Codex readiness**：`initialize` 只证明 app-server 已建立；MyAgents 注入的 MCP 仍可能异步启动。Managed-provider launch config 为每个 stdio / HTTP server 注入由 `MCP_PREWARM_GRACE_MS` 派生的原生 `startup_timeout_sec`；`CodexRuntime.startSession()` 在发起 `thread/start|resume` 的 native startup boundary 启动同一 10 秒 absolute grace，并观察 `mcpServer/startupStatus/updated`。全部 ready 则 ready；`failed | cancelled | pending timeout` 则当前 Runtime Session settle degraded 并继续首个 `turn/start`，不自动调用 `config/mcpServer/reload`、不在下一轮重试；新 Session / process 才重新尝试。`mcpServerStatus/list` 只用于只读 UI 投影（诊断与工具目录），不是 barrier。等待只覆盖 MyAgents 注入的 server name，用户自有 Codex MCP 不归此 owner。Process exit、thread/RPC failure 仍是真 Runtime failure，不能被 degraded 吞掉；`system-cli` launch config 与行为不变。
+**Managed Codex readiness**：`initialize` 只证明 app-server 已建立；MyAgents 注入的 MCP 仍可能异步启动。Managed-provider launch config 为每个 stdio / HTTP server 注入由 `MCP_PREWARM_GRACE_MS` 派生的原生 `startup_timeout_sec`；`CodexRuntime.startSession()` 在发起 `thread/start|resume` 的 native startup boundary 启动同一 10 秒 absolute grace，并观察 `mcpServer/startupStatus/updated`。Barrier 等待每个注入 server 各自到达终态：全部 ready 则 ready，任一 `failed` 让最终结果 degraded，但仍等待其他 server 的终态，避免放行首轮时漏掉仍可成功的工具。Codex 可能对同一 server 发出 `starting → cancelled → ready`，所以 `cancelled` 与无状态/`starting` 一样继续等待后继状态，只在 absolute grace 到期时按 pending timeout 降级并继续首个 `turn/start`。不自动调用 `config/mcpServer/reload`、不在下一轮重试；新 Session / process 才重新尝试。`mcpServerStatus/list` 只用于只读 UI 投影（诊断与工具目录），不是 barrier。等待只覆盖 MyAgents 注入的 server name，用户自有 Codex MCP 不归此 owner。Process exit、thread/RPC failure 仍是真 Runtime failure，不能被 degraded 吞掉；`system-cli` launch config 与行为不变。
 
 **IM 冷启动边界**：persistent Agent/飞书 session 一旦已有 live runtime，后续 turn 复用同一 process 与 MCP，不应重复支付 startup。完全没有 Sidecar/runtime 的首个 IM peer 仍要真实创建这些资源；本期不为所有潜在 peer 常驻预热，因为那会把延迟换成无界资源占用。这个首个 cold turn 是显式产品边界，不得和“同 session 每轮重启”混为一谈。
 
@@ -707,7 +747,7 @@ Codex middle-turn Rewind 是同一 Tab / Session / Runtime identity，Renderer �
 1. **Start 并发 gate**:`await startingPromise` 等待任何在飞的 `startExternalSession`(包括 pre-warm)完成。否则用户消息可能在 `isRunning=true && activeProcess=null` 的中间态被错分到 Case 2,触发 "session already running" 静默丢弃。
 2. **Turn 序列化 gate**:`!turnCompleted && currentTurnStartTime !== 0 && activeProcess` → `waitForExternalSessionIdle(5 分钟, 100ms)`。持久进程运行时(Codex/Gemini)一次只接一个 turn,并发 `turn/start` / stdin 写入会出现 drop 或交错输出。崩溃恢复路径通过 `resetTurnAccumulators()` 把 `currentTurnStartTime` 归零,此 gate 不会误触。例外只存在于桌面 realtime + Codex `turn/steer`:它不走 `sendExternalMessage` 新 turn 路径,而是由 `enqueueExternalSendForDesktop` 调 optional `runtime.steerMessage()` 追加到当前 turn。
 3. **Turn finalization gate**(`TurnFinalizationGate`,`external-turn-finalization.ts`,实例由 `external-session/turn-lifecycle.ts` 持有):`turnCompleted` 翻 true 时 fire-and-forget 的 `persistTurnResult()` 可能仍在 await 窗口内(assistant 消息尚未 push 进 transcript owner/落盘)。旧实现里 `turnCompleted` 一旗三义("terminal 事件已发"/"可接下一轮"/"回复可读"),导致 cron/IM 读到上一轮回复、背靠背 send 冲掉未持久化的内容块。gate track 每个 finalization promise;send 侧 `settled(60s)` 有界等待后才绑定本轮 meta,降级放行时依赖 `persistTurnResult` 的**同步入口快照纪律**(inboxMeta/hints/contextUsage/contentBlocks/assistantText 全部在首个 await 前捕获)+ identity 守卫的 reset,最坏只乱序不丢消息。Phase8 后：terminal success/failure/prewarm/idle/user-stop plan 由 `turn-lifecycle.ts` 分类；content snapshot 由 `content-blocks.ts` 生成；user/assistant append、retry truncate、last assistant read、SessionStore save 由 `transcript-persistence.ts` 拥有；IM registry 与 inbox/watch error delivery 由 `interactive.ts` 拥有。
-4. **Goal/Task dispatch gate**：带 `beforeDispatch` 的 scheduler/user turn 在 external facade 的 promotion 边界原子 claim。guard accepted 前不得 surface bubble、写 transcript/SessionStore、启动 watchdog 或标记 running；新 turn 开始 guard 时由 `turn-lifecycle.ts` 建立 promotion token，所以 `isBusy` / `waitIdle` 不会把 claim 窗口误判 idle。accepted 后 token 贯穿 metadata/persistence/config 等 await，并在最终 transport 前复核。Stop 原子 invalidate token，但 cancel token 本身不是停止确认：caller 必须等待 promotion 结算为 `not-dispatched | dispatched | terminated | termination-unconfirmed`；fresh/resume startup 尚未返回 process 时也要等 `_doStartExternalSession` 完成。`not-dispatched` 保留 shared prewarm process，`dispatched` 继续精确 stop，只有 `terminated` / 已确认未派送才可释放 owner；`termination-unconfirmed` 保留 process + queue binding。fresh/resume 不能把 prompt 作为 `startSession(initialMessage)` 的隐式副作用交给尚未归属的进程：必须先用空 `initialMessage` 完成 start/resume、注册 active process、复核 token，再显式调用 `runtime.sendMessage`。一旦调用 runtime transport，任何 throw 都可能只是 ack 丢失；必须尝试 stop，未确认终止时不得把它降格为普通 send failure或清 binding。pre-warm Case 3、turn queue drain、realtime steer fallback 同样走该 token；active realtime steer 已由当前 running turn 持有 Stop owner，guard 后不跨 await 直接调用 transport。guard reject 只取消待派送项，不得留下一个本地“假 turn”。
+4. **Goal/Task dispatch gate**：带 `beforeDispatch` 的 scheduler/user turn 在 external facade 的 promotion 边界原子 claim。guard accepted 前不得 surface bubble、写 transcript/SessionStore、启动 watchdog 或标记 running；新 turn 开始 guard 时由 `turn-lifecycle.ts` 建立 promotion token，所以 `isBusy` / `waitIdle` 不会把 claim 窗口误判 idle。accepted 后 token 贯穿 metadata/persistence/config 等 await，并在最终 transport 前复核。Stop 原子 invalidate token，但 cancel token 本身不是停止确认：caller 必须等待 promotion 结算为 `not-dispatched | dispatched | terminated | termination-unconfirmed`；fresh/resume startup 尚未返回 process 时也要等 `_doStartExternalSession` 完成。`not-dispatched` 保留 shared prewarm process，`dispatched` 继续精确 stop，只有 `terminated` / 已确认未派送才可释放 owner；`termination-unconfirmed` 保留 process + queue binding。fresh/resume 不能把 prompt 作为 `startSession(initialTurn)` 的隐式副作用交给尚未归属的进程：必须先省略 `initialTurn` 完成 start/resume、注册 active process、复核 token，再显式调用 `runtime.sendMessage`。一旦调用 runtime transport，任何 throw 都可能只是 ack 丢失；必须尝试 stop，未确认终止时不得把它降格为普通 send failure或清 binding。pre-warm Case 3、turn queue drain、realtime steer fallback 同样走该 token；active realtime steer 已由当前 running turn 持有 Stop owner，guard 后不跨 await 直接调用 transport。guard reject 只取消待派送项，不得留下一个本地“假 turn”。
 
 ### 安全机制
 
@@ -740,13 +780,15 @@ Codex middle-turn Rewind 是同一 Tab / Session / Runtime identity，Renderer �
 
 每个 RPC 独立 `tryCall` + 5s 超时，单点失败不级联。统一 `RuntimeDiagnostics`（含 `status: RuntimeDiagnosticsCallStatus` 四元组 + `effectiveEnv: RuntimeEffectiveEnv`）通过 `wrappedOnEvent({ kind: 'runtime_diagnostics' })` → SSE `chat:runtime-diagnostics` → `TabProvider.setRuntimeDiagnostics()` 到 React。
 
+Managed Codex 还把 Product Extension 的 desired/effective revision 与逐组件结果合并进同一个 `RuntimeDiagnostics.extensions`，不建立第二条状态通道。Chat banner 只依据顶层 failed 生命周期决定是否展示；Renderer 不得把逐组件 `failed` / `unsupported` 或 `requiresUserAction` 猜成被动阻断。`pending_next_start` 静默等待下一次 Runtime 启动，`deferred_until_idle` 与生产方标记的 `requiresUserAction` 仅由本次配置操作的轻量提示表达。持久诊断只保存真实 generation 状态；`unchanged` 仅是配置操作的即时返回值。语义相同的 extension 投影不得刷新 Runtime producer 的时间戳，也不得重复写入、记日志或广播 `chat:runtime-diagnostics`。当顶层仍为 `applied` 时，单个 `failed` / `unsupported` 组件表示该可选条目已被安全跳过，只保留结构化诊断和有界 Logs panel 摘要，不打扰普通对话。
+
 Codex MCP 工具目录走独立的可变快照：adapter 记录当前 thread 的 `mcpServer/startupStatus/updated`，短合并窗口后按 threadId 分页调用 `mcpServerStatus/list`，仅把 ready 且无需登录的 server 中由 Codex 实际返回的 tool 映射为 `mcp__<server>__<tool>`。目录变化发 `runtime_tool_catalog`；`external-session` 更新其 system-init replay snapshot 并广播 `chat:runtime-tool-catalog`，所以活跃 Tab 实时更新，重连则从同一 owner 快照恢复。该链路只读，不修改 Codex 配置；查询失败保留仍处于 ready 的上一份目录，明确的 failed / cancelled 通知立即撤回对应 server，不依赖后续查询成功。
 
 **Session-life gate**：广播前检查 `codexProc.exited || codexProc.intentionalKillDuringStartup`——5–10s 的诊断窗口期内若用户已切 tab / kill session，stale event 不允许闪到切走的 tab（详见 `codex.ts::startSession` 末尾的 fire-and-forget 块）。
 
 ### `chat:runtime-diagnostics` SSE 事件
 
-注册位置：`src/renderer/api/SseConnection.ts::JSON_EVENTS`。前端消费：`RuntimeDiagnosticsBanner.tsx`——只在 `status` 任一字段非 `'ok'` 或 `apps` 有 `isAccessible:false` 时才显示。
+注册位置：`src/renderer/api/SseConnection.ts::JSON_EVENTS`。前端消费：`RuntimeDiagnosticsBanner.tsx`——仅在真正阻断时显示：认证阻断、producer 标记的 severity error 或顶层扩展应用失败。Renderer 不得按失败数量、逐组件状态或 actionability 自行提升 severity。单项 RPC、App、MCP、逐组件扩展异常进入结构化诊断与 Logs panel，不单独打断对话；展开区也只把实际触发顶条的问题列为 Problems，不把成功组件冒充故障上下文。
 
 **MCP `state` 派生**：`RuntimeMcpServerInfo.state` 不是直接由 Codex 返回的，而是 `codex.ts` 内部从 `authStatus` 派生。当前 Codex schema 的 `notLoggedIn` 是不可用态；`oAuth` / `bearerToken` 是已认证态，不能按字符串含 `oauth` 误判失败。兼容旧 payload 时仅把明确的 `failed / error / unauthenticated / needs / required` marker 视为 unhealthy。**新增 MCP 健康检测逻辑 MUST 走这条派生链而不是在 banner 端散写 filter**。
 
@@ -835,6 +877,8 @@ config.multiAgentRuntime (磁盘/React state)
 - **两系 cache 语义相反**：Anthropic 系（builtin / Claude Code）`input` 不含 cache → `input + cacheRead + cacheCreation`；OpenAI 系（Codex）`inputTokens` 已含 cached → 直接用，不再加。
 - **分母 = `runtime 报的窗口 ?? lookupModelContextLength(model) ?? 200K`**，永远有值，表示模型的有效完整窗口；builtin 会在该窗口的 90% 处自动压缩，external runtime 保留自己的压缩策略。
 
+OpenAI Bridge 属于 builtin 的协议适配边界：OpenAI Chat / Responses 返回的 total input 已包含 cache read / write，Bridge 必须先转换成 Anthropic 的互斥分区：`ordinary = total - read - create`，再把 ordinary/read/create 交给 SDK。下游仍统一按 builtin 的 `input + cacheRead + cacheCreation` 求占用，恰好还原 OpenAI total，不能直接把 OpenAI total 填进 Anthropic `input` 后再次加 cache。异常负数、非有限值或 cache 分区超过 total 时在 Bridge 边界归零/夹紧并记录仅含字段名与归一化数值的 warning，不把 raw provider payload 写入日志。
+
 **每 runtime 占用来源**
 
 | Runtime | 占用 | 窗口 | 备注 |
@@ -848,7 +892,7 @@ config.multiAgentRuntime (磁盘/React state)
 
 **持久化 + 重开恢复**：turn 末算的同一快照既 broadcast、也写进 `SessionMetadata.lastContextUsage`（builtin 在 `updateSessionMetadata`；external 在 `persistTurnResult` 末——turn-scoped 快照须在**同步函数入口**捕获，否则背靠背 `sendExternalMessage` 会在 await 窗口被 `resetTurnAccumulators` 清空而丢盘）。重开会话由 `restorePersistedSession` 从后端 seed，前端规则即「进入会话 `display = lastContextUsage ?? null`」（reset/adopt 才 clear，不再无脑清 null）；seed **仅当 `lastContextUsage.source === session.runtime`** 生效，防 stale builtin 快照把压缩按钮显示到 external 会话。
 
-**智能压缩入口**：卡片内按钮，仅 builtin（`source==='builtin'`）显示；复用 `Chat.tsx` 正常发送链路发 `/compact`（`effectiveModel`/`effectivePermissionMode`/`providerEnv` 同参，turn 中 `disabled`）。external runtime 隐藏（无可靠程序化压缩入口）。纯函数 `computeContextUsage` 见 `src/shared/contextUsage.ts`，单测 `contextUsage.test.ts` + `codex-token-usage.unit.test.ts`。
+**智能压缩入口**：卡片按钮按 Runtime capability 注入，builtin 复用 `Chat.tsx` 正常发送链路发 SDK `/compact`（`effectiveModel`/`effectivePermissionMode`/`providerEnv` 同参）；Managed Codex 与斜杠菜单共用 SessionEngine 原生 compact 控制操作。两条路径都复用既有 `chat:system-status` 的 compacting/success/failed 投影，运行中禁用按钮。Claude Code、System Codex 与 Gemini 不注入按钮。纯函数 `computeContextUsage` 见 `src/shared/contextUsage.ts`，单测 `contextUsage.test.ts` + `codex-token-usage.unit.test.ts`。
 
 ## 文件索引
 
@@ -881,3 +925,6 @@ config.multiAgentRuntime (磁盘/React state)
 | `src/shared/types/runtime.ts` | 共享类型（RuntimeType、模型列表、权限模式） |
 | `src/renderer/components/RuntimeSelector.tsx` | 前端 Runtime 选择器组件 |
 | `src/server/runtimes/claude-code.ts` → `FORWARDER_SCRIPT` | CC SessionStart hook 转发脚本（运行时生成至 `~/.myagents/.cc-hooks/forwarder.cjs`） |
+### 全局 Skill compatibility projection 准入
+
+所有会从 workspace `.claude/skills/` 原生发现 Skill 的 external Runtime，都在 process start 与下一 turn admission 复用 Node `global-skill-inventory.ts` 的一次 immutable 快照完成 projection reconcile。Managed Codex 还把同一快照的 canonical 内容直接交给 extension compiler，禁止 compiler 再扫描一份 global root。损坏、缺失或无法投影的 Skill 只淘汰对应候选并写日志；Runtime 与 Session 继续启动。external lifecycle owner 随 active process 保存其启动时采用的 effective capability/projection revision；下一次 admission 发现 revision 变化时，沿既有 process config invalidation 在 idle/terminal 边界换代，不中断 active turn。是否换代不依赖本 Sidecar 的 reconcile 是否产生磁盘写入，因此共享 workspace 上由另一 Sidecar 先完成链接收敛也不会复用旧 winner。不得在 adapter 内另建扫描、cache 或 watcher。

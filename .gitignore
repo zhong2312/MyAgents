@@ -53,6 +53,7 @@ npm-debug.log*
 
 # Tauri / Rust
 src-tauri/target/
+src-tauri/document-worker/target/
 src-tauri/binaries/
 src-tauri/resources/server-dist.js
 src-tauri/resources/server-dist.js.map
@@ -60,9 +61,12 @@ src-tauri/resources/plugin-bridge-dist.mjs
 src-tauri/resources/plugin-bridge-dist.mjs.map
 src-tauri/resources/claude-agent-sdk
 src-tauri/resources/cli/myagents.js
+src-tauri/resources/cli/myagents.cjs
 src-tauri/resources/cli/myagents.cmd
-src-tauri/resources/agent-browser-cli
 src-tauri/resources/sharp-runtime
+src-tauri/resources/document-processing/*
+!src-tauri/resources/document-processing/.gitkeep
+src-tauri/resources/document-processing-cache/
 src-tauri/resources/tsx-runtime
 src-tauri/resources/azgaar/*
 !src-tauri/resources/azgaar/.gitkeep
@@ -101,9 +105,6 @@ specs/assets/avatar-candidates/**/raw/
 specs/assets/avatar-candidates/**/*-v*/
 specs/assets/avatar-candidates/**/r2/
 specs/assets/avatar-candidates/**/manifest.json
-
-# Default workspace (cloned by setup.sh)
-/mino/
 
 # Dev
 .claude/plans/myagents/

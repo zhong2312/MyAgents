@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::cron_task::CronRunRecord;
 use crate::im::types::{HeartbeatConfig, MemoryAutoUpdateConfig};
 use crate::task::{
-    self, TaskCreateDirectInput, TaskEndConditions, TaskExecutionMode, TaskExecutor,
-    TaskListFilter, TaskRunMode, TaskStatus, TaskUpdateInput, TaskUpdateStatusInput,
+    self, NotificationConfig, TaskCreateDirectInput, TaskEndConditions, TaskExecutionMode,
+    TaskExecutor, TaskListFilter, TaskRunMode, TaskStatus, TaskUpdateInput, TaskUpdateStatusInput,
     TransitionActor, TransitionSource, MANAGED_KIND_MEMORY_GARDENER, MANAGED_KIND_MEMORY_MOLT,
 };
 
@@ -40,6 +41,57 @@ pub struct ConfigureMemoryEvolutionTasksResult {
     pub molt_task_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEvolutionLastRun {
+    pub executed_at: i64,
+    pub success: bool,
+}
+
+#[tauri::command]
+pub async fn cmd_get_memory_evolution_status(
+    workspace_path: String,
+) -> Result<Option<MemoryEvolutionLastRun>, String> {
+    let Some(store) = task::get_task_store() else {
+        return Err("task store not initialized".to_string());
+    };
+    let normalized_workspace = crate::cron_task::normalize_path(&workspace_path);
+    let records = store
+        .list(TaskListFilter {
+            include_deleted: Some(false),
+            include_managed: Some(true),
+            ..Default::default()
+        })
+        .await
+        .into_iter()
+        .filter(|task| {
+            matches!(
+                task.managed_kind.as_deref(),
+                Some(MANAGED_KIND_MEMORY_GARDENER | MANAGED_KIND_MEMORY_MOLT)
+            ) && crate::cron_task::normalize_path(&task.workspace_path) == normalized_workspace
+        })
+        .filter_map(|task| crate::cron_task::read_cron_runs(&task.id, 1).pop());
+
+    Ok(latest_run(records))
+}
+
+fn latest_run(records: impl IntoIterator<Item = CronRunRecord>) -> Option<MemoryEvolutionLastRun> {
+    records
+        .into_iter()
+        .max_by_key(|record| record.ts)
+        .map(|record| MemoryEvolutionLastRun {
+            executed_at: record.ts,
+            success: record.ok,
+        })
+}
+
+fn memory_evolution_notification() -> NotificationConfig {
+    NotificationConfig {
+        desktop: false,
+        ..Default::default()
+    }
+}
+
 struct EvoJobSpec {
     managed_kind: &'static str,
     name: &'static str,
@@ -49,6 +101,12 @@ struct EvoJobSpec {
 
 #[tauri::command]
 pub async fn cmd_configure_memory_evolution_tasks(
+    request: ConfigureMemoryEvolutionTasksRequest,
+) -> Result<ConfigureMemoryEvolutionTasksResult, String> {
+    configure_memory_evolution_tasks(request).await
+}
+
+pub async fn configure_memory_evolution_tasks(
     request: ConfigureMemoryEvolutionTasksRequest,
 ) -> Result<ConfigureMemoryEvolutionTasksResult, String> {
     let Some(store) = task::get_task_store() else {
@@ -77,8 +135,8 @@ pub async fn cmd_configure_memory_evolution_tasks(
     );
 
     if !request.enabled {
-        stop_existing_job(store, &request.workspace_path, &gardener).await?;
-        stop_existing_job(store, &request.workspace_path, &molt).await?;
+        stop_existing_job(store, &request, &gardener).await?;
+        stop_existing_job(store, &request, &molt).await?;
         backfill_and_log_system_maintenance_session_markers(&request.workspace_path).await;
         return Ok(ConfigureMemoryEvolutionTasksResult {
             enabled: false,
@@ -148,7 +206,7 @@ async fn ensure_job_running(
     request: &ConfigureMemoryEvolutionTasksRequest,
     spec: &EvoJobSpec,
 ) -> Result<String, String> {
-    let task = match find_existing_job(store, &request.workspace_path, spec).await {
+    let task = match find_existing_job(store, request, spec).await {
         Some(task) => reconcile_existing_job(store, request, spec, task).await?,
         None => {
             store
@@ -192,7 +250,7 @@ async fn ensure_job_running(
                         "memory".to_string(),
                         "evo".to_string(),
                     ],
-                    notification: None,
+                    notification: Some(memory_evolution_notification()),
                 })
                 .await?
         }
@@ -203,10 +261,10 @@ async fn ensure_job_running(
 
 async fn stop_existing_job(
     store: &std::sync::Arc<task::TaskStore>,
-    workspace_path: &str,
+    request: &ConfigureMemoryEvolutionTasksRequest,
     spec: &EvoJobSpec,
 ) -> Result<(), String> {
-    let Some(task) = find_existing_job(store, workspace_path, spec).await else {
+    let Some(task) = find_existing_job(store, request, spec).await else {
         return Ok(());
     };
     stop_job_for_update(store, &task, "memory evolution disabled").await
@@ -275,6 +333,7 @@ async fn reconcile_existing_job(
         "memory".to_string(),
         "evo".to_string(),
     ];
+    let desired_notification = memory_evolution_notification();
     let current_prompt = task::task_docs_dir(&existing.id)
         .ok()
         .and_then(|dir| std::fs::read_to_string(dir.join("task.md")).ok());
@@ -304,6 +363,7 @@ async fn reconcile_existing_job(
         || runtime_drift
         || mcp_drift
         || existing.tags != desired_tags
+        || existing.notification.as_ref() != Some(&desired_notification)
         || current_prompt.as_deref() != Some(spec.prompt.as_str());
 
     if !drifted {
@@ -347,7 +407,7 @@ async fn reconcile_existing_job(
             mcp_enabled_servers: request.mcp_enabled_servers.clone(),
             clear_mcp_override: request.mcp_enabled_servers.is_none(),
             tags: Some(desired_tags),
-            notification: None,
+            notification: Some(desired_notification),
             notification_patch: None,
             prompt: Some(spec.prompt.clone()),
         })
@@ -629,10 +689,9 @@ fn parse_hhmm(s: &str) -> Option<u32> {
 
 async fn find_existing_job(
     store: &std::sync::Arc<task::TaskStore>,
-    workspace_path: &str,
+    request: &ConfigureMemoryEvolutionTasksRequest,
     spec: &EvoJobSpec,
 ) -> Option<task::Task> {
-    let normalized_workspace = crate::cron_task::normalize_path(workspace_path);
     store
         .list(TaskListFilter {
             workspace_id: None,
@@ -645,6 +704,38 @@ async fn find_existing_job(
         .into_iter()
         .find(|task| {
             task.managed_kind.as_deref() == Some(spec.managed_kind)
-                && crate::cron_task::normalize_path(&task.workspace_path) == normalized_workspace
+                && (task.workspace_id == request.workspace_id
+                    || task.workspace_id == request.agent_id)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(ts: i64, ok: bool) -> CronRunRecord {
+        CronRunRecord {
+            ts,
+            ok,
+            duration_ms: 1,
+            content: None,
+            error: (!ok).then(|| "failed".to_string()),
+        }
+    }
+
+    #[test]
+    fn latest_memory_evolution_run_uses_the_newest_job_record() {
+        assert_eq!(
+            latest_run([run(100, true), run(300, false), run(200, true)]),
+            Some(MemoryEvolutionLastRun {
+                executed_at: 300,
+                success: false,
+            })
+        );
+    }
+
+    #[test]
+    fn memory_evolution_tasks_disable_desktop_notifications() {
+        assert!(!memory_evolution_notification().desktop);
+    }
 }

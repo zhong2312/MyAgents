@@ -125,6 +125,12 @@ export interface SimpleChatInputProps {
   onGoalCancel?: () => void;
   onGoalDismiss?: () => void;
   onSlashAction?: (name: string) => void;
+  /** Additional runtime-specific renderer actions to inject into the slash menu. */
+  clientActionSlashCommands?: SlashCommand[];
+  /** Whether Claude Agent SDK system slash commands belong to this Session. */
+  showBuiltinSdkSlashCommands?: boolean;
+  /** Effective project Skill/Command winners supplied by the owning Chat tab. */
+  workspaceSlashCommands?: SlashCommand[];
   sdkSlashCommands?: SlashCommand[];
   mode?: 'chat' | 'launcher';
   toolbarPrefix?: React.ReactNode;

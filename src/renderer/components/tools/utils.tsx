@@ -3,7 +3,7 @@ import { cloneElement, isValidElement, useEffect, useRef, useState } from 'react
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useFileAction } from '@/context/FileActionContext';
+import { useFileAction, useFileTargetInfo } from '@/context/FileActionContext';
 import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
 import type { ToolUseSimple } from '@/types/chat';
 import { resolveFileActionTarget } from '@/utils/workspaceFileLinks';
@@ -103,9 +103,9 @@ function useResolvedFileAction(path?: string | null) {
   const actionTarget = displayPath && fileAction
     ? resolveFileActionTarget(displayPath, fileAction.workspacePath)
     : null;
-  const pathInfo = actionTarget ? fileAction?.checkFileTarget(actionTarget) ?? null : null;
+  const pathInfo = useFileTargetInfo(actionTarget);
 
-  if (!displayPath || !fileAction || !actionTarget || !pathInfo) return null;
+  if (!displayPath || !fileAction || !actionTarget || !pathInfo?.exists) return null;
   return {
     displayPath,
     pathInfo,
@@ -113,9 +113,7 @@ function useResolvedFileAction(path?: string | null) {
       fileAction.openFileTarget(actionTarget, { displayPath, forceExternal });
     },
     openMenu: (x: number, y: number) => {
-      fileAction.openFileMenu(x, y, actionTarget.path, pathInfo.type, displayPath, {
-        scope: actionTarget.scope,
-      });
+      fileAction.openFileTargetMenu(x, y, actionTarget, { displayPath });
     },
   };
 }
@@ -127,10 +125,9 @@ function useResolvedFileAction(path?: string | null) {
  * resolves to a file/folder target, the chip becomes interactive — dashed
  * underline + primary click / right-click context menu, matching how inline
  * file paths in AI text behave (see markdown/InlineCode.tsx, which shares the
- * same FileActionContext). Unavailable targets stay interactive so the shared
- * owner can explain the failure instead of silently degrading to plain text.
- * Outside Chat, or while the path is still unresolved, it renders as a plain
- * monospace chip.
+ * same FileActionContext). Pending, missing and safety-rejected targets remain
+ * plain monospace chips; the dashed underline is reserved for a current
+ * `exists:true` capability.
  */
 export function FilePath({ path }: { path?: string | null }) {
   const { t } = useTranslation('chat');
@@ -151,7 +148,16 @@ export function FilePath({ path }: { path?: string | null }) {
   return (
     <code
       className={`${MONO_BASE_CLASS} ${FILE_PATH_BOX_CLASS} cursor-pointer underline decoration-dashed decoration-[var(--ink-muted)] underline-offset-2 transition-colors hover:border-[var(--ink-muted)] hover:bg-[var(--accent-warm-subtle)]`}
+      role="link"
+      tabIndex={0}
       onClick={(e) => {
+        if (window.getSelection()?.toString()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        resolvedAction.openPrimary(e.metaKey || e.ctrlKey);
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter') return;
         e.preventDefault();
         e.stopPropagation();
         resolvedAction.openPrimary(e.metaKey || e.ctrlKey);
@@ -173,8 +179,8 @@ export function FilePath({ path }: { path?: string | null }) {
 /**
  * The single file-toolbar action used by FilePatchTool. It deliberately shares
  * the same resolution and FileActionContext menu owner as FilePath. Once
- * resolution completes, unavailable paths also keep the menu so failures are
- * explicit.
+ * resolution confirms the target exists, the menu uses the same action-time
+ * recheck as inline paths.
  */
 export function FileActionMenuButton({ path, className = '' }: { path?: string | null; className?: string }) {
   const { t } = useTranslation('chat');

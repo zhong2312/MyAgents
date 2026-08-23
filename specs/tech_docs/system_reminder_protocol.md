@@ -16,6 +16,10 @@ Space IssueDelivery 在这层通用 envelope 内还有独立的 Registered Agent
 
 不适用场景：
 
+- 整个 Session 生命周期都稳定成立的 MyAgents 身份、场景与能力发现提示，走
+  [`system_prompt_architecture.md`](./system_prompt_architecture.md) 的产品级 system
+  prompt append；Workspace 长期规则继续由 `CLAUDE.md` / rules / Runtime 原生项目指令
+  拥有。
 - 普通跨 session send/watch 事件仍走 `session_architecture.md` 的
   `<myagents-session-event>` 协议。协议整体位于隐藏 envelope 内；renderer 只对
   `send.request` 提取 `<payload>` 与 `source_label` 形成用户可见气泡，自动

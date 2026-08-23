@@ -187,6 +187,7 @@ export async function handleSessionReadRoute(
     const engine = getSessionEngine();
     const liveState = engine.getLiveSessionState();
     return jsonResponse({
+      sessionId: engine.getRuntimeIdentity().sessionId,
       sessionState: liveState.sessionState,
       isBusy: liveState.isBusy,
       completionTerminal: engine.getSessionCompletionTerminal(),

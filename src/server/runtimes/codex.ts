@@ -6,9 +6,11 @@
 // System prompt: thread/start → developerInstructions
 // Session: thread/start (new) / thread/resume (continuing)
 
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { spawn, type Subprocess, type SubprocessStdin } from '../utils/subprocess';
-import { writeFileSync , existsSync, readdirSync, unlinkSync, statSync } from 'fs';
-import { join } from 'path';
+import { writeFileSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, statSync } from 'fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import type {
   RuntimeDetection, RuntimeModelInfo, RuntimePermissionMode, RuntimeType,
   RuntimeAuthStatus, RuntimeFeatureFlag, RuntimeMcpServerInfo, RuntimeAppInfo,
@@ -32,11 +34,8 @@ import {
 import { stripAnsi } from './env-utils';
 import { resolveCodexCommandContext, type CodexCommandContext } from './codex-command-context';
 import { ensureDirSync } from '../utils/fs-utils';
-import { getBundledCusePath } from '../utils/runtime';
-import { resolveNpxMcpInvocation } from '../utils/mcp-command';
 import { killWithEscalation } from './utils/kill-with-escalation';
 import { withLogContext } from '../logger-context';
-import { trySyncProjectUserConfigFiles } from '../utils/project-user-config-sync';
 import {
   saveToolAttachment,
   makePlaceholderAttachment,
@@ -46,11 +45,65 @@ import {
   type SaveContext,
 } from './tool-attachments';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
+import type { SubagentLifecycleStatus } from '../../shared/types/subagent-lifecycle';
 import { MCP_PREWARM_GRACE_MS } from '../session-core/mcp-prewarm-policy';
+import { MYAGENTS_TOOL_CALL_TIMEOUT_MS } from '../session-core/tool-call-policy';
 import { summarizeSensitiveValueForLog } from '../utils/log-summary';
 import { supportsCodexConversationBranch } from '../../shared/codex-conversation-capability';
+import type {
+  ManagedCodexAgentRoleSpec,
+  ManagedCodexExtensionSnapshot,
+  ManagedCodexHostToolCall,
+  ManagedCodexHostToolResult,
+  ManagedCodexSkillSpec,
+} from './managed-codex/extensions/contracts';
+import { MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION } from './managed-codex/extensions/contracts';
+import {
+  projectManagedCodexMcpLaunchConfig,
+} from './managed-codex/extensions/mcp-launch-projection';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
+
+/**
+ * Extension RPCs below are verified against this exact app-server schema.
+ * Keep this independent from the downloadable runtime lock: changing only the
+ * lock must fail closed until conformance and this contract advance together.
+ */
+export function assertManagedCodexExtensionProtocolVersion(version: string | undefined): void {
+  if (version !== MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION) {
+    throw new Error(
+      `Managed Codex extensions require app-server ${MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION}; `
+      + `resolved ${version ?? 'unknown'}. Re-run exact-version conformance before upgrading.`,
+    );
+  }
+}
 
 type CodexDecision = 'deny' | 'allow_once' | 'always_allow';
+type CodexDynamicToolCallResult = {
+  success: boolean;
+  contentItems: Array<
+    | { type: 'inputText'; text: string }
+    | { type: 'inputImage'; imageUrl: string }
+    | { type: 'inputAudio'; audioUrl: string }
+  >;
+};
+
+const managedCodexHostInputValidator = new AjvJsonSchemaValidator();
+const CODEX_COMPACT_TIMEOUT_MS = 120_000;
+
+function toCodexDynamicToolCallResult(result: ManagedCodexHostToolResult): CodexDynamicToolCallResult {
+  return {
+    success: result.success,
+    contentItems: result.contentItems.map(item => {
+      if (item.type === 'text') return { type: 'inputText' as const, text: item.text };
+      if (item.type === 'image') return { type: 'inputImage' as const, imageUrl: item.dataUrl };
+      return { type: 'inputAudio' as const, audioUrl: item.dataUrl };
+    }),
+  };
+}
+
+function codexHostToolFailure(message: string): CodexDynamicToolCallResult {
+  return { success: false, contentItems: [{ type: 'inputText', text: message }] };
+}
 type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
 type CodexApprovalPolicy =
   | 'untrusted'
@@ -90,58 +143,37 @@ export function buildCodexInitializeParams(experimentalApi = false): Record<stri
 export function summarizeCodexThreadParamsForLog(
   params: Record<string, unknown>,
 ): Record<string, unknown> {
-  const { developerInstructions, threadId, ...safeParams } = params;
+  const dynamicTools = Array.isArray(params.dynamicTools) ? params.dynamicTools.length : 0;
   return {
-    ...safeParams,
-    ...(typeof threadId === 'string'
-      ? { threadId: summarizeSensitiveValueForLog(threadId) }
+    ...(typeof params.cwd === 'string'
+      ? { cwd: summarizeSensitiveValueForLog(params.cwd) }
       : {}),
+    ...(typeof params.threadId === 'string'
+      ? { threadId: summarizeSensitiveValueForLog(params.threadId) }
+      : {}),
+    ...(typeof params.model === 'string' || params.model === null ? { model: params.model } : {}),
+    ...(typeof params.modelProvider === 'string' ? { modelProvider: params.modelProvider } : {}),
+    ...(typeof params.approvalPolicy === 'string' ? { approvalPolicy: params.approvalPolicy } : {}),
+    ...(typeof params.sandbox === 'string' ? { sandbox: params.sandbox } : {}),
+    ...(typeof params.ephemeral === 'boolean' ? { ephemeral: params.ephemeral } : {}),
+    ...(typeof params.experimentalRawEvents === 'boolean'
+      ? { experimentalRawEvents: params.experimentalRawEvents }
+      : {}),
+    ...(dynamicTools > 0 ? { dynamicToolCount: dynamicTools } : {}),
     developerInstructions: summarizeSensitiveValueForLog(
-      typeof developerInstructions === 'string' ? developerInstructions : null,
+      typeof params.developerInstructions === 'string' ? params.developerInstructions : null,
     ),
   };
+}
+
+function summarizeCodexErrorForLog(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return JSON.stringify(summarizeSensitiveValueForLog(message));
 }
 
 const CODEX_PROJECT_DOC_FALLBACK_CONFIG = 'project_doc_fallback_filenames=["CLAUDE.md"]';
 const CODEX_FILE_AUTH_CONFIG = 'cli_auth_credentials_store="file"';
 const MANAGED_CODEX_HTTP_PROVIDER_ID = 'myagents_managed_http';
-const CODEX_MCP_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1';
-const CODEX_MCP_PROXY_ENV_KEYS = [
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'ALL_PROXY',
-  'NO_PROXY',
-  'http_proxy',
-  'https_proxy',
-  'all_proxy',
-  'no_proxy',
-] as const;
-const CODEX_MCP_TEMPLATE_RE = /\{\{[A-Za-z_][A-Za-z0-9_]*\}\}/;
-const CODEX_MCP_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const CODEX_MCP_SECRET_VALUE_RE = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/i;
-const CODEX_MCP_INLINE_SECRET_RE = /(?:api[-_]?key|token|secret|password|authorization|access[-_]?token|refresh[-_]?token)\s*[:=]\s*[^,\s]+/i;
-const CODEX_MCP_SENSITIVE_FLAG_RE = /^-{1,2}(?:api[-_]?key|key|token|access[-_]?token|refresh[-_]?token|secret|password|passwd|pwd|authorization|auth-token)(?:$|[=:])/i;
-const CODEX_MCP_PARENT_ENV_DENY = new Set([
-  'PATH',
-  'HOME',
-  'USERPROFILE',
-  'APPDATA',
-  'LOCALAPPDATA',
-  'TMPDIR',
-  'TEMP',
-  'TMP',
-  'PWD',
-  'NODE_OPTIONS',
-  'NODE_PATH',
-  'LD_PRELOAD',
-  'DYLD_INSERT_LIBRARIES',
-  'DYLD_LIBRARY_PATH',
-  'MYAGENTS_RUNTIME_SOURCE',
-  'OPENAI_API_KEY',
-  'OPENAI_BASE_URL',
-  'OPENAI_ORG_ID',
-  'OPENAI_ORGANIZATION',
-]);
 export type CodexMcpStartupState = 'starting' | 'ready' | 'failed' | 'cancelled';
 
 export interface CodexMcpStartupStatusNotification {
@@ -257,7 +289,7 @@ export function createCodexMcpStartupBarrier(expectedNames: readonly string[]): 
       [...states.entries()].filter(([name]) => expected.has(name)),
     );
     const unhealthy = Object.values(stateSnapshot)
-      .some(state => state === 'failed' || state === 'cancelled');
+      .some(state => state === 'failed');
     const degraded = timedOut || pending.length > 0 || unhealthy;
     return {
       outcome: degraded ? 'degraded' : 'ready',
@@ -270,16 +302,18 @@ export function createCodexMcpStartupBarrier(expectedNames: readonly string[]): 
 
   const pendingNames = (): string[] => [...expected].filter((name) => {
     const state = states.get(name);
-    return state === undefined || state === 'starting';
+    return state === undefined || state === 'starting' || state === 'cancelled';
   });
 
   return {
     observe(notification) {
       if (!expected.has(notification.name) || completed) return;
+      const previous = states.get(notification.name);
+      if (previous === 'ready' || previous === 'failed') return;
       states.set(notification.name, notification.status);
       const allTerminal = [...expected].every((name) => {
         const state = states.get(name);
-        return state === 'ready' || state === 'failed' || state === 'cancelled';
+        return state === 'ready' || state === 'failed';
       });
       if (allTerminal) {
         completed = true;
@@ -327,122 +361,113 @@ function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 
-function tomlArray(values: readonly string[]): string {
-  return `[${values.map(tomlString).join(',')}]`;
-}
-
-function tomlKey(value: string): string {
-  return /^[A-Za-z0-9_-]+$/.test(value) ? value : tomlString(value);
-}
-
-function tomlInlineStringMap(values: Record<string, string>): string {
-  const entries = Object.entries(values);
-  return `{${entries.map(([key, value]) => `${tomlKey(key)}=${tomlString(value)}`).join(',')}}`;
-}
-
-function codexMcpServerName(id: string): string | null {
-  const normalized = id.replace(/[^A-Za-z0-9_-]/g, '_').replace(/^_+|_+$/g, '');
-  return normalized || null;
-}
-
-function codexMcpEnvVarName(serverName: string, key: string): string {
-  const safeServer = serverName.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
-  const safeKey = key.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
-  return `MYAGENTS_MCP_${safeServer}_${safeKey}`.slice(0, 180);
-}
-
-function uniqueCodexMcpEnvVarName(
-  serverName: string,
-  key: string,
-  used: Set<string>,
-): string {
-  const base = codexMcpEnvVarName(serverName, key);
-  let candidate = base;
-  let i = 2;
-  while (used.has(candidate)) {
-    const suffix = `_${i}`;
-    candidate = `${base.slice(0, Math.max(1, 180 - suffix.length))}${suffix}`;
-    i += 1;
-  }
-  used.add(candidate);
-  return candidate;
-}
-
-function hasCodexMcpTemplate(value: string): boolean {
-  return CODEX_MCP_TEMPLATE_RE.test(value);
-}
-
-function resolveMcpTemplateValue(
-  value: string,
-  env: Record<string, string> | undefined,
-): string | null {
-  let missing = false;
-  const resolved = value.replace(/\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}/g, (_match, key: string) => {
-    const replacement = env?.[key];
-    if (replacement === undefined) {
-      missing = true;
-      return '';
-    }
-    return replacement;
-  });
-  return missing ? null : resolved;
-}
-
-function unsafeCodexMcpStdioValueReason(value: string): string | null {
-  if (hasCodexMcpTemplate(value)) return 'contains MyAgents env placeholder';
-  if (CODEX_MCP_SECRET_VALUE_RE.test(value)) return 'contains inline secret-looking value';
-  if (/bearer\s+\S+/i.test(value)) return 'contains inline bearer token';
-  if (CODEX_MCP_INLINE_SECRET_RE.test(value)) return 'contains inline credential assignment';
-  return null;
-}
-
-function unsafeCodexMcpStdioArgsReason(args: readonly string[]): string | null {
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i] ?? '';
-    const valueReason = unsafeCodexMcpStdioValueReason(arg);
-    if (valueReason) return `arg[${i}] ${valueReason}`;
-    if (CODEX_MCP_SENSITIVE_FLAG_RE.test(arg.trim())) {
-      return `arg[${i}] uses a credential flag`;
-    }
-    const previous = args[i - 1]?.trim();
-    if (previous && CODEX_MCP_SENSITIVE_FLAG_RE.test(previous)) {
-      return `arg[${i}] follows a credential flag`;
-    }
-  }
-  return null;
-}
-
-function unsafeCodexMcpUrlReason(rawUrl: string): string | null {
-  if (hasCodexMcpTemplate(rawUrl)) return 'contains MyAgents env placeholder';
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return 'is not a valid URL';
-  }
-  if (parsed.username || parsed.password) return 'contains URL userinfo';
-  if (parsed.search || parsed.hash) {
-    return 'contains query string or fragment that would enter argv';
-  }
-  if (CODEX_MCP_SECRET_VALUE_RE.test(parsed.pathname)) {
-    return 'contains secret-looking path segment';
-  }
-  return null;
-}
-
-function canExposeMcpEnvKeyToCodexParent(key: string): boolean {
-  if (!CODEX_MCP_ENV_NAME_RE.test(key)) return false;
-  const upper = key.toUpperCase();
-  if (upper.startsWith('CODEX_') || upper.startsWith('OPENAI_')) return false;
-  if (CODEX_MCP_PARENT_ENV_DENY.has(upper)) return false;
-  if ((CODEX_MCP_PROXY_ENV_KEYS as readonly string[]).some(proxyKey => proxyKey.toUpperCase() === upper)) {
-    return false;
-  }
-  return true;
-}
-
 function pushCodexConfigArg(target: string[], key: string, valueToml: string): void {
   target.push('-c', `${key}=${valueToml}`);
+}
+
+type ManagedCodexExtensionMaterialization = {
+  configArgs: string[];
+  skillRoots: string[];
+  skills: ManagedCodexSkillSpec[];
+  cleanup(): void;
+};
+
+export function buildManagedCodexAgentRoleConfig(role: ManagedCodexAgentRoleSpec): string {
+  const lines = [
+    `developer_instructions = ${tomlString(role.prompt)}`,
+    ...(role.model ? [`model = ${tomlString(role.model)}`] : []),
+  ];
+  for (const skill of role.skills) {
+    lines.push('', '[[skills.config]]', `path = ${tomlString(skill.path)}`, 'enabled = true');
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+export function materializeManagedCodexExtensions(
+  snapshot: ManagedCodexExtensionSnapshot | undefined,
+): ManagedCodexExtensionMaterialization {
+  if (!snapshot || (snapshot.agents.length === 0 && snapshot.skills.length === 0)) {
+    return { configArgs: [], skillRoots: [], skills: [], cleanup() {} };
+  }
+  let root: string;
+  try {
+    root = mkdtempSync(join(tmpdir(), 'myagents-codex-extensions-'));
+  } catch (error) {
+    console.warn(
+      '[codex] managed extension materialization unavailable; continuing without projected Agents and Skills:',
+      summarizeCodexErrorForLog(error),
+    );
+    return { configArgs: [], skillRoots: [], skills: [], cleanup() {} };
+  }
+  const configArgs: string[] = [];
+  const skillRoots: string[] = [];
+  const skills: ManagedCodexSkillSpec[] = [];
+  let cleaned = false;
+  if (snapshot.agents.length > 0) {
+    try {
+      const rolesRoot = join(root, 'agents');
+      ensureDirSync(rolesRoot);
+      for (const [index, role] of snapshot.agents.entries()) {
+        const configPath = join(rolesRoot, `${String(index).padStart(3, '0')}.toml`);
+        try {
+          writeFileSync(configPath, buildManagedCodexAgentRoleConfig(role), { encoding: 'utf8', mode: 0o600 });
+          pushCodexConfigArg(configArgs, `agents.${role.name}.description`, tomlString(role.description));
+          pushCodexConfigArg(configArgs, `agents.${role.name}.config_file`, tomlString(configPath));
+        } catch (error) {
+          console.warn(
+            `[codex] managed Agent materialization failed; continuing without ${role.name}:`,
+            summarizeCodexErrorForLog(error),
+          );
+        }
+      }
+    } catch (error) {
+      console.warn(
+        '[codex] managed Agent materialization unavailable; continuing without projected Agents:',
+        summarizeCodexErrorForLog(error),
+      );
+    }
+  }
+  if (snapshot.skills.length > 0) {
+    try {
+      const skillsRoot = join(root, 'skills');
+      ensureDirSync(skillsRoot);
+      for (const [index, skill] of snapshot.skills.entries()) {
+        try {
+          const folderName = String(index).padStart(3, '0');
+          symlinkSync(dirname(skill.path), join(skillsRoot, folderName), process.platform === 'win32' ? 'junction' : 'dir');
+          skills.push(skill);
+        } catch (error) {
+          console.warn(
+            `[codex] managed Skill materialization failed; continuing without ${skill.name}:`,
+            summarizeCodexErrorForLog(error),
+          );
+        }
+      }
+      if (skills.length > 0) skillRoots.push(skillsRoot);
+    } catch (error) {
+      console.warn(
+        '[codex] managed Skill materialization unavailable; continuing without projected Skills:',
+        summarizeCodexErrorForLog(error),
+      );
+    }
+  }
+  return {
+    configArgs,
+    skillRoots,
+    skills,
+    cleanup() {
+      if (cleaned) return;
+      cleaned = true;
+      try {
+        rmSync(root, { recursive: true, force: true });
+      } catch (error) {
+        console.warn(
+          '[codex] failed to clean managed extension temp files:',
+          summarizeCodexErrorForLog(error),
+        );
+      }
+    },
+  };
 }
 
 export function resolveCodexSkillExtraRoots(workspacePath: string): string[] {
@@ -456,180 +481,175 @@ export function resolveCodexSkillExtraRoots(workspacePath: string): string[] {
   }
 }
 
+export const CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS = 30_000;
+export const CODEX_SKILL_LIST_TIMEOUT_MS = 30_000;
+
+type CodexSkillListError = { path?: string; message?: string };
+type CodexSkillListEntry = {
+  skills?: Array<{ name?: string; enabled?: boolean; path?: string }>;
+  errors?: CodexSkillListError[];
+};
+
+type ExpectedCodexSkill = Pick<ManagedCodexSkillSpec, 'name' | 'path'>;
+
+export type CodexSkillProjectionResult = {
+  extraRoots: string[];
+  loadedSkillNames: string[];
+};
+
+function canonicalCodexSkillPath(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function codexSkillIdentity(skill: { name: string; path: string }): string {
+  return `${skill.name}\0${canonicalCodexSkillPath(skill.path)}`;
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const rel = relative(resolve(root), resolve(candidate));
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+function summarizeCodexSkillErrorPath(
+  path: string | undefined,
+  workspacePath: string,
+  extraRoots: readonly string[],
+): string {
+  if (!path) return '<unknown>';
+  if (isPathInside(workspacePath, path)) {
+    const rel = relative(resolve(workspacePath), resolve(path));
+    return rel ? `<workspace>/${rel}` : '<workspace>';
+  }
+  for (const [index, root] of extraRoots.entries()) {
+    if (!isPathInside(root, path)) continue;
+    const rel = relative(resolve(root), resolve(path));
+    return rel ? `<extra-root-${index + 1}>/${rel}` : `<extra-root-${index + 1}>`;
+  }
+  return `<external>/${basename(path) || 'unknown'}`;
+}
+
 export async function configureCodexSkillExtraRoots(
   rpc: Pick<JsonRpcClient, 'call'>,
   workspacePath: string,
-  timeoutMs = 5_000,
-): Promise<string[]> {
-  const extraRoots = resolveCodexSkillExtraRoots(workspacePath);
-  if (extraRoots.length === 0) return [];
+  setTimeoutMs = CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS,
+  requestedRoots?: readonly string[],
+  expectedSkills: readonly ExpectedCodexSkill[] = [],
+  listTimeoutMs = CODEX_SKILL_LIST_TIMEOUT_MS,
+): Promise<CodexSkillProjectionResult> {
+  const extraRoots = requestedRoots === undefined
+    ? resolveCodexSkillExtraRoots(workspacePath)
+    : [...new Set(requestedRoots)];
+  if (extraRoots.length === 0) return { extraRoots: [], loadedSkillNames: [] };
 
   try {
-    await rpc.call('skills/extraRoots/set', { extraRoots }, timeoutMs);
-    console.log(`[codex] skills extra roots injected: ${extraRoots.join(',')}`);
-    return extraRoots;
+    const setStartedAt = Date.now();
+    try {
+      await rpc.call('skills/extraRoots/set', { extraRoots }, setTimeoutMs);
+      console.log(
+        `[codex] skills/extraRoots/set completed: roots=${extraRoots.length}`
+        + ` durationMs=${Date.now() - setStartedAt} timeoutMs=${setTimeoutMs}`,
+      );
+    } catch (error) {
+      console.warn(
+        `[codex] skills/extraRoots/set failed: roots=${extraRoots.length}`
+        + ` durationMs=${Date.now() - setStartedAt} timeoutMs=${setTimeoutMs}`
+        + ` reason=${summarizeCodexErrorForLog(error)}`,
+      );
+      throw error;
+    }
+
+    const listStartedAt = Date.now();
+    let listed: { data?: CodexSkillListEntry[] };
+    try {
+      listed = await rpc.call('skills/list', {
+        cwds: [workspacePath],
+        forceReload: true,
+      }, listTimeoutMs) as { data?: CodexSkillListEntry[] };
+    } catch (error) {
+      console.warn(
+        `[codex] skills/list failed: roots=${extraRoots.length}`
+        + ` expected=${expectedSkills.length}`
+        + ` durationMs=${Date.now() - listStartedAt} timeoutMs=${listTimeoutMs}`
+        + ` reason=${summarizeCodexErrorForLog(error)}`,
+      );
+      throw error;
+    }
+    const entries = listed.data ?? [];
+    const listedSkills = entries.flatMap(entry => entry.skills ?? []);
+    const listErrors = entries.flatMap(entry => entry.errors ?? []);
+    console.log(
+      `[codex] skills/list completed: roots=${extraRoots.length}`
+      + ` expected=${expectedSkills.length} visible=${listedSkills.length}`
+      + ` errors=${listErrors.length} durationMs=${Date.now() - listStartedAt}`
+      + ` timeoutMs=${listTimeoutMs}`,
+    );
+    for (const error of listErrors) {
+      console.warn(
+        `[codex] skills/list parser warning: path=${JSON.stringify(summarizeCodexSkillErrorPath(error.path, workspacePath, extraRoots))}`
+        + ` message=${JSON.stringify(summarizeSensitiveValueForLog(error.message))}`,
+      );
+    }
+    const visible = new Set(
+      listedSkills
+        .filter((skill): skill is { name: string; path: string; enabled?: boolean } => (
+          skill.enabled !== false
+          && typeof skill.name === 'string'
+          && typeof skill.path === 'string'
+        ))
+        .map(codexSkillIdentity),
+    );
+    const missing = expectedSkills.filter(skill => !visible.has(codexSkillIdentity(skill)));
+    if (missing.length > 0) {
+      console.warn(
+        `[codex] skills/list omitted projected Skills; continuing without them: ${missing.map(skill => skill.name).join(', ')}`,
+      );
+    }
+    console.log(
+      `[codex] skills extra roots applied: roots=${extraRoots.length}`
+      + ` visible=${expectedSkills.length - missing.length} missing=${missing.length}`,
+    );
+    const missingIdentities = new Set(missing.map(codexSkillIdentity));
+    return {
+      extraRoots,
+      loadedSkillNames: expectedSkills
+        .filter(skill => !missingIdentities.has(codexSkillIdentity(skill)))
+        .map(skill => skill.name),
+    };
   } catch (err) {
     console.warn(
-      '[codex] skills extra roots injection failed; continuing without .claude/skills:',
-      err instanceof Error ? err.message : String(err),
+      '[codex] skills extra roots injection failed; continuing without projected Skills:',
+      summarizeCodexErrorForLog(err),
     );
-    return [];
+    return { extraRoots: [], loadedSkillNames: [] };
   }
 }
 
 function buildManagedCodexMcpConfigArgs(
   servers: readonly McpServerDefinition[] | undefined,
   codexEnv: Record<string, string | undefined>,
-): { args: string[]; serverNames: string[] } {
-  if (!servers || servers.length === 0) return { args: [], serverNames: [] };
-
-  const args: string[] = [];
-  const usedNames = new Set<string>();
-  const usedGeneratedEnvNames = new Set<string>();
-  let skipped = 0;
-
-  codexEnv.NO_PROXY = CODEX_MCP_NO_PROXY_VAL;
-  codexEnv.no_proxy = CODEX_MCP_NO_PROXY_VAL;
-
-  for (const server of servers) {
-    const name = codexMcpServerName(server.id);
-    if (!name || usedNames.has(name)) {
-      skipped += 1;
-      console.warn(`[codex] managed MCP skipped id=${server.id}: invalid or duplicate Codex MCP server name`);
-      continue;
-    }
-
-    if (server.type === 'stdio') {
-      let command = server.command;
-      if (command === '__builtin__') {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: SDK in-process MCP cannot be passed to Codex app-server`);
-        continue;
-      }
-      if (command === '__bundled_cuse__') {
-        command = getBundledCusePath() ?? undefined;
-        if (!command) {
-          skipped += 1;
-          console.warn(`[codex] managed MCP ${server.id} skipped: bundled cuse binary not found`);
-          continue;
-        }
-      }
-      if (!command) {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: missing stdio command`);
-        continue;
-      }
-      let stdioArgs = Array.isArray(server.args) ? [...server.args] : [];
-      if (command === 'npx') {
-        const invocation = resolveNpxMcpInvocation(stdioArgs, {
-          pinPresetPackages: server.isBuiltin === true,
-        });
-        command = invocation.command;
-        stdioArgs = invocation.args;
-        console.log(`[codex] managed MCP ${server.id}: resolved npx via ${invocation.source} (${command})`);
-      }
-      const commandReason = unsafeCodexMcpStdioValueReason(command);
-      if (commandReason) {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: stdio command ${commandReason}`);
-        continue;
-      }
-      const argsReason = unsafeCodexMcpStdioArgsReason(stdioArgs);
-      if (argsReason) {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: stdio args unsafe for Codex argv (${argsReason})`);
-        continue;
-      }
-
-      const serverEnv = Object.entries(server.env ?? {});
-      const unsafeEnvKeys = serverEnv
-        .map(([key]) => key)
-        .filter(key => !canExposeMcpEnvKeyToCodexParent(key));
-      if (unsafeEnvKeys.length > 0) {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: env keys cannot be exposed to Codex parent process (${unsafeEnvKeys.join(', ')})`);
-        continue;
-      }
-
-      usedNames.add(name);
-      pushCodexConfigArg(args, `mcp_servers.${name}.command`, tomlString(command));
-      pushCodexConfigArg(args, `mcp_servers.${name}.args`, tomlArray(stdioArgs));
-
-      const envVars = new Set<string>();
-      for (const key of CODEX_MCP_PROXY_ENV_KEYS) {
-        if (codexEnv[key]) envVars.add(key);
-      }
-      envVars.add('NO_PROXY');
-      envVars.add('no_proxy');
-      for (const [key, value] of serverEnv) {
-        if (!key || value === undefined) continue;
-        codexEnv[key] = value;
-        envVars.add(key);
-      }
-      pushCodexConfigArg(args, `mcp_servers.${name}.env_vars`, tomlArray([...envVars].sort()));
-      pushCodexConfigArg(
-        args,
-        `mcp_servers.${name}.startup_timeout_sec`,
-        String(MCP_PREWARM_GRACE_MS / 1_000),
-      );
-      continue;
-    }
-
-    if (server.type === 'http') {
-      if (!server.url) {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: missing HTTP MCP URL`);
-        continue;
-      }
-      const urlReason = unsafeCodexMcpUrlReason(server.url);
-      if (urlReason) {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: HTTP MCP URL unsafe for Codex argv (${urlReason})`);
-        continue;
-      }
-
-      const envHeaderMap: Record<string, string> = {};
-      const pendingHeaderEnv: Record<string, string> = {};
-      let headerConfigInvalid = false;
-      if (server.headers && Object.keys(server.headers).length > 0) {
-        for (const [header, value] of Object.entries(server.headers)) {
-          if (!header || value === undefined) continue;
-          const resolvedHeaderValue = resolveMcpTemplateValue(value, server.env);
-          if (resolvedHeaderValue === null) {
-            skipped += 1;
-            console.warn(`[codex] managed MCP ${server.id} skipped: HTTP header ${header} references missing env placeholder`);
-            headerConfigInvalid = true;
-            break;
-          }
-          const envName = uniqueCodexMcpEnvVarName(name, header, usedGeneratedEnvNames);
-          pendingHeaderEnv[envName] = resolvedHeaderValue;
-          envHeaderMap[header] = envName;
-        }
-      }
-      if (headerConfigInvalid) continue;
-
-      usedNames.add(name);
-      Object.assign(codexEnv, pendingHeaderEnv);
-      pushCodexConfigArg(args, `mcp_servers.${name}.url`, tomlString(server.url));
-      if (Object.keys(envHeaderMap).length > 0) {
-        pushCodexConfigArg(args, `mcp_servers.${name}.env_http_headers`, tomlInlineStringMap(envHeaderMap));
-      }
-      pushCodexConfigArg(
-        args,
-        `mcp_servers.${name}.startup_timeout_sec`,
-        String(MCP_PREWARM_GRACE_MS / 1_000),
-      );
-      continue;
-    }
-
-    skipped += 1;
-    console.warn(`[codex] managed MCP ${server.id} skipped: Codex app-server does not support MyAgents MCP type ${server.type}`);
+): {
+  args: string[];
+  serverNames: string[];
+} {
+  const projection = projectManagedCodexMcpLaunchConfig(servers, codexEnv);
+  Object.assign(codexEnv, projection.envPatch);
+  if (projection.serverNames.length > 0 || projection.failures.length > 0) {
+    console.log(
+      `[codex] managed MCP startup config: injected=${projection.serverNames.length}`
+      + ` degraded=${projection.failures.length}`,
+    );
   }
-
-  if (args.length > 0 || skipped > 0) {
-    console.log(`[codex] managed MCP startup config: injected=${usedNames.size} skipped=${skipped}`);
+  for (const failure of projection.failures) {
+    console.warn(`[codex] managed MCP component degraded: ${failure.message}`);
   }
-  return { args, serverNames: [...usedNames] };
+  return {
+    args: projection.args,
+    serverNames: projection.serverNames,
+  };
 }
 
 export function buildCodexAppServerLaunchConfig(args: {
@@ -637,7 +657,12 @@ export function buildCodexAppServerLaunchConfig(args: {
   runtimeSource: RuntimeSource;
   codexEnv: Record<string, string | undefined>;
   mcpServers?: readonly McpServerDefinition[];
-}): { args: string[]; mcpServerNames: string[]; modelProvider?: string } {
+  extensionConfigArgs?: readonly string[];
+}): {
+  args: string[];
+  mcpServerNames: string[];
+  modelProvider?: string;
+} {
   const codexArgs = [
     args.commandPath,
     '-c', CODEX_PROJECT_DOC_FALLBACK_CONFIG,
@@ -656,6 +681,7 @@ export function buildCodexAppServerLaunchConfig(args: {
     codexArgs.push(...mcpConfig.args);
     mcpServerNames = mcpConfig.serverNames;
   }
+  codexArgs.push(...(args.extensionConfigArgs ?? []));
   codexArgs.push('app-server');
   return { args: codexArgs, mcpServerNames, modelProvider };
 }
@@ -705,7 +731,19 @@ export type PendingCodexRequest =
   | { kind: 'file_approval'; rpcId: JsonRpcRequestId; method: KnownCodexServerRequestMethod; params: Record<string, unknown> }
   | { kind: 'tool_user_input'; rpcId: JsonRpcRequestId; method: KnownCodexServerRequestMethod; params: Record<string, unknown> }
   | { kind: 'mcp_elicitation'; rpcId: JsonRpcRequestId; method: KnownCodexServerRequestMethod; params: Record<string, unknown> }
-  | { kind: 'permissions_approval'; rpcId: JsonRpcRequestId; method: KnownCodexServerRequestMethod; params: Record<string, unknown> };
+  | { kind: 'permissions_approval'; rpcId: JsonRpcRequestId; method: KnownCodexServerRequestMethod; params: Record<string, unknown> }
+  | { kind: 'host_tool_approval'; rpcId: JsonRpcRequestId; method: 'item/tool/call'; params: Record<string, unknown>; callId: string };
+
+type PendingManagedCodexHostCall = {
+  rpcId: JsonRpcRequestId;
+  callId: string;
+  threadId: string;
+  turnId: string;
+  params: Record<string, unknown>;
+  controller: AbortController;
+  settled: boolean;
+  timeout?: ReturnType<typeof setTimeout>;
+};
 
 type CodexResponseAction =
   | { type: 'result'; result: unknown }
@@ -739,6 +777,63 @@ function codexTraceId(params: Record<string, unknown>, fallbackItemId?: string, 
   if (!itemId) return undefined;
   const threadId = stringValue(params.threadId);
   return [threadId, itemId, suffix].filter((part): part is string => !!part).join('::');
+}
+
+type CodexReasoningTraceState = {
+  openedReasoningTracesByItem: Map<string, Map<string, number>>;
+};
+
+function codexReasoningItemKey(
+  params: Record<string, unknown>,
+  fallbackItemId?: string,
+): string | undefined {
+  const itemId = stringValue(params.itemId) ?? fallbackItemId;
+  if (!itemId) return undefined;
+  return [stringValue(params.threadId), itemId].filter(Boolean).join('::');
+}
+
+export function buildCodexReasoningDeltaEvents(
+  state: CodexReasoningTraceState,
+  params: Record<string, unknown>,
+  input: { index: number; suffix: string; text: string },
+): UnifiedEvent | UnifiedEvent[] {
+  const traceId = codexTraceId(params, undefined, input.suffix);
+  const delta: UnifiedEvent = {
+    kind: 'thinking_delta',
+    text: input.text,
+    index: input.index,
+    traceId,
+  };
+  const itemKey = codexReasoningItemKey(params);
+  if (!traceId || !itemKey) return delta;
+  let opened = state.openedReasoningTracesByItem.get(itemKey);
+  if (!opened) {
+    opened = new Map<string, number>();
+    state.openedReasoningTracesByItem.set(itemKey, opened);
+  }
+  if (opened.has(traceId)) return delta;
+  opened.set(traceId, input.index);
+  return [
+    { kind: 'thinking_start', index: input.index, traceId },
+    delta,
+  ];
+}
+
+export function takeCodexReasoningStopEvents(
+  state: CodexReasoningTraceState,
+  params: Record<string, unknown>,
+  fallbackItemId: string,
+): UnifiedEvent[] {
+  const itemKey = codexReasoningItemKey(params, fallbackItemId);
+  if (!itemKey) return [];
+  const opened = state.openedReasoningTracesByItem.get(itemKey);
+  state.openedReasoningTracesByItem.delete(itemKey);
+  if (!opened) return [];
+  return [...opened].map(([traceId, index]) => ({
+    kind: 'thinking_stop' as const,
+    index,
+    traceId,
+  }));
 }
 
 export function buildCodexFileChangeResultContent(changes: unknown): string {
@@ -1206,6 +1301,19 @@ export function serializeCodexPermissionResponse(
           scope: decision === 'always_allow' ? 'session' : 'turn',
         },
       };
+    case 'host_tool_approval':
+      return {
+        type: 'result',
+        result: {
+          success: false,
+          contentItems: [{
+            type: 'inputText',
+            text: decision === 'deny'
+              ? 'User denied the Managed Codex Host tool request.'
+              : 'Managed Codex Host tool approval was not dispatched.',
+          }],
+        } satisfies CodexDynamicToolCallResult,
+      };
   }
 }
 
@@ -1619,6 +1727,7 @@ export function applyCodexSubAgentActivity(
   notificationThreadId: string | undefined,
   mainThreadId: string,
   rawItem: unknown,
+  interactionDelivery?: 'queue-only' | 'trigger-turn',
 ): UnifiedEvent[] | null {
   if (!isRecord(rawItem) || rawItem.type !== 'subAgentActivity') return null;
   const id = stringValue(rawItem.id);
@@ -1657,10 +1766,14 @@ export function applyCodexSubAgentActivity(
       state.subThreadToParent.set(agentThreadId, senderThreadId);
     }
   } else if (senderThreadId === mainThreadId) {
-    // A current-turn target remains under its original spawn card. When a
-    // persistent v2 child is contacted in a later turn, no current content
-    // block exists for that old card, so this activity becomes the new owner.
-    if (targetRoute.kind === 'subagent') {
+    // A raw-discriminated followup_task starts a new child turn, so this
+    // current-turn activity card becomes its independent lifecycle owner even
+    // when the same child already completed under a spawn card earlier in the
+    // root turn. queue-only send_message remains nested under the current card.
+    if (interactionDelivery === 'trigger-turn' && agentThreadId !== mainThreadId) {
+      state.subThreadToCard.set(agentThreadId, id);
+      state.subThreadToParent.set(agentThreadId, mainThreadId);
+    } else if (targetRoute.kind === 'subagent') {
       scope = targetRoute.scope;
     } else if (agentThreadId !== mainThreadId) {
       state.subThreadToCard.set(agentThreadId, id);
@@ -1785,6 +1898,134 @@ type CodexLegacySpawnLifecycleState = CodexSubAgentCorrelationState & {
   activeSubAgentTurns: Map<string, string | null>;
   completedSubAgentTurnsBeforeActivity: Set<string>;
 };
+
+type CodexSubAgentLifecycleRecord = {
+  startedAt: number;
+  terminalStatus?: Exclude<SubagentLifecycleStatus, 'running'>;
+  finishedAt?: number;
+};
+
+type CodexSubAgentLifecycleState = CodexSubAgentCorrelationState & {
+  threadId: string;
+  activeSubAgentTurns: ReadonlyMap<string, string | null>;
+  subAgentLifecycleByThread: Map<string, CodexSubAgentLifecycleRecord>;
+  emittedSubAgentLifecycleByCard: Map<string, SubagentLifecycleStatus>;
+};
+
+function observeCodexSubAgentTurnStarted(
+  proc: CodexSubAgentLifecycleState,
+  childThreadId: string,
+  observedAt: number,
+): void {
+  const current = proc.subAgentLifecycleByThread.get(childThreadId);
+  if (!current || current.terminalStatus) {
+    proc.subAgentLifecycleByThread.set(childThreadId, { startedAt: observedAt });
+  }
+}
+
+function observeCodexSubAgentTurnTerminal(
+  proc: CodexSubAgentLifecycleState,
+  childThreadId: string,
+  status: Exclude<SubagentLifecycleStatus, 'running'>,
+  observedAt: number,
+): void {
+  const current = proc.subAgentLifecycleByThread.get(childThreadId);
+  if (current?.terminalStatus) return;
+  const startedAt = current?.startedAt ?? observedAt;
+  proc.subAgentLifecycleByThread.set(childThreadId, {
+    startedAt,
+    terminalStatus: status,
+    finishedAt: Math.max(startedAt, observedAt),
+  });
+}
+
+export function mapCodexChildTurnTerminalStatus(turn: unknown): Exclude<SubagentLifecycleStatus, 'running'> {
+  const status = stringValue(objectValue(turn).status)?.toLowerCase();
+  if (status === 'completed' || status === 'success' || status === 'succeeded') return 'completed';
+  if (
+    status === 'interrupted'
+    || status === 'cancelled'
+    || status === 'canceled'
+    || status === 'stopped'
+  ) return 'interrupted';
+  return 'failed';
+}
+
+function topLevelCardForThread(
+  proc: CodexSubAgentLifecycleState,
+  childThreadId: string,
+): string | null {
+  return resolveTopLevelSpawnCard(
+    childThreadId,
+    proc.subThreadToCard,
+    proc.subThreadToParent,
+  );
+}
+
+/**
+ * Project native child-turn observations onto the current turn's visible
+ * CollabAgent owner. Records remain turn-local; correlation can arrive before
+ * or after the native notification without creating another lifecycle owner.
+ */
+export function collectCodexSubAgentLifecycleEvents(
+  proc: CodexSubAgentLifecycleState,
+): UnifiedEvent[] {
+  const recordsByCard = new Map<string, Array<{
+    threadId: string;
+    record: CodexSubAgentLifecycleRecord;
+  }>>();
+  for (const [threadId, record] of proc.subAgentLifecycleByThread) {
+    const parentToolUseId = topLevelCardForThread(proc, threadId);
+    if (!parentToolUseId) continue;
+    const records = recordsByCard.get(parentToolUseId) ?? [];
+    records.push({ threadId, record });
+    recordsByCard.set(parentToolUseId, records);
+  }
+
+  const events: UnifiedEvent[] = [];
+  for (const [parentToolUseId, records] of recordsByCard) {
+    const emitted = proc.emittedSubAgentLifecycleByCard.get(parentToolUseId);
+    if (!emitted) {
+      const startedAt = Math.min(...records.map(({ record }) => record.startedAt));
+      events.push({
+        kind: 'subagent_lifecycle',
+        parentToolUseId,
+        status: 'running',
+        observedAt: startedAt,
+      });
+      proc.emittedSubAgentLifecycleByCard.set(parentToolUseId, 'running');
+    }
+    if (proc.emittedSubAgentLifecycleByCard.get(parentToolUseId) !== 'running') continue;
+
+    const hasActiveDescendant = [...proc.activeSubAgentTurns.keys()]
+      .some((threadId) => topLevelCardForThread(proc, threadId) === parentToolUseId);
+    if (hasActiveDescendant) continue;
+
+    const ownerRecords = records.filter(({ threadId }) => {
+      const parentThreadId = proc.subThreadToParent.get(threadId);
+      return proc.subThreadToCard.get(threadId) === parentToolUseId
+        && (!parentThreadId || parentThreadId === proc.threadId);
+    });
+    if (ownerRecords.length === 0 || ownerRecords.some(({ record }) => !record.terminalStatus)) continue;
+
+    const terminalStatus = ownerRecords.some(({ record }) => record.terminalStatus === 'failed')
+      ? 'failed'
+      : ownerRecords.some(({ record }) => record.terminalStatus === 'interrupted')
+        ? 'interrupted'
+        : 'completed';
+    const finishedAt = Math.max(...ownerRecords.map(({ record }) => (
+      record.finishedAt ?? record.startedAt
+    )));
+    events.push({
+      kind: 'subagent_lifecycle',
+      parentToolUseId,
+      status: terminalStatus,
+      observedAt: finishedAt,
+    });
+    proc.emittedSubAgentLifecycleByCard.set(parentToolUseId, terminalStatus);
+  }
+  return events;
+}
 
 /** Observe the v1 spawn signal and reserve each newly correlated child once. */
 function recordLegacySpawnAgentLifecycle(
@@ -2076,7 +2317,7 @@ export class JsonRpcClient {
     } catch (err) {
       // Stream closed or process exited
       if (String(err).includes('cancel') || String(err).includes('closed')) return;
-      console.error('[codex-rpc] Reader error:', err);
+      console.error('[codex-rpc] Reader error:', summarizeCodexErrorForLog(err));
     } finally {
       reader.releaseLock();
       // Reject all pending requests
@@ -2146,15 +2387,25 @@ export class JsonRpcClient {
 
 // ─── CodexProcess wrapper ───
 
+type CodexCompactControl = {
+  turnId: string;
+  restartRequired: boolean;
+  resolve: () => void;
+  reject: (error: Error) => void;
+};
+
 class CodexProcess implements RuntimeProcess {
   readonly pid: number;
+  readonly runtimeGeneration: string;
   exited = false;
+  loadedSkillNames: readonly string[] = [];
   private proc: Subprocess;
 
   // Codex-specific state
   rpc: JsonRpcClient;
   threadId = '';
   currentTurnId = '';
+  compactControl: CodexCompactControl | null = null;
   version = '';
   activeRootTurnAdmission: {
     clientUserMessageId: string;
@@ -2165,6 +2416,11 @@ class CodexProcess implements RuntimeProcess {
   rootEventHandler: UnifiedEventCallback | null = null;
   agentMessageTextById = new Map<string, string>();
   pendingRequests = new Map<string, PendingCodexRequest>();
+  readonly processGeneration = randomUUID();
+  extensionSnapshot: ManagedCodexExtensionSnapshot | null = null;
+  pendingHostCalls = new Map<string, PendingManagedCodexHostCall>();
+  settledHostCallIds = new Set<string>();
+  cleanupExtensionResources: () => void = () => {};
 
   // ── Sub-agent (collab-agent) thread correlation ──
   // Child threadId → the spawnAgent collabAgentToolCall id that created it
@@ -2218,6 +2474,13 @@ class CodexProcess implements RuntimeProcess {
   // latter does not install a stale causal fence, but never infer execution
   // ownership from the ambiguous activity alone.
   subAgentActivitySeenBeforeTurnStart = new Set<string>();
+  // Native child-turn observations waiting for / attached to a turn-local
+  // CollabAgent card. Cleared with the existing correlation maps.
+  subAgentLifecycleByThread = new Map<string, CodexSubAgentLifecycleRecord>();
+  emittedSubAgentLifecycleByCard = new Map<string, SubagentLifecycleStatus>();
+  // Reasoning summary/content streams open lazily on their first delta and
+  // close by the exact same trace id at item completion.
+  openedReasoningTracesByItem = new Map<string, Map<string, number>>();
   // Deduplicate force-send and root-failure interrupts targeting the same
   // concrete child turn. The key is threadId + turnId, not just threadId,
   // because persistent children may execute multiple turns in one session.
@@ -2255,6 +2518,7 @@ class CodexProcess implements RuntimeProcess {
   constructor(proc: Subprocess) {
     this.proc = proc;
     this.pid = proc.pid;
+    this.runtimeGeneration = this.processGeneration;
     this.rpc = new JsonRpcClient(proc);
   }
 
@@ -2285,6 +2549,45 @@ class CodexProcess implements RuntimeProcess {
       await stdin.end();
     } catch { /* already closed / EPIPE */ }
   }
+
+  abortPendingHostCalls(reason: string, turnId?: string): void {
+    for (const pending of [...this.pendingHostCalls.values()]) {
+      if (turnId && pending.turnId !== turnId) continue;
+      this.abortPendingHostCall(pending.callId, reason);
+    }
+  }
+
+  abortPendingHostCall(callId: string, reason: string): void {
+    const pending = this.pendingHostCalls.get(callId);
+    if (!pending || pending.settled) return;
+    pending.settled = true;
+    if (pending.timeout) clearTimeout(pending.timeout);
+    pending.controller.abort(new Error(reason));
+    this.pendingHostCalls.delete(pending.callId);
+    const resolvedRequestIds: string[] = [];
+    for (const [requestId, request] of this.pendingRequests) {
+      if (request.kind === 'host_tool_approval' && request.callId === callId) {
+        this.pendingRequests.delete(requestId);
+        resolvedRequestIds.push(requestId);
+      }
+    }
+    for (const requestId of resolvedRequestIds) {
+      try {
+        this.rootEventHandler?.({ kind: 'interactive_request_resolved', requestId });
+      } catch { /* UI expiry must not prevent the protocol response */ }
+    }
+    this.settledHostCallIds.add(pending.callId);
+    this.rpc.respond(pending.rpcId, {
+      ...codexHostToolFailure(reason),
+    });
+  }
+
+  disposeExtensionResources(reason: string): void {
+    this.abortPendingHostCalls(reason);
+    this.extensionSnapshot?.hostToolDispatcher?.dispose(reason);
+    this.cleanupExtensionResources();
+    this.cleanupExtensionResources = () => {};
+  }
 }
 
 // ─── Permission mode mapping ───
@@ -2308,7 +2611,8 @@ function mapPermissionMode(mode: string): { approval: CodexApprovalPolicy; sandb
 //
 // Conservative pattern matcher: forwards a small set of high-signal failures
 // to the UnifiedEvent log stream so the renderer/IM bus can surface them.
-// Anything not matching here still ends up in the unified log via console.error.
+// Anything not matching here is reduced to an irreversible stderr summary by
+// the process reader and is not promoted into the user-facing log stream.
 //
 // Adding patterns: prefer specific phrases over broad terms. A false-positive
 // log line in the renderer is annoying; a false-negative just means the user
@@ -2337,7 +2641,7 @@ const CODEX_STDERR_PATTERNS: StderrPattern[] = [
   { re: /(connection (refused|reset)|tls handshake|dns (failure|resolve))/i, level: 'error', prefix: 'Codex network error' },
 ];
 
-function classifyAndForwardCodexStderr(text: string, onEvent: UnifiedEventCallback): void {
+export function classifyAndForwardCodexStderr(text: string, onEvent: UnifiedEventCallback): void {
   // Many stderr writes are multi-line. Process each line independently — one
   // matching line should fire one event, not block the rest of the chunk.
   for (const line of text.split('\n')) {
@@ -2346,13 +2650,10 @@ function classifyAndForwardCodexStderr(text: string, onEvent: UnifiedEventCallba
     for (const p of CODEX_STDERR_PATTERNS) {
       const m = trimmed.match(p.re);
       if (!m) continue;
-      // Keep the message short — the renderer shows these as toast/log lines.
-      // The full stderr line still went to console.error / unified log.
-      const detail = trimmed.length > 200 ? `${trimmed.slice(0, 200)}…` : trimmed;
       onEvent({
         kind: 'log',
         level: p.level,
-        message: `[codex] ${p.prefix}: ${detail}`,
+        message: `[codex] ${p.prefix} detail=${summarizeCodexValueForLog(trimmed)}`,
       });
       break; // first match wins per line
     }
@@ -2373,6 +2674,91 @@ export function mapCodexTurnCompletedNotification(
     ...(errorMessage ? { error: errorMessage, result: errorMessage } : {}),
     ...(status !== 'completed' && !errorMessage ? { result: `Turn ended with status ${status}` } : {}),
   };
+}
+
+function codexLogProtocolToken(value: unknown): string {
+  const token = stringValue(value);
+  return token && /^[A-Za-z][A-Za-z0-9_./:-]{0,95}$/.test(token) ? token : 'unknown';
+}
+
+function summarizeCodexValueForLog(value: unknown): string {
+  if (typeof value === 'string') {
+    return JSON.stringify(summarizeSensitiveValueForLog(value));
+  }
+  try {
+    return JSON.stringify(summarizeSensitiveValueForLog(JSON.stringify(value) ?? null));
+  } catch {
+    return JSON.stringify(summarizeSensitiveValueForLog(null));
+  }
+}
+
+/**
+ * Project one Codex notification into bounded semantic diagnostics.
+ * Notification payloads can contain commands, file paths, tool arguments,
+ * provider error bodies, and user messages, so sensitive values are never
+ * retained as plaintext prefixes.
+ */
+export function summarizeCodexNotificationForLog(method: string, params: unknown): string {
+  const p = objectValue(params);
+  if (method === 'item/started' || method === 'item/completed') {
+    const item = objectValue(p.item);
+    if (Object.keys(item).length === 0) return '';
+    const itemType = codexLogProtocolToken(item.type);
+    let detail = ` type=${itemType}`;
+    if (typeof item.id === 'string') detail += ` id=${summarizeCodexValueForLog(item.id)}`;
+    if (typeof p.threadId === 'string') detail += ` thread=${summarizeCodexValueForLog(p.threadId)}`;
+    if (itemType === 'commandExecution' && item.command != null) {
+      detail += ` command=${summarizeCodexValueForLog(item.command)}`;
+    }
+    if (itemType === 'fileChange' && Array.isArray(item.changes)) {
+      const paths = coerceFileChanges(item.changes).map((change) => change.path).filter(Boolean);
+      detail += ` files=${paths.length}`;
+      if (paths.length > 0) detail += ` paths=${summarizeCodexValueForLog(paths.join('\n'))}`;
+    }
+    if ((itemType === 'mcpToolCall' || itemType === 'dynamicToolCall') && item.tool != null) {
+      detail += ` tool=${summarizeCodexValueForLog(item.tool)}`;
+    }
+    if (itemType === 'agentMessage' && typeof item.text === 'string') {
+      detail += ` textChars=${Array.from(item.text).length}`;
+    }
+    if (itemType === 'userMessage') {
+      const clientId = codexUserMessageClientId(item) ?? codexUserMessageClientId(p);
+      if (clientId) detail += ` client=${summarizeCodexValueForLog(clientId)}`;
+    }
+    if (method === 'item/completed') {
+      if (typeof item.exitCode === 'number' && Number.isFinite(item.exitCode)) {
+        detail += ` exit=${item.exitCode}`;
+      }
+      const errorMessage = stringValue(objectValue(item.error).message);
+      if (errorMessage) detail += ` error=${summarizeCodexValueForLog(errorMessage)}`;
+    }
+    return detail;
+  }
+  if (method === 'turn/completed') {
+    const turn = objectValue(p.turn);
+    let detail = Object.keys(turn).length > 0 ? ` status=${codexLogProtocolToken(turn.status)}` : '';
+    const errorMessage = stringValue(objectValue(turn.error).message);
+    if (errorMessage) detail += ` error=${summarizeCodexValueForLog(errorMessage)}`;
+    return detail;
+  }
+  if (method === 'thread/tokenUsage/updated') {
+    const usage = objectValue(objectValue(p.tokenUsage).total);
+    const inputTokens = typeof usage.inputTokens === 'number' ? usage.inputTokens : 'unknown';
+    const outputTokens = typeof usage.outputTokens === 'number' ? usage.outputTokens : 'unknown';
+    return Object.keys(usage).length > 0 ? ` in=${inputTokens} out=${outputTokens}` : '';
+  }
+  if (method === 'thread/status/changed') {
+    const status = objectValue(p.status);
+    return Object.keys(status).length > 0 ? ` type=${codexLogProtocolToken(status.type)}` : '';
+  }
+  if (method === 'thread/started') {
+    const threadId = stringValue(objectValue(p.thread).id);
+    return threadId ? ` threadId=${summarizeCodexValueForLog(threadId)}` : '';
+  }
+  if (method === 'mcpServer/startupStatus/updated') {
+    return ` name=${summarizeCodexValueForLog(p.name)} status=${codexLogProtocolToken(p.status)}`;
+  }
+  return '';
 }
 
 function normalizeCodexPlanStatus(status: unknown): AgentPlanTodo['status'] {
@@ -2823,7 +3209,10 @@ export class CodexRuntime implements AgentRuntime {
     try {
       context = resolveCodexCommandContext({ source: runtimeSource });
     } catch (err) {
-      console.error(`[codex] Failed to resolve model runtime for source=${runtimeSource}:`, err);
+      console.error(
+        `[codex] Failed to resolve model runtime for source=${runtimeSource}:`,
+        summarizeCodexErrorForLog(err),
+      );
       return [];
     }
     const cacheKey = codexModelCacheKey(runtimeSource, context);
@@ -2838,7 +3227,10 @@ export class CodexRuntime implements AgentRuntime {
       modelCache.set(cacheKey, { models, timestamp: Date.now() });
       return models;
     } catch (err) {
-      console.error(`[codex] Failed to query models for source=${runtimeSource}:`, err);
+      console.error(
+        `[codex] Failed to query models for source=${runtimeSource}:`,
+        summarizeCodexErrorForLog(err),
+      );
       // Return cached even if stale, or empty
       return cached?.models ?? [];
     }
@@ -2988,7 +3380,7 @@ export class CodexRuntime implements AgentRuntime {
   ): Promise<RuntimeProcess> {
     // Clean up stale temp images from previous sessions
     cleanupStaleTempImages();
-    trySyncProjectUserConfigFiles(options.workspacePath, {}, 'codex');
+    const runtimeSource = options.runtimeSource ?? 'system-cli';
 
     // Cross-runtime workspace protocol: make Codex natively discover CLAUDE.md
     // when no AGENTS.md is present. The -c flag overrides config.toml at runtime
@@ -2997,7 +3389,6 @@ export class CodexRuntime implements AgentRuntime {
     // Capture the env we hand to Codex so the diagnostic snapshot reflects what
     // the subprocess actually saw (issue #194). The env policy is resolved by
     // the session caller from the agent's runtimeConfig.envPolicy.
-    const runtimeSource = options.runtimeSource ?? 'system-cli';
     const context = resolveCodexCommandContext({
       source: runtimeSource,
       envPolicy: options.envPolicy,
@@ -3008,23 +3399,33 @@ export class CodexRuntime implements AgentRuntime {
     // workspace, not the sidecar's launch directory. Codex review SM finding.
     codexEnv.PWD = options.workspacePath;
     codexEnv.MYAGENTS_SESSION_ID = options.sessionId;
+    const extensionSnapshot = runtimeSource === 'managed-provider'
+      ? options.managedCodexExtensions
+      : undefined;
+    if (extensionSnapshot) {
+      assertManagedCodexExtensionProtocolVersion(context.version);
+    }
+    const extensionMaterialization = materializeManagedCodexExtensions(extensionSnapshot);
     const launchConfig = buildCodexAppServerLaunchConfig({
       commandPath: context.commandPath,
       runtimeSource,
       codexEnv,
-      mcpServers: options.mcpServers,
+      mcpServers: extensionSnapshot?.mcpServers ?? options.mcpServers,
+      extensionConfigArgs: extensionMaterialization.configArgs,
     });
     const mcpStartup = createCodexMcpStartupBarrier(launchConfig.mcpServerNames);
     console.log(
       `[codex] spawn source=${runtimeSource} version=${context.version ?? 'system-cli'} ` +
       `platform=${context.platform ?? process.platform} codexHome=${context.codexHome ? '<managed>' : '<default>'}`,
     );
-    const proc = spawn(launchConfig.args, {
-      stdout: 'pipe',
-      stderr: 'pipe',
-      stdin: 'pipe',
-      cwd: options.workspacePath,
-      env: codexEnv,
+    let proc: Subprocess;
+    try {
+      proc = spawn(launchConfig.args, {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        stdin: 'pipe',
+        cwd: options.workspacePath,
+        env: codexEnv,
       // Detached → child becomes its own process-group leader on POSIX so
       // killWithEscalation({ killTree: true }) below can take down the entire
       // model/tool tree, not just the wrapper.
@@ -3034,11 +3435,19 @@ export class CodexRuntime implements AgentRuntime {
       // doesn't have process groups; tree-kill uses `taskkill /F /T /PID` which
       // works regardless of detached. `windowsHide: true` suppresses the console
       // window flash from cmd.exe wrapping the codex.cmd shim.
-      detached: process.platform !== 'win32',
-      windowsHide: true,
-    });
+        detached: process.platform !== 'win32',
+        windowsHide: true,
+      });
+    } catch (error) {
+      extensionMaterialization.cleanup();
+      throw error;
+    }
 
     const codexProc = new CodexProcess(proc);
+    codexProc.extensionSnapshot = extensionSnapshot
+      ? { ...extensionSnapshot, skills: extensionMaterialization.skills }
+      : null;
+    codexProc.cleanupExtensionResources = extensionMaterialization.cleanup;
     codexProc.sessionId = options.sessionId;
     codexProc.workspacePath = options.workspacePath;
     codexProc.scenario = options.scenario;
@@ -3062,15 +3471,17 @@ export class CodexRuntime implements AgentRuntime {
 
     const readyMcpServerNames = new Set<string>();
     let lastMcpToolCatalog: string[] = [];
+    const extensionToolCatalog = extensionSnapshot?.dynamicTools.map(tool => tool.name) ?? [];
     let mcpCatalogRevision = 0;
     let mcpCatalogRefreshTimer: ReturnType<typeof setTimeout> | null = null;
     const publishMcpToolCatalog = (tools: string[]): void => {
+      const combinedTools = [...new Set([...tools, ...extensionToolCatalog])].sort();
       if (
-        tools.length === lastMcpToolCatalog.length
-        && tools.every((tool, index) => tool === lastMcpToolCatalog[index])
+        combinedTools.length === lastMcpToolCatalog.length
+        && combinedTools.every((tool, index) => tool === lastMcpToolCatalog[index])
       ) return;
-      lastMcpToolCatalog = tools;
-      wrappedOnEvent({ kind: 'runtime_tool_catalog', tools });
+      lastMcpToolCatalog = combinedTools;
+      wrappedOnEvent({ kind: 'runtime_tool_catalog', tools: combinedTools });
     };
     const emitMcpToolCatalog = (servers: readonly CodexMcpServerStatus[]): void => {
       publishMcpToolCatalog(buildCodexMcpToolCatalog(servers, readyMcpServerNames));
@@ -3089,14 +3500,13 @@ export class CodexRuntime implements AgentRuntime {
             emitMcpToolCatalog(servers);
           })
           .catch((err) => {
-            console.warn('[codex] MCP tool catalog refresh failed:', err instanceof Error ? err.message : String(err));
+            console.warn('[codex] MCP tool catalog refresh failed:', summarizeCodexErrorForLog(err));
           });
       }, 100);
     };
 
     // Wire up notification handler to emit UnifiedEvents
     codexProc.rpc.setNotificationHandler((method, params) => {
-      const p = params as Record<string, unknown> | undefined;
       if (method === 'mcpServer/startupStatus/updated') {
         const status = params as CodexMcpStartupStatusNotification;
         const belongsToActiveThread = status.threadId === null
@@ -3121,52 +3531,9 @@ export class CodexRuntime implements AgentRuntime {
         || method === 'item/commandExecution/outputDelta' || method === 'item/fileChange/outputDelta'
         || method === 'rawResponse/completed';
       if (!isNoisy) {
-        let detail = '';
-        if (method === 'item/started' || method === 'item/completed') {
-          const item = p?.item as Record<string, unknown> | undefined;
-          if (item) {
-            detail = ` type=${item.type}`;
-            if (typeof item.id === 'string') detail += ` id=${JSON.stringify(summarizeSensitiveValueForLog(item.id))}`;
-            // PRD 0.2.27 — log threadId so sub-agent items are distinguishable
-            // from main-thread items in production triage (Codex carries it; we
-            // previously dropped it from logs, making this class of issue opaque).
-            if (typeof p?.threadId === 'string') detail += ` thread=${JSON.stringify(summarizeSensitiveValueForLog(p.threadId))}`;
-            // Tool-specific context
-            if (item.type === 'commandExecution' && item.command) detail += ` cmd=${(item.command as string).slice(0, 80)}`;
-            if (item.type === 'fileChange' && Array.isArray(item.changes)) {
-              const paths = coerceFileChanges(item.changes).map((change) => change.path).filter(Boolean);
-              if (paths.length > 0) detail += ` files=${paths.join(',')}`;
-            }
-            if ((item.type === 'mcpToolCall' || item.type === 'dynamicToolCall') && item.tool) detail += ` tool=${item.tool}`;
-            if (item.type === 'agentMessage' && typeof item.text === 'string') detail += ` text=${(item.text as string).length}chars`;
-            if (item.type === 'userMessage') {
-              const clientId = codexUserMessageClientId(item) ?? codexUserMessageClientId(p ?? {});
-              if (clientId) detail += ` client=${JSON.stringify(summarizeSensitiveValueForLog(clientId))}`;
-            }
-            // Exit code / error for completed items
-            if (method === 'item/completed') {
-              if (item.exitCode != null) detail += ` exit=${item.exitCode}`;
-              if (item.error) detail += ` error=${((item.error as Record<string, unknown>).message as string || '')}`;
-            }
-          }
-        } else if (method === 'turn/completed') {
-          const turn = p?.turn as Record<string, unknown> | undefined;
-          detail = turn ? ` status=${turn.status}` : '';
-          if (turn?.error) detail += ` error=${((turn.error as Record<string, unknown>).message as string || '')}`;
-        } else if (method === 'thread/tokenUsage/updated') {
-          const usage = (p?.tokenUsage as Record<string, unknown>)?.total as Record<string, unknown> | undefined;
-          if (usage) detail = ` in=${usage.inputTokens} out=${usage.outputTokens}`;
-        } else if (method === 'thread/status/changed') {
-          const status = p?.status as Record<string, unknown> | undefined;
-          if (status) detail = ` type=${status.type}`;
-        } else if (method === 'thread/started') {
-          const thread = p?.thread as Record<string, unknown> | undefined;
-          if (typeof thread?.id === 'string') detail = ` threadId=${JSON.stringify(summarizeSensitiveValueForLog(thread.id))}`;
-        } else if (method === 'mcpServer/startupStatus/updated') {
-          detail = ` name=${String(p?.name ?? '(unknown)')} status=${String(p?.status ?? '(unknown)')}`;
-        }
+        const detail = summarizeCodexNotificationForLog(method, params);
         withLogContext({ runtime: 'codex', runtimeSource }, () => {
-          console.log(`[codex] ${method}${detail}`);
+          console.log(`[codex] ${codexLogProtocolToken(method)}${detail}`);
         });
       }
       const notifParams = params as Record<string, unknown> | undefined;
@@ -3188,6 +3555,9 @@ export class CodexRuntime implements AgentRuntime {
       // Emit the parent card first, then release causally-earlier child events.
       if (isItemNotification && codexProc.deferredSubAgentEvents.size > 0) {
         flushResolvableCodexSubAgentEvents(codexProc, wrappedOnEvent);
+      }
+      for (const event of collectCodexSubAgentLifecycleEvents(codexProc)) {
+        wrappedOnEvent(event);
       }
       // If a child settled before its parent activity arrived, the held root
       // may become releasable only after the activity and its buffered child
@@ -3213,6 +3583,11 @@ export class CodexRuntime implements AgentRuntime {
     // SIGTERM echo on top. See issue #105.
     proc.exited.then((code) => {
       codexProc.exited = true;
+      this.rejectCompactControl(
+        codexProc,
+        new Error(`Codex process exited during context compaction with code ${code}`),
+      );
+      codexProc.disposeExtensionResources(`Codex process exited with code ${code}`);
       if (mcpCatalogRefreshTimer) {
         clearTimeout(mcpCatalogRefreshTimer);
         mcpCatalogRefreshTimer = null;
@@ -3252,7 +3627,7 @@ export class CodexRuntime implements AgentRuntime {
             if (!raw) continue;
             const text = stripAnsi(raw);
             withLogContext({ runtime: 'codex', runtimeSource }, () => {
-              console.error(`[codex-stderr] ${text}`);
+              console.error(`[codex-stderr] ${summarizeCodexValueForLog(text)}`);
             });
             classifyAndForwardCodexStderr(text, wrappedOnEvent);
           }
@@ -3272,7 +3647,15 @@ export class CodexRuntime implements AgentRuntime {
       const enableManagedRawEvents = runtimeSource === 'managed-provider'
         && !options.resumeSessionId;
       await initializeCodexRpc(codexProc.rpc, 15_000, enableManagedRawEvents);
-      await configureCodexSkillExtraRoots(codexProc.rpc, options.workspacePath);
+      const skillProjection = await configureCodexSkillExtraRoots(
+        codexProc.rpc,
+        options.workspacePath,
+        CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS,
+        extensionSnapshot ? extensionMaterialization.skillRoots : undefined,
+        extensionSnapshot ? extensionMaterialization.skills : [],
+        CODEX_SKILL_LIST_TIMEOUT_MS,
+      );
+      codexProc.loadedSkillNames = skillProjection.loadedSkillNames;
 
       // 2. Determine permission mode
       const isHeadlessAutomation =
@@ -3324,6 +3707,7 @@ export class CodexRuntime implements AgentRuntime {
           model: options.model || '',
           tools: [],
         });
+        publishMcpToolCatalog([]);
         scheduleMcpToolCatalogRefresh();
       } else {
         // New thread
@@ -3335,6 +3719,9 @@ export class CodexRuntime implements AgentRuntime {
           sandbox,
           developerInstructions: options.systemPromptAppend || null,
           ephemeral: options.ephemeral ?? false,
+          ...(extensionSnapshot?.dynamicTools.length
+            ? { dynamicTools: extensionSnapshot.dynamicTools }
+            : {}),
           ...(enableManagedRawEvents ? { experimentalRawEvents: true } : {}),
         };
         console.log(`[codex] RPC thread/start: ${JSON.stringify(summarizeCodexThreadParamsForLog(startParams))}`);
@@ -3348,6 +3735,7 @@ export class CodexRuntime implements AgentRuntime {
           model: result.model || '',
           tools: [],
         });
+        publishMcpToolCatalog([]);
         scheduleMcpToolCatalogRefresh();
       }
 
@@ -3370,14 +3758,14 @@ export class CodexRuntime implements AgentRuntime {
         throw new Error('Codex process exited before startup completed');
       }
 
-      // 4. Send initial message if provided
-      if (options.initialMessage) {
-        const clientUserMessageId = options.initialClientUserMessageId;
+      // 4. Send initial turn if provided
+      if (options.initialTurn) {
+        const clientUserMessageId = options.initialTurn.clientUserMessageId;
         if (!clientUserMessageId) {
           throw new Error('Codex initial root turn is missing clientUserMessageId');
         }
         this.beginRootTurnAdmission(codexProc, clientUserMessageId);
-        const input = buildCodexInput(options.initialMessage, options.initialImages);
+        const input = buildCodexInput(options.initialTurn.message, options.initialTurn.images);
         const turnResult = await codexProc.rpc.call('turn/start', buildCodexTurnStartParams({
           threadId: codexProc.threadId,
           input,
@@ -3420,7 +3808,7 @@ export class CodexRuntime implements AgentRuntime {
         } catch (err) {
           // collectCodexDiagnostics already degrades per-call; reaching here
           // means an unexpected error in the helper itself.
-          console.warn('[codex] collectDiagnostics failed:', err instanceof Error ? err.message : String(err));
+          console.warn('[codex] collectDiagnostics failed:', summarizeCodexErrorForLog(err));
         }
       })();
     } catch (err) {
@@ -3431,6 +3819,7 @@ export class CodexRuntime implements AgentRuntime {
       }
       // Flag must be set BEFORE proc.kill so proc.exited.then observes it.
       codexProc.intentionalKillDuringStartup = true;
+      codexProc.disposeExtensionResources('Codex startup failed');
       try { proc.kill(); } catch { /* ignore */ }
       codexProc.exited = true;
 
@@ -3481,6 +3870,66 @@ export class CodexRuntime implements AgentRuntime {
     } catch (error) {
       codexProc.activeRootTurnAdmission = null;
       throw error;
+    }
+  }
+
+  /**
+   * Managed Codex exposes compaction as a native control turn. Keep that turn
+   * out of the UnifiedEvent transcript and wait for its authoritative
+   * turn/completed terminal before resolving the Session operation.
+   */
+  async compactContext(process: RuntimeProcess): Promise<void> {
+    const codexProc = process as CodexProcess;
+    if (codexProc.exited) throw new Error('Codex process has exited');
+    if (codexProc.runtimeSource !== 'managed-provider') {
+      throw new Error('Native context compaction is only available for Managed Codex');
+    }
+    if (!codexProc.threadId) throw new Error('Managed Codex has no active thread to compact');
+    if (codexProc.compactControl || codexProc.activeRootTurnAdmission) {
+      throw new Error('Managed Codex is already running a Session operation');
+    }
+
+    let resolveTerminal!: () => void;
+    let rejectTerminal!: (error: Error) => void;
+    const terminal = new Promise<void>((resolve, reject) => {
+      resolveTerminal = resolve;
+      rejectTerminal = reject;
+    });
+    // Process-exit or protocol notifications may reject before rpc.call()
+    // settles. Attach a handler immediately so Node never observes a transient
+    // unhandled rejection; the awaited promise below still carries the error.
+    void terminal.catch(() => undefined);
+    const control: CodexCompactControl = {
+      turnId: '',
+      restartRequired: false,
+      resolve: resolveTerminal,
+      reject: rejectTerminal,
+    };
+    codexProc.compactControl = control;
+
+    const timeout = setTimeout(() => {
+      if (codexProc.compactControl === control) {
+        control.reject(new Error('Managed Codex context compaction timed out'));
+      }
+    }, CODEX_COMPACT_TIMEOUT_MS);
+
+    try {
+      await codexProc.rpc.call('thread/compact/start', {
+        threadId: codexProc.threadId,
+      }, 15_000);
+      await terminal;
+    } catch (error) {
+      // If the terminal handler already cleared ownership, the protocol gave
+      // us a definitive failed terminal and the process remains reusable. An
+      // RPC/timeout failure while we still own the control turn is ambiguous,
+      // so restart the process boundary before another user turn can enter.
+      if (codexProc.compactControl === control || control.restartRequired) {
+        if (codexProc.compactControl === control) codexProc.compactControl = null;
+        await this.stopSession(codexProc);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -3646,6 +4095,9 @@ export class CodexRuntime implements AgentRuntime {
     codexProc.completedSubAgentTurnsBeforeActivity.clear();
     codexProc.subAgentThreadsAwaitingActivity.clear();
     codexProc.subAgentActivitySeenBeforeTurnStart.clear();
+    codexProc.subAgentLifecycleByThread.clear();
+    codexProc.emittedSubAgentLifecycleByCard.clear();
+    codexProc.openedReasoningTracesByItem.clear();
     codexProc.codexV2InteractionDeliveryByCallId.clear();
     codexProc.exactUsageByTurn.clear();
     codexProc.subAgentInterruptsInFlight.clear();
@@ -3702,14 +4154,16 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   private completeMainTurn(codexProc: CodexProcess, events: UnifiedEvent[]): UnifiedEvent[] {
+    const lifecycleEvents = collectCodexSubAgentLifecycleEvents(codexProc);
+    const terminalEvents = [...lifecycleEvents, ...events];
     this.clearTurnLocalSubAgentState(codexProc);
     const admission = codexProc.activeRootTurnAdmission;
     if (admission && !admission.responseTurnId) {
-      admission.deferredTerminalEvents = events;
+      admission.deferredTerminalEvents = terminalEvents;
       return [];
     }
     codexProc.activeRootTurnAdmission = null;
-    return events;
+    return terminalEvents;
   }
 
   /**
@@ -3767,7 +4221,7 @@ export class CodexRuntime implements AgentRuntime {
           || codexProc.releaseHeldMainTurnOnExit
         ) return;
         console.warn(
-          `[codex] Child turn interrupt failed thread=${JSON.stringify(summarizeSensitiveValueForLog(threadId))}; restarting runtime to preserve the held root boundary: ${err instanceof Error ? err.message : String(err)}`,
+          `[codex] Child turn interrupt failed thread=${JSON.stringify(summarizeSensitiveValueForLog(threadId))}; restarting runtime to preserve the held root boundary: ${summarizeCodexErrorForLog(err)}`,
         );
         codexProc.releaseHeldMainTurnOnExit = true;
         await this.stopSession(codexProc);
@@ -3806,6 +4260,18 @@ export class CodexRuntime implements AgentRuntime {
     }
     codexProc.pendingRequests.delete(requestId);
 
+    if (pending.kind === 'host_tool_approval') {
+      if (decision === 'deny') {
+        codexProc.abortPendingHostCall(
+          pending.callId,
+          _reason || 'User denied the Managed Codex Host tool request.',
+        );
+      } else {
+        this.dispatchManagedCodexHostToolCall(codexProc, pending.callId);
+      }
+      return;
+    }
+
     const action = serializeCodexPermissionResponse(pending, decision, updatedInput, interrupt);
     if (action.type === 'error') {
       codexProc.rpc.respondError(pending.rpcId, action.code, action.message);
@@ -3817,6 +4283,8 @@ export class CodexRuntime implements AgentRuntime {
   async stopSession(process: RuntimeProcess): Promise<void> {
     const codexProc = process as CodexProcess;
     if (codexProc.exited) return;
+    this.rejectCompactControl(codexProc, new Error('Managed Codex context compaction was interrupted'));
+    codexProc.abortPendingHostCalls('Managed Codex Host tool call interrupted because the Session stopped');
 
     try {
       // 1. Interrupt current turn if any
@@ -3843,6 +4311,7 @@ export class CodexRuntime implements AgentRuntime {
       });
     } catch { /* ignore */ } finally {
       codexProc.pendingRequests.clear();
+      codexProc.disposeExtensionResources('Managed Codex Session stopped');
       codexProc.rpc.destroy();
     }
   }
@@ -3875,8 +4344,9 @@ export class CodexRuntime implements AgentRuntime {
         });
       } catch (err) {
         // Verbose detail to server log; safe enum code travels over SSE.
-        const reason = err instanceof Error ? err.message : String(err);
-        console.warn(`[codex] saveToolAttachment failed (toolUseId=${ctx.toolUseId}): ${reason}`);
+        console.warn(
+          `[codex] saveToolAttachment failed (toolUseId=${JSON.stringify(summarizeSensitiveValueForLog(ctx.toolUseId))}): ${summarizeCodexErrorForLog(err)}`,
+        );
         asyncEmit({
           kind: 'tool_attachment_update',
           toolUseId: ctx.toolUseId,
@@ -3887,6 +4357,87 @@ export class CodexRuntime implements AgentRuntime {
     })();
     trackInFlightSave(tracked);
     return attachment;
+  }
+
+  private rejectCompactControl(codexProc: CodexProcess, error: Error): void {
+    const control = codexProc.compactControl;
+    if (!control) return;
+    codexProc.compactControl = null;
+    if (!control.turnId || codexProc.currentTurnId === control.turnId) {
+      codexProc.currentTurnId = '';
+    }
+    control.reject(error);
+  }
+
+  /**
+   * Consume the native compact turn before ordinary root-turn parsing can
+   * create transcript events. Context usage notifications remain visible so
+   * the ring refreshes as soon as Codex reports the post-compact window.
+   */
+  private handleCompactControlNotification(
+    codexProc: CodexProcess,
+    method: string,
+    p: Record<string, unknown>,
+  ): boolean {
+    const control = codexProc.compactControl;
+    if (!control) return false;
+    const threadId = stringValue(p.threadId);
+    if (threadId && codexProc.threadId && threadId !== codexProc.threadId) return false;
+
+    if (method === 'turn/started') {
+      const turnId = stringValue(p.turnId) ?? stringValue(objectValue(p.turn).id);
+      if (!turnId) {
+        control.restartRequired = true;
+        this.rejectCompactControl(codexProc, new Error('Managed Codex compact turn has no id'));
+        return true;
+      }
+      if (control.turnId && control.turnId !== turnId) {
+        control.restartRequired = true;
+        this.rejectCompactControl(codexProc, new Error('Managed Codex compact turn id changed unexpectedly'));
+        return true;
+      }
+      control.turnId = turnId;
+      codexProc.currentTurnId = turnId;
+      return true;
+    }
+
+    if (method === 'turn/completed') {
+      const turn = objectValue(p.turn);
+      const turnId = stringValue(turn.id) ?? stringValue(p.turnId) ?? control.turnId;
+      if (control.turnId && turnId && control.turnId !== turnId) {
+        control.restartRequired = true;
+        this.rejectCompactControl(codexProc, new Error('Managed Codex compact terminal does not match its turn'));
+        return true;
+      }
+      control.turnId = turnId ?? control.turnId;
+      takeCodexExactTurnUsage(codexProc.exactUsageByTurn, control.turnId);
+      codexProc.compactControl = null;
+      if (!control.turnId || codexProc.currentTurnId === control.turnId) {
+        codexProc.currentTurnId = '';
+      }
+      const status = stringValue(turn.status) ?? 'completed';
+      if (status === 'completed') {
+        control.resolve();
+      } else {
+        const message = stringValue(objectValue(turn.error).message)
+          ?? `Managed Codex context compaction ended with status ${status}`;
+        control.reject(new Error(message));
+      }
+      return true;
+    }
+
+    if (method === 'thread/compacted') return true;
+    if (method === 'thread/tokenUsage/updated') return false;
+
+    // Compaction is not a conversational turn. Fail closed for any root-turn
+    // content emitted by a future app-server schema while keeping unrelated
+    // session/account/MCP notifications flowing normally.
+    return method.startsWith('item/')
+      || method.startsWith('command/')
+      || method.startsWith('process/')
+      || method.startsWith('rawResponse')
+      || method === 'turn/diff/updated'
+      || method === 'turn/plan/updated';
   }
 
   private parseNotification(
@@ -3912,6 +4463,7 @@ export class CodexRuntime implements AgentRuntime {
       const evtThreadId = stringValue(p.threadId);
       if (evtThreadId && codexProc.threadId && evtThreadId !== codexProc.threadId) {
         if (method === 'turn/started') {
+          observeCodexSubAgentTurnStarted(codexProc, evtThreadId, Date.now());
           const childTurnId = stringValue(p.turnId)
             ?? stringValue(objectValue(p.turn).id);
           const activityAlreadyArrived = (
@@ -3934,6 +4486,10 @@ export class CodexRuntime implements AgentRuntime {
             && objectValue(p.status).type === 'systemError'
           )
         ) {
+          const terminalStatus = method === 'turn/completed'
+            ? mapCodexChildTurnTerminalStatus(p.turn)
+            : 'failed';
+          observeCodexSubAgentTurnTerminal(codexProc, evtThreadId, terminalStatus, Date.now());
           codexProc.activeSubAgentTurns.delete(evtThreadId);
           if (
             codexProc.subAgentThreadsAwaitingActivity.has(evtThreadId)
@@ -3946,6 +4502,8 @@ export class CodexRuntime implements AgentRuntime {
         return null; // child lifecycle informs ownership but never drives it directly
       }
     }
+
+    if (this.handleCompactControlNotification(codexProc, method, p)) return null;
 
     switch (method) {
       // ── Thread lifecycle ──
@@ -4010,6 +4568,12 @@ export class CodexRuntime implements AgentRuntime {
         const completedTurnId = stringValue(objectValue(turn).id)
           ?? stringValue(p.turnId)
           ?? codexProc.currentTurnId;
+        if (completedTurnId) {
+          codexProc.abortPendingHostCalls?.(
+            'Managed Codex Host tool call expired at the turn boundary',
+            completedTurnId,
+          );
+        }
         if (completedTurnId && !this.observeRootTurnId(codexProc, completedTurnId)) {
           return {
             kind: 'turn_complete',
@@ -4095,21 +4659,19 @@ export class CodexRuntime implements AgentRuntime {
 
       // ── Reasoning streaming ──
       case 'item/reasoning/summaryTextDelta':
-        return {
-          kind: 'thinking_delta',
+        return buildCodexReasoningDeltaEvents(codexProc, p, {
           text: (p.delta as string) || '',
           index: (p.summaryIndex as number) || 0,
-          traceId: codexTraceId(p, undefined, `summary:${(p.summaryIndex as number) || 0}`),
-        };
+          suffix: `summary:${(p.summaryIndex as number) || 0}`,
+        });
 
       case 'item/reasoning/textDelta':
         // Raw reasoning content — also map to thinking for display
-        return {
-          kind: 'thinking_delta',
+        return buildCodexReasoningDeltaEvents(codexProc, p, {
           text: (p.delta as string) || '',
           index: (p.contentIndex as number) || 0,
-          traceId: codexTraceId(p, undefined, `content:${(p.contentIndex as number) || 0}`),
-        };
+          suffix: `content:${(p.contentIndex as number) || 0}`,
+        });
 
       // ── Plan streaming ──
       case 'item/plan/delta':
@@ -4215,6 +4777,11 @@ export class CodexRuntime implements AgentRuntime {
               input: buildCollabAgentInput(item),
             };
           }
+          case 'subAgentActivity':
+            // v2 emits a started notification before the terminal activity
+            // item that carries the correlation payload. The completed side is
+            // authoritative; this is an intentional no-op, not an unknown item.
+            return null;
           case 'plan':
             // PRD 0.2.15 — `plan` items stream via item/plan/delta as thinking_delta.
             // We need a thinking_start so the frontend opens a thinking block.
@@ -4238,7 +4805,7 @@ export class CodexRuntime implements AgentRuntime {
           case 'imageGeneration':
             return { kind: 'tool_use_start', toolUseId: item.id, toolName: 'ImageGeneration' };
           case 'reasoning':
-            return { kind: 'thinking_start', index: 0, traceId: codexTraceId(p, item.id, 'reasoning') };
+            return null;
           case 'agentMessage':
           case 'contextCompaction':
             return null;
@@ -4271,7 +4838,7 @@ export class CodexRuntime implements AgentRuntime {
           text?: string; summary?: string[];
           query?: string; action?: { type: string; url?: string; queries?: string[]; pattern?: string };
           path?: string; revisedPrompt?: string; savedPath?: string;
-          contentItems?: Array<{ type: string; text?: string; imageUrl?: string }>;
+          contentItems?: Array<{ type: string; text?: string; imageUrl?: string; audioUrl?: string }>;
           success?: boolean; review?: string;
           senderThreadId?: string; receiverThreadIds?: string[];
           prompt?: string; model?: string;
@@ -4392,6 +4959,13 @@ export class CodexRuntime implements AgentRuntime {
                   ctx,
                   asyncEmit,
                 ));
+              } else if (ci.type === 'inputAudio' && typeof ci.audioUrl === 'string') {
+                const ctx = attachCtx('audio/mpeg', undefined, `codex.dynamic.${item.namespace ?? ''}.${item.tool ?? ''}`);
+                attachments.push(this.scheduleAttachmentSave(
+                  { kind: 'url', url: ci.audioUrl },
+                  ctx,
+                  asyncEmit,
+                ));
               }
             }
             const content = texts.length === 0 && attachments.length === 0
@@ -4483,21 +5057,39 @@ export class CodexRuntime implements AgentRuntime {
             // Codex multi-agent v2 (0.144.1): spawn/message/interrupt tools are
             // represented solely by this terminal activity item. Its id is the
             // originating tool call id and agentThreadId is the correlation key.
+            const activity = item as Record<string, unknown>;
+            const interactionDelivery = activity.kind === 'interacted'
+              ? codexProc.codexV2InteractionDeliveryByCallId.get(item.id)
+              : undefined;
+            const activityThreadId = stringValue(activity.agentThreadId);
+            if (
+              interactionDelivery === 'trigger-turn'
+              && activityThreadId
+              && activityThreadId !== codexProc.threadId
+              && !codexProc.activeSubAgentTurns.has(activityThreadId)
+              && !codexProc.completedSubAgentTurnsBeforeActivity.has(activityThreadId)
+            ) {
+              // The activity can arrive before the follow-up child turn. Drop
+              // only the previous turn's terminal observation so rebinding the
+              // thread cannot make the new card look running before the native
+              // turn/started notification. If the new child turn already
+              // started (or even completed) its observation remains authoritative.
+              const previous = codexProc.subAgentLifecycleByThread.get(activityThreadId);
+              if (previous?.terminalStatus) {
+                codexProc.subAgentLifecycleByThread.delete(activityThreadId);
+              }
+            }
             const events = applyCodexSubAgentActivity(
               codexProc,
               stringValue(p.threadId),
               codexProc.threadId,
               item,
+              interactionDelivery,
             );
             if (!events) {
               console.warn('[codex] item/completed: malformed subAgentActivity');
             } else {
               codexProc.codexV2SubAgentActivityObserved = true;
-              const activity = item as Record<string, unknown>;
-              const activityThreadId = stringValue(activity.agentThreadId);
-              const interactionDelivery = activity.kind === 'interacted'
-                ? codexProc.codexV2InteractionDeliveryByCallId.get(item.id)
-                : undefined;
               codexProc.codexV2InteractionDeliveryByCallId.delete(item.id);
               if (
                 (activity.kind === 'started' || activity.kind === 'interacted')
@@ -4581,7 +5173,7 @@ export class CodexRuntime implements AgentRuntime {
             return { kind: 'log', level: 'info', message: '[codex] Hook prompt fragment injected' };
           }
           case 'reasoning':
-            return { kind: 'thinking_stop', index: 0, traceId: codexTraceId(p, item.id, 'reasoning') };
+            return takeCodexReasoningStopEvents(codexProc, p, item.id);
           case 'agentMessage': {
             const finalText = typeof item.text === 'string' ? item.text : '';
             const streamedText = codexProc.agentMessageTextById.get(item.id) || '';
@@ -4659,7 +5251,11 @@ export class CodexRuntime implements AgentRuntime {
       // ── Errors ──
       case 'error': {
         const error = p.error as { message: string } | undefined;
-        return { kind: 'log', level: 'error', message: error?.message || 'Unknown error' };
+        return {
+          kind: 'log',
+          level: 'error',
+          message: `[codex] Runtime error detail=${summarizeCodexValueForLog(error?.message || 'Unknown error')}`,
+        };
       }
 
       // ── Thread name / diff / plan updates ──
@@ -4722,6 +5318,133 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   // ─── Server-initiated request handling (approval) ───
+
+  private handleManagedCodexHostToolCall(
+    codexProc: CodexProcess,
+    rpcId: JsonRpcRequestId,
+    params: Record<string, unknown>,
+    onEvent: UnifiedEventCallback,
+  ): void {
+    const snapshot = codexProc.extensionSnapshot;
+    const dispatcher = snapshot?.hostToolDispatcher;
+    const threadId = stringValue(params.threadId);
+    const turnId = stringValue(params.turnId);
+    const callId = stringValue(params.callId);
+    const tool = stringValue(params.tool);
+    const reject = (message: string): void => {
+      codexProc.rpc.respond(rpcId, codexHostToolFailure(message));
+    };
+    if (!snapshot || !dispatcher) {
+      reject('Managed Codex Host tools are not enabled for this Session.');
+      return;
+    }
+    if (!threadId || threadId !== codexProc.threadId || !turnId || turnId !== codexProc.currentTurnId) {
+      reject('Stale Managed Codex Host tool request.');
+      return;
+    }
+    if (!callId || !tool || codexProc.pendingHostCalls.has(callId) || codexProc.settledHostCallIds.has(callId)) {
+      reject('Duplicate or invalid Managed Codex Host tool request.');
+      return;
+    }
+    const descriptor = dispatcher.descriptors.find(candidate => candidate.name === tool);
+    if (!descriptor) {
+      reject(`Unknown Managed Codex Host tool: ${tool}`);
+      return;
+    }
+    try {
+      const validation = managedCodexHostInputValidator
+        .getValidator(descriptor.inputSchema)(params.arguments);
+      if (!validation.valid) {
+        reject(`Invalid arguments for Managed Codex Host tool: ${tool}`);
+        return;
+      }
+    } catch {
+      reject(`Invalid schema for Managed Codex Host tool: ${tool}`);
+      return;
+    }
+
+    const controller = new AbortController();
+    const pending: PendingManagedCodexHostCall = {
+      rpcId,
+      callId,
+      threadId,
+      turnId,
+      params,
+      controller,
+      settled: false,
+    };
+    codexProc.pendingHostCalls.set(callId, pending);
+    if (codexProc.approvalPolicy !== 'never') {
+      const requestId = String(rpcId);
+      codexProc.pendingRequests.set(requestId, {
+        kind: 'host_tool_approval',
+        rpcId,
+        method: 'item/tool/call',
+        params,
+        callId,
+      });
+      onEvent({
+        kind: 'permission_request',
+        requestId,
+        toolName: tool,
+        toolUseId: callId,
+        input: objectValue(params.arguments),
+      });
+      return;
+    }
+    this.dispatchManagedCodexHostToolCall(codexProc, callId);
+  }
+
+  private dispatchManagedCodexHostToolCall(codexProc: CodexProcess, callId: string): void {
+    const pending = codexProc.pendingHostCalls.get(callId);
+    const snapshot = codexProc.extensionSnapshot;
+    const dispatcher = snapshot?.hostToolDispatcher;
+    if (!pending || pending.settled || !dispatcher) {
+      codexProc.abortPendingHostCall(callId, 'Managed Codex Host tool generation is unavailable.');
+      return;
+    }
+    const requestParams = pending.params;
+    const tool = stringValue(requestParams.tool);
+    if (!tool || !dispatcher.descriptors.some(candidate => candidate.name === tool)) {
+      codexProc.abortPendingHostCall(callId, 'Managed Codex Host tool request payload is unavailable.');
+      return;
+    }
+    pending.timeout = setTimeout(() => {
+      codexProc.abortPendingHostCall(callId, `Managed Codex Host tool timed out: ${tool}`);
+    }, MYAGENTS_TOOL_CALL_TIMEOUT_MS);
+    const call: ManagedCodexHostToolCall = {
+      processGeneration: codexProc.processGeneration,
+      threadId: pending.threadId,
+      turnId: pending.turnId,
+      callId: pending.callId,
+      tool,
+      arguments: requestParams.arguments,
+      signal: pending.controller.signal,
+    };
+    void dispatcher.dispatch(call).then(
+      result => {
+        const current = codexProc.pendingHostCalls.get(callId);
+        if (current !== pending || pending.settled || pending.controller.signal.aborted) return;
+        pending.settled = true;
+        codexProc.pendingHostCalls.delete(callId);
+        codexProc.settledHostCallIds.add(callId);
+        codexProc.rpc.respond(pending.rpcId, toCodexDynamicToolCallResult(result));
+      },
+      error => {
+        const current = codexProc.pendingHostCalls.get(callId);
+        if (current !== pending || pending.settled || pending.controller.signal.aborted) return;
+        pending.settled = true;
+        codexProc.pendingHostCalls.delete(callId);
+        codexProc.settledHostCallIds.add(callId);
+        codexProc.rpc.respond(
+          pending.rpcId,
+          codexHostToolFailure(error instanceof Error ? error.message : String(error)),
+        );
+      },
+    ).finally(() => {
+      if (pending.timeout) clearTimeout(pending.timeout);
+    });
+  }
 
   private handleServerRequest(
     codexProc: CodexProcess,
@@ -4870,7 +5593,7 @@ export class CodexRuntime implements AgentRuntime {
       }
 
       case 'item/tool/call':
-        codexProc.rpc.respondError(rpcId, -32000, 'Codex dynamic tool host is not supported by MyAgents yet');
+        this.handleManagedCodexHostToolCall(codexProc, rpcId, p, onEvent);
         break;
 
       case 'account/chatgptAuthTokens/refresh':

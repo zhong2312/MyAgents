@@ -86,6 +86,46 @@ describe('spaceCloud API errors', () => {
     expect(normalized.debugMessage).toContain('req_123');
   });
 
+  it('preserves the Rust reauth code and binding for the store transition fence', async () => {
+    const {
+      spaceErrorCode,
+      spaceErrorSessionBindingId,
+      spaceGetOfficial,
+    } = await loadSpaceCloud();
+    mocks.invoke.mockRejectedValueOnce({
+      code: 'SPACE_REAUTH_REQUIRED',
+      message: 'MyAgents Space login is required.',
+      cloudCode: 'SESSION_EXPIRED',
+      httpStatus: 401,
+      retryable: false,
+      credentialKind: 'user_session',
+      sessionBindingId: 'binding-old',
+      requestId: 'req_expired',
+    });
+
+    let thrown: unknown;
+    try {
+      await spaceGetOfficial('official');
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(spaceErrorCode(thrown)).toBe('SPACE_REAUTH_REQUIRED');
+    expect(spaceErrorSessionBindingId(thrown)).toBe('binding-old');
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe(
+      'Space 请求失败：请重新登录 MyAgents 社区',
+    );
+    expect(thrown).toMatchObject({
+      spaceCode: 'SPACE_REAUTH_REQUIRED',
+      cloudCode: 'SESSION_EXPIRED',
+      httpStatus: 401,
+      requestId: 'req_expired',
+      retryable: false,
+      sessionBindingId: 'binding-old',
+    });
+  });
+
   it('preserves Space business error codes for field-level handling', async () => {
     const { spaceCreateSpace, spaceErrorCode, spaceErrorMessage } = await loadSpaceCloud();
     mocks.invoke.mockResolvedValueOnce({

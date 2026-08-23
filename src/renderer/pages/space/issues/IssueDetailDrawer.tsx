@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, Copy, Download, FileText, Loader2, Paperclip
 
 import { spaceErrorMessage, type SpaceAttachment, type SpaceGoal, type SpaceRegisteredAgent, type SpaceSession } from '@/api/spaceCloud';
 import Markdown from '@/components/Markdown';
+import { FileIcon } from '@/components/file-icon';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import Tip from '@/components/Tip';
 import { useToast } from '@/components/Toast';
@@ -447,7 +448,8 @@ export function IssueDetailDrawer({
       key={attachment.id}
       className="group grid min-h-9 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-1.5 text-sm text-[var(--ink-secondary)]"
     >
-      <span className="flex min-w-0 items-baseline gap-2">
+      <span className="flex min-w-0 items-center gap-2">
+        <FileIcon name={attachment.name} />
         <span className="truncate font-medium text-[var(--ink-secondary)]">{attachment.name}</span>
         <small className="shrink-0 text-xs text-[var(--ink-subtle)]">{formatBytes(attachment.sizeBytes)}</small>
       </span>

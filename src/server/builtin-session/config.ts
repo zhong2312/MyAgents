@@ -1,6 +1,7 @@
 import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import type { BackgroundAgentPermissionMode, McpServerDefinition } from '../../shared/config-types';
 import type { OfficialToolId } from '../../shared/official-tools';
+import type { EffectiveProjectCapabilitySnapshot } from '../../shared/projectCapabilities';
 import {
   canResumeAcrossProviderBoundary,
   type ProviderHistoryEnv,
@@ -30,6 +31,7 @@ let currentReasoningEffort: string | undefined = undefined;
 let currentProviderEnv: ProviderEnv | undefined = undefined;
 let currentWorkbenchSystemPrompt: string | undefined = undefined;
 let pendingProviderHistoryBoundaryReset = false;
+let currentCapabilitySnapshot: EffectiveProjectCapabilitySnapshot | null = null;
 
 export const configState = {
   get currentMcpServers(): McpServerDefinition[] | null {
@@ -109,6 +111,12 @@ export const configState = {
   },
   set pendingProviderHistoryBoundaryReset(value: boolean) {
     pendingProviderHistoryBoundaryReset = value;
+  },
+  get currentCapabilitySnapshot(): EffectiveProjectCapabilitySnapshot | null {
+    return currentCapabilitySnapshot;
+  },
+  set currentCapabilitySnapshot(snapshot: EffectiveProjectCapabilitySnapshot | null) {
+    currentCapabilitySnapshot = snapshot;
   },
 };
 
@@ -491,6 +499,7 @@ export function snapshotConfig(): BuiltinConfigSnapshot {
     providerEnv: currentProviderEnv,
     pendingProviderHistoryBoundaryReset,
     frozenSdkMcpFingerprint,
+    capabilitySnapshot: currentCapabilitySnapshot,
     deferredRestartReasons: [...pendingConfigRestart],
   };
 }
@@ -509,4 +518,5 @@ export function resetConfigForTest(): void {
   currentReasoningEffort = undefined;
   currentProviderEnv = undefined;
   pendingProviderHistoryBoundaryReset = false;
+  currentCapabilitySnapshot = null;
 }

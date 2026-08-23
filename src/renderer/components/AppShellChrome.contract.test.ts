@@ -208,12 +208,17 @@ describe('App Shell chrome contract', () => {
     expect(sidebar).toContain('<HistorySearchOverlayFrame onClose={handleSearchClose}>');
     expect(sidebar).toContain('<Suspense fallback={<HistorySearchOverlayFallback onClose={handleSearchClose} />}>');
     expect(sidebar).not.toContain('<Suspense fallback={null}>\n          <HistorySearchOverlayContent');
+    expect(sidebar).toContain('data-history-search-fallback-filters');
+    expect(sidebar).toContain('data-history-search-fallback-compact');
+    expect(sidebar).not.toContain('initialMode="search"');
 
     expect(overlay).toContain("import { Virtuoso } from 'react-virtuoso'");
     expect(overlay).not.toContain('<OverlayBackdrop');
     expect(overlay).not.toContain('overlayFadeIn');
     expect(overlay).not.toContain('overlayPanelIn');
     expect(overlay).toContain('data={browseRows}');
+    expect(overlay).toContain('data-history-search-compact-trigger');
+    expect(overlay).toContain('data-history-search-expanding-surface');
     expect(overlay).not.toContain('filteredSessions.map');
     expect(overlay).not.toContain('task-center-overlay-open');
     expect(storeProjection).toContain("reason: 'global-sidebar-search', silent: true");

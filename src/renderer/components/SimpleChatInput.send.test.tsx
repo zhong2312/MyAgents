@@ -27,6 +27,14 @@ const workspaceMocks = vi.hoisted(() => ({
   },
 }));
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 vi.mock('@/config/useConfigData', () => ({
   useConfigData: () => ({ config: { chatSendShortcut: 'enter' } }),
 }));
@@ -202,6 +210,229 @@ describe('SimpleChatInput send paths', () => {
     }
   });
 
+  it('keeps product and workspace actions while hiding SDK system commands', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    try {
+      renderInput({
+        showBuiltinSdkSlashCommands: false,
+        onSlashAction: vi.fn(),
+        workspaceSlashCommands: [
+          {
+            name: 'ship-it',
+            description: 'Workspace command',
+            source: 'custom',
+          },
+          {
+            name: 'apple-notes',
+            description: 'Project Skill',
+            source: 'skill',
+            scope: 'project',
+          },
+        ],
+      });
+
+      const textarea = screen.getByPlaceholderText('输入消息，使用 @ 引用文件，/ 使用技能...');
+      await user.type(textarea, '/');
+
+      expect(await screen.findByText('/goal')).toBeInTheDocument();
+      expect(screen.getByText('/ship-it')).toBeInTheDocument();
+      expect(screen.getByText('/apple-notes')).toBeInTheDocument();
+      expect(screen.getByText('skill')).toBeInTheDocument();
+      expect(screen.queryByText('plugin')).not.toBeInTheDocument();
+      expect(screen.queryByText('/compact')).not.toBeInTheDocument();
+      expect(screen.queryByText('/context')).not.toBeInTheDocument();
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
+  it('filters runtime-blind Launcher scan results for non-builtin execution', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    workspaceMocks.service.listSlashCommands.mockResolvedValue({
+      success: true,
+      commands: [
+        { name: 'compact', description: 'SDK compact', source: 'builtin' },
+        { name: 'context', description: 'SDK context', source: 'builtin' },
+        { name: 'ship-it', description: 'Workspace command', source: 'custom' },
+        { name: 'apple-notes', description: 'Project Skill', source: 'skill', scope: 'project' },
+      ],
+      globalSkillFolderNames: [],
+    });
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    try {
+      renderInput({
+        mode: 'launcher',
+        workspacePath: '/tmp/workspace',
+        showBuiltinSdkSlashCommands: false,
+        onSlashAction: vi.fn(),
+        sdkSlashCommands: [{
+          name: 'plugin:review',
+          description: 'Builtin SDK plugin command',
+          source: 'sdk',
+        }],
+      });
+
+      const textarea = screen.getByRole('textbox');
+      await user.type(textarea, '/');
+
+      expect(await screen.findByText('/goal')).toBeInTheDocument();
+      expect(screen.getByText('/ship-it')).toBeInTheDocument();
+      expect(screen.getByText('/apple-notes')).toBeInTheDocument();
+      expect(screen.queryByText('/compact')).not.toBeInTheDocument();
+      expect(screen.queryByText('/context')).not.toBeInTheDocument();
+      expect(screen.queryByText('/plugin:review')).not.toBeInTheDocument();
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
+  it('shows a Command display name but inserts its stable invocation name', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    try {
+      renderInput({
+        workspaceSlashCommands: [{
+          name: '中文 总结',
+          invocationName: '中文-总结',
+          description: '总结当前工作',
+          source: 'custom',
+        }],
+        showBuiltinSdkSlashCommands: false,
+      });
+
+      const textarea = screen.getByRole('textbox');
+      await user.type(textarea, '/');
+      await user.click(await screen.findByText('/中文 总结'));
+
+      expect(textarea).toHaveValue('/中文-总结 ');
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
+  it('does not let an older Launcher scan overwrite a newer invalidation result', async () => {
+    vi.useFakeTimers();
+    const older = deferred<unknown>();
+    const newer = deferred<unknown>();
+    workspaceMocks.service.listSlashCommands
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    try {
+      renderInput({
+        mode: 'launcher',
+        workspacePath: '/tmp/workspace',
+        showBuiltinSdkSlashCommands: false,
+      });
+      act(() => {
+        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
+        vi.advanceTimersByTime(100);
+      });
+
+      newer.resolve({
+        success: true,
+        commands: [{
+          name: '新 展示名',
+          invocationName: '新-指令',
+          description: '',
+          source: 'custom',
+        }],
+        globalSkillFolderNames: [],
+      });
+      await act(async () => { await newer.promise; });
+
+      older.resolve({
+        success: true,
+        commands: [{ name: '旧展示名', invocationName: '旧-指令', description: '', source: 'custom' }],
+        globalSkillFolderNames: [],
+      });
+      await act(async () => { await older.promise; });
+
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: '/' } });
+      expect(screen.getByText('/新 展示名')).toBeInTheDocument();
+      expect(screen.queryByText('/旧展示名')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
+  it('dispatches the Managed Codex compact command as a client action', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const onSlashAction = vi.fn();
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    try {
+      const onSend = renderInput({
+        showBuiltinSdkSlashCommands: false,
+        onSlashAction,
+        clientActionSlashCommands: [{
+          name: 'compact',
+          description: 'Compact',
+          source: 'client',
+        }],
+      });
+      const textarea = screen.getByPlaceholderText('输入消息，使用 @ 引用文件，/ 使用技能...');
+      await user.type(textarea, '/');
+      await user.click(await screen.findByText('/compact'));
+
+      expect(onSlashAction).toHaveBeenCalledWith('compact');
+      expect(onSend).not.toHaveBeenCalled();
+      expect(textarea).toHaveValue('');
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
   it('sends text from the Chat input surface', async () => {
     const user = userEvent.setup();
     const onSend = renderInput();
@@ -235,6 +466,30 @@ describe('SimpleChatInput send paths', () => {
     expect(screen.getByText('tavily-search')).toBeInTheDocument();
     expect(toolsButton).toHaveTextContent('2');
     expect(screen.queryByText('browser_click')).not.toBeInTheDocument();
+  });
+
+  it('keeps workspace MCP configuration editable with Managed Codex builtin input chrome', async () => {
+    await i18n.changeLanguage('en-US');
+    const user = userEvent.setup();
+    renderInput({
+      runtime: 'builtin',
+      runtimeMcpTools: ['mcp__playwright__browser_click'],
+      mcpServers: [
+        { id: 'playwright', name: 'Playwright', description: 'Browser automation' },
+        { id: 'configured-only', name: 'Configured only' },
+      ],
+      globalMcpEnabled: ['playwright', 'configured-only'],
+      workspaceMcpEnabled: ['playwright', 'configured-only'],
+    });
+
+    const toolsButton = screen.getByTitle('Use tools');
+    await user.click(toolsButton);
+
+    expect(toolsButton).toHaveTextContent('2');
+    const playwrightRow = screen.getByText('Playwright').parentElement?.parentElement;
+    expect(playwrightRow).not.toBeNull();
+    expect(playwrightRow?.querySelector('button')).not.toBeNull();
+    expect(screen.getByText('Configured only')).toBeInTheDocument();
   });
 
   it('shows Goal and scheduled Task state independently', async () => {

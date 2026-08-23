@@ -17,6 +17,11 @@ import {
 } from '../../../shared/providerExecution';
 import { buildAvailableProvidersJson } from '../../../shared/availableProvidersProjection';
 import {
+    isImageUnderstandingModelSelectable,
+    isImageUnderstandingToolConfigured,
+    type OfficialToolSettings,
+} from '../../../shared/official-tools';
+import {
     isBrowserDevMode,
     ensureConfigDir,
     getConfigDir,
@@ -501,4 +506,25 @@ export function modelSupportsModality(
     const mods = lookupModelInputModalities(provider, modelId);
     if (!mods) return true; // unknown → optimistic default-allow
     return mods.includes(kind);
+}
+
+/**
+ * Renderer mirror of the server's image-helper selection policy. A configured
+ * model is usable when its provider is callable and its offering row does not
+ * explicitly exclude image input; omitted modality metadata stays allowed
+ * because selecting/saving the helper is an explicit user confirmation.
+ */
+export function isImageUnderstandingSelectionAvailable(
+    providers: readonly Provider[],
+    apiKeys: Record<string, string>,
+    verifyStatus: Record<string, ProviderVerifyStatus>,
+    settings: OfficialToolSettings | undefined,
+): boolean {
+    if (!isImageUnderstandingToolConfigured(settings)) return false;
+    const selection = settings?.imageUnderstanding;
+    const provider = providers.find(item => item.id === selection?.providerId);
+    if (!provider || isRuntimeBackedProvider(provider)) return false;
+    if (!isProviderAvailable(provider, apiKeys, verifyStatus)) return false;
+    const model = provider.models.find(item => item.model === selection?.model);
+    return isImageUnderstandingModelSelectable(model);
 }

@@ -122,7 +122,7 @@ foreach ($dir in $dirsToClean) {
 }
 
 # 创建占位符资源目录（满足 Tauri bundle 阶段的资源校验）。
-# server-dist.js / plugin-bridge-dist.mjs / cli/myagents.js 在下面的
+# server-dist.js / plugin-bridge-dist.mjs / cli/myagents.cjs 在下面的
 # [2/3] 步骤显式生成；Tauri build 阶段会禁掉 beforeBuildCommand，避免重复打包。
 #   - claude-agent-sdk/ : SDK native binary 占位目录
 #   - sharp-runtime/ : sharp 在 dev 走 walk-up 加载，目录只是 bundler 的资源指针
@@ -172,6 +172,18 @@ try {
     exit 1
 }
 Write-ColorOutput "✓ Rust toolchain ready" "Green"
+Write-Host ""
+
+# Prepare the same target-locked document Worker/OCR/PDFium projection used by
+# release builds. The prepare owner is fingerprinted, so a warm invocation is
+# an offline no-op instead of repeating downloads, extraction, or signing.
+Write-ColorOutput "[准备] 准备离线文档转换资源 (x86_64-pc-windows-msvc)..." "Blue"
+& node "$PROJECT_DIR\scripts\prepare-document-processing.mjs" "x86_64-pc-windows-msvc"
+if ($LASTEXITCODE -ne 0) {
+    Write-ColorOutput "✗ 文档转换资源准备失败" "Red"
+    exit 1
+}
+Write-ColorOutput "✓ 文档转换资源 ready" "Green"
 Write-Host ""
 
 # TypeScript 检查

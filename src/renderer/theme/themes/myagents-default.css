@@ -40,6 +40,7 @@ html[data-theme-id='myagents-default'][data-color-scheme='light'] {
 
   --paper: #faf6ee;
   --global-sidebar-bg: #f5efe5;
+  --global-sidebar-bg-a0: rgb(245 239 229 / 0);
   --paper-elevated: #fffcf7;
   --message-user-bg: #fffefa;
   --paper-inset: #e8dccf;
@@ -157,6 +158,7 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] {
 
   --paper: #1a1614;
   --global-sidebar-bg: #181412;
+  --global-sidebar-bg-a0: rgb(24 20 18 / 0);
   --paper-elevated: #242018;
   --message-user-bg: #2a251d;
   --paper-inset: #12100e;

@@ -69,12 +69,14 @@ export interface UpstreamConfig {
    *  `reasoning.effort` (responses); absent = omitted entirely. */
   reasoningEffort?: string;
   /** OpenAI prompt-cache affinity. Active session bridges set this; one-shot
-   *  bridges leave it off. `disablePromptCacheKey` is a per-token compatibility
-   *  downgrade hook owned by bridge-registry. */
+   *  bridges leave it off. Compatibility downgrade hooks are generation-local
+   *  state owned by bridge-registry. */
   cacheAffinity?: {
     sessionId?: string;
     promptCacheKeyMode?: 'off' | 'session';
     promptCacheKeyDisabled?: boolean;
     disablePromptCacheKey?: () => void;
+    promptCacheBreakpointsDisabled?: boolean;
+    disablePromptCacheBreakpoints?: () => void;
   };
 }

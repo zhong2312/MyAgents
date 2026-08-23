@@ -3,7 +3,13 @@
 import type { AnthropicStreamEvent, AnthropicResponse } from '../types/anthropic';
 import type { ResponsesStreamEvent, ResponsesUsage } from '../types/openai-responses';
 import { generateMessageId, generateToolUseId } from '../utils/id';
-import { emptyUsage, toAnthropicUsage, type UsageSnapshot } from './usage';
+import {
+  emptyUsage,
+  fromResponsesUsage,
+  toAnthropicUsage,
+  type UsageSnapshot,
+  type UsageWarningLogger,
+} from './usage';
 
 interface FunctionCallBuffer {
   callId: string;
@@ -20,15 +26,24 @@ export class ResponsesStreamTranslator {
   private hasEmittedStart = false;
   private hasFinished = false;
   private usage: UsageSnapshot = emptyUsage();
+  private usageWarning: UsageWarningLogger | undefined;
 
   // Track function calls by output_index
   private functionCallBuffers = new Map<number, FunctionCallBuffer>();
   // Track reasoning block
   private hasActiveReasoning = false;
 
-  constructor(requestModel: string) {
+  constructor(requestModel: string, usageWarning?: UsageWarningLogger) {
     this.messageId = generateMessageId();
     this.requestModel = requestModel;
+    let warned = false;
+    this.usageWarning = usageWarning
+      ? (message) => {
+          if (warned) return;
+          warned = true;
+          usageWarning(message);
+        }
+      : undefined;
   }
 
   /** Feed a Responses API SSE event, returns Anthropic SSE events to emit */
@@ -200,13 +215,7 @@ export class ResponsesStreamTranslator {
     this.hasFinished = true;
 
     if (response.usage) {
-      this.usage = {
-        inputTokens: response.usage.input_tokens ?? 0,
-        outputTokens: response.usage.output_tokens ?? 0,
-        cacheReadInputTokens: response.usage.input_tokens_details?.cached_tokens ?? 0,
-        cacheCreationInputTokens: 0,
-        reasoningTokens: response.usage.output_tokens_details?.reasoning_tokens ?? 0,
-      };
+      this.usage = fromResponsesUsage(response.usage, this.usageWarning);
     }
 
     events.push({
@@ -241,13 +250,7 @@ export class ResponsesStreamTranslator {
 
     // Extract usage
     if (response.usage) {
-      this.usage = {
-        inputTokens: response.usage.input_tokens ?? 0,
-        outputTokens: response.usage.output_tokens ?? 0,
-        cacheReadInputTokens: response.usage.input_tokens_details?.cached_tokens ?? 0,
-        cacheCreationInputTokens: 0,
-        reasoningTokens: response.usage.output_tokens_details?.reasoning_tokens ?? 0,
-      };
+      this.usage = fromResponsesUsage(response.usage, this.usageWarning);
     }
 
     // Determine stop reason

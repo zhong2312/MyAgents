@@ -40,6 +40,7 @@ const JSON_EVENTS = new Set([
     'chat:subagent-tool-result-start',
     'chat:subagent-tool-result-delta',
     'chat:subagent-tool-result-complete',
+    'chat:subagent-status',
     'chat:subagent-tool-attachment-update', // #0.2.29 — nested sub-agent attachment async fulfillment
     'chat:system-init',
     'chat:slash-commands', // SDK-provided slash commands (including plugin skills)

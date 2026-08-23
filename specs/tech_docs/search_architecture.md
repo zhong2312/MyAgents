@@ -64,7 +64,7 @@ MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建�
 | `session_indexer.rs` | Session 索引构建、reindex、delete、查询 |
 | `file_indexer.rs` | 工作区文件索引：懒加载 + 磁盘 manifest + 增量刷新 |
 | `watcher.rs` | `notify-debouncer-full` 文件系统观察者（5s 滑动去抖） |
-| `searcher.rs` | 序列化类型（`SessionSearchHit`/`FileSearchHit`/`FileMatchLine`） |
+| `searcher.rs` | 序列化类型（`SessionSearchHit`/`FolderSearchHit`/`FileSearchHit`/`FileMatchLine`） |
 | `util.rs` | UTF-8 ↔ UTF-16 offset 转换 + char boundary 安全夹紧 |
 
 ## Tauri IPC 命令 (`src-tauri/src/lib.rs`)
@@ -179,9 +179,13 @@ Session 文件由 Node.js Sidecar 写入，索引在 Rust。两个显而易见�
 工作区文件索引有两层磁盘状态：
 
 - Tantivy index 本体：`~/.myagents/search_index/workspaces/<fnv-hash>/`
-- `.file_index_manifest.json`：保存 `schemaVersion`、`workspace` 和 `rel_path → (mtimeMs, size)` 快照
+- `.file_index_manifest.json`：保存独立的 `manifestVersion`、`schemaVersion`、`workspace`、可搜索的 workspace-relative folder path 集合，以及 `rel_path → (mtimeMs, size)` 文件快照
 
-`FileIndexManager::search` 在进程内 slot 为空时优先打开磁盘已有 index + manifest；如果 index/manifest 缺失、版本不匹配、损坏，或该 workspace slot 正在被后台 refresh / cold build 占用，前台搜索 **不等待冷建**，而是走 bounded direct scan fallback：按现有扫描过滤规则直接遍历当前文件系统，找到前 `limit` 个命中文件就返回。
+`FileIndexManager::search` 在进程内 slot 为空时优先打开磁盘已有 index + manifest；如果 index/manifest 缺失、版本不匹配、损坏，或该 workspace slot 正在被后台 refresh / cold build 占用，前台搜索 **不等待冷建**，而是走 bounded direct scan fallback。Direct scan 在同一次有界目录遍历中发现 folder metadata，并只读取至多 `DIRECT_SCAN_MAX_FILES` 个候选文件；`DIRECT_SCAN_MAX_ENTRIES` 同时约束纯目录树和文件 hit 已满后的遍历，防止目录搜索绕开前台预算。
+
+Folder 不是 Tantivy 内容文档。cold direct scan 与 warm manifest 共用 `search_folder_paths`：普通 query 只匹配 basename，含 `/` 或 `\` 的 query 匹配规范化 relative path；排序依次为 basename exact、prefix、contains、path contains，再按深度和 path 稳定排序。Folder 与 file 各有独立上限（folder 固定 50，file 使用调用方 `limit`），不会互相抢预算。隐藏目录、skip dir 与 symlink 继续服从同一 workspace scan policy；后代文件命中不会带出祖先 folder。
+
+`manifestVersion` 只管理 manifest shape，和 Tantivy `SCHEMA_VERSION` 分离。缺少 folder collection 的旧 manifest 会明确失效并安全重建；仅修改 manifest shape 不应无理由 bump Tantivy schema。
 
 这样有两个效果：
 
@@ -194,14 +198,14 @@ Session 文件由 Node.js Sidecar 写入，索引在 Rust。两个显而易见�
 
 1. 立即调用 `searchWorkspaceFiles(query, workspace)`，从当前可用 index 返回结果
 2. 后台调用 `refreshWorkspaceFileIndex(workspace)`，只扫描元数据并 diff
-3. 如果 `changed > 0` 且当前 query 仍有效，再调用一次 `searchWorkspaceFiles` 替换结果
+3. 当前 query 仍有效时再次调用 `searchWorkspaceFiles`，用一个 `{ folderHits, hits }` response 原子替换结果
 
-冷工作区的首次查询走 direct scan fallback，不在前台全量建索引；已有磁盘 index 的工作区会先显示可能稍旧的 Tantivy 结果，再在后台收敛到最新文件系统状态。前端不在 Tab mount 或空搜索模式下预热/刷新索引，避免重 IO/CPU 工作排在用户真实 query 前面。
+冷工作区的首次查询走 direct scan fallback，不在前台全量建索引；已有磁盘 index 的工作区会先显示可能稍旧的 Tantivy/manifest 结果，再在后台收敛到最新文件系统状态。刷新后无条件重搜当前 query，是因为新增/删除空目录不会改变 `changedFiles`，但仍必须刷新 folder hits。两类 hit 共用同一个 request id fence 和 React state commit，不能先后拼接。前端不在 Tab mount 或空搜索模式下预热/刷新索引，避免重 IO/CPU 工作排在用户真实 query 前面。
 
 核心函数 `FileIndexManager::refresh_or_create`：
 
 - **冷路径**（显式 refresh 且无可用 index）：全量扫描 → 构建 Tantivy 索引（大型资料库可能需要几十秒或更久，但不阻塞前台 search）
-- **热路径**（显式刷新时）：仅遍历元数据 → 按 `(rel_path → (mtime_ms, size))` diff → 只对变更文件执行 `delete_term + add_document`
+- **热路径**（显式刷新时）：仅遍历元数据 → 按 `(rel_path → (mtime_ms, size))` diff → 只对变更文件执行 `delete_term + add_document`；folder collection 即使只发生空目录变化也会更新 manifest
 
 并发模型：全局 map 只短暂锁住以取得 `workspace → slot`；真正的刷新 / 冷建在该 workspace 的 slot 锁内执行，并由 `SearchEngine` 包进 `tokio::task::spawn_blocking`。前台 `search` 使用 `try_lock`：拿到锁才用 Tantivy index，拿不到锁直接 fallback scan。后果：同一 workspace 的 index 写入仍保持串行一致性，不同 workspace 互不排队，也不会把同步 IO/CPU 工作压在 async runtime 线程上；同时大型 workspace 的后台建索引不会堵住用户继续输入新 query。
 
@@ -252,9 +256,9 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 
 | 入口 | 文件 | 触发路径 |
 |------|------|---------|
-| **Session 搜索 Overlay** | `components/global-sidebar/GlobalSidebar.tsx`（稳定 shell）+ `components/HistorySearchOverlayContent.tsx`（lazy content） | 全局侧栏搜索按钮 → `initialMode='search'` 自动聚焦输入框 |
-| **文件搜索模式** | `components/DirectoryPanel.tsx` facade → `components/directory-panel/DirectoryPanel.tsx` + `hooks/useDirectorySearch.ts` | 侧边栏搜索按钮切换 mode → 用户输入 query → `searchWorkspaceFiles` 立即返回 → 后台 `refreshWorkspaceFileIndex` → 有变化时重搜 |
-| **结果项** | `search/SessionSearchItem.tsx`, `search/FileSearchResults.tsx` | 渲染 hit，点击跳转 session / 预览文件 / 在文件目录中展示 |
+| **Session 搜索 Overlay** | `components/global-sidebar/GlobalSidebar.tsx`（稳定 shell）+ `components/HistorySearchOverlayContent.tsx`（lazy content） | 全局侧栏搜索按钮 → 以浏览态打开，右侧紧凑搜索框获得键盘焦点 → 用户激活后向左展开并聚焦输入框 |
+| **文件搜索模式** | `components/DirectoryPanel.tsx` facade → `components/directory-panel/DirectoryPanel.tsx` + `hooks/useDirectorySearch.ts` | 侧边栏搜索按钮切换 mode → 用户输入 query → `searchWorkspaceFiles` 原子返回 folder/file → 后台 `refreshWorkspaceFileIndex` → 重搜当前 query |
+| **结果项** | `search/SessionSearchItem.tsx`, `search/FileSearchResults.tsx` | Folder 固定置于 file 上方；folder 点击定位并展开目录，file 点击预览，chunk 点击预览并定位行 |
 | **文件跳转定位行** | `components/directory-panel/DirectoryPanel.tsx` + `FilePreviewModal.tsx` + `MonacoEditor.tsx` | `FileSearchResults` 触发 `FilePreviewFocusTarget` 事件，已打开 editor 也会重新 `revealLineInCenter()`；`initialLineNumber` 仅保留为兼容字段 |
 | **文件树定位** | `components/directory-panel/DirectoryPanel.tsx` + `workspace-tree/WorkspaceTreeViewport.tsx` | 搜索结果 path-based reveal，逐层展开祖先目录，通过 Virtuoso `scrollToIndex` 滚动并消费 `revealRequest` |
 | **高亮渲染** | `search/SearchHighlight.tsx` | 消费 `[start, end][]` UTF-16 offsets |
@@ -267,18 +271,19 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 
 ## 工作区文件搜索结果导航
 
-搜索结果导航是 **renderer-side 交互协议**，不是 Rust 搜索引擎的一部分。Rust `SearchEngine` 只负责返回 `FileSearchHit` / `FileMatchLine`；预览、行定位、右键菜单、回到文件树均复用现有前端文件系统抽象和目录树，不新增 Sidecar HTTP 端点，也不新增 Rust IPC 命令。
+搜索结果导航是 **renderer-side 交互协议**，不是 Rust 搜索引擎的一部分。Rust `SearchEngine` 负责在同一个 `FileSearchResult` 中返回 `FolderSearchHit`、`FileSearchHit` 与 `FileMatchLine`；预览、行定位、右键菜单、回到文件树均复用现有前端文件系统抽象和目录树，不新增 Sidecar HTTP 端点，也不新增 Rust IPC 命令。
 
 关键不变量：
 
-- **路径归一化**：`DirectoryPanel` 在写入 search UI state 前调用 `normalizeFileSearchHits`，把 Windows `\` 转为 `/`。后续 active target、ancestor 计算、文件树 reveal 都只处理 workspace-relative slash path。
+- **路径归一化**：`useDirectorySearch` 在一次 state commit 前调用 `normalizeFolderSearchHits` / `normalizeFileSearchHits`，把 Windows `\` 转为 `/`。后续 active target、ancestor 计算、文件树 reveal 都只处理 workspace-relative slash path。
 - **结果菜单 path-based**：搜索结果右键菜单维护独立的 `SearchResultContextMenuState`，菜单固定为 `预览`、`在文件目录中展示`、`打开所在文件夹`，不依赖 `findInTree(...)` 反查已加载 node，也不复用普通文件树的删除 / 重命名等高风险菜单项。
-- **Reveal-in-tree**：`handleRevealSearchResultInTree(path)` 用 `ancestorDirectoryPaths(path)` 逐层 `openPath`，必要时通过现有 `expandDir` 加载目录。目标文件 node 找到后才退出搜索模式、选中节点，并发送 `treeRevealRequest`。
+- **Reveal-in-tree**：`handleRevealSearchResultInTree(path)` 用 `ancestorDirectoryPaths(path)` 逐层 `openPath`，必要时通过现有 `expandDir` 加载目录。目标 node 找到后才退出搜索模式、选中节点，并发送 `treeRevealRequest`；folder hit 额外传入 `expandTargetDirectory`，使目标目录本身也打开并完成 lazy load。退出搜索不清空 query。
 - **Reveal 请求消费**：`WorkspaceTreeViewport` 在 `rows` 中找到目标 path 后调用 Virtuoso `scrollToIndex({ align: 'center', behavior: 'smooth' })`，随后触发 `onRevealHandled(id)` 清掉请求，避免树重渲染后旧 reveal 回放。
 - **取消语义**：新的 reveal 请求会让旧请求返回 `cancelled`，不弹错误 toast；只有目标确实 missing 才提示 `文件不存在或已删除`。
 - **Preview focus event**：点击搜索命中行会生成 `FilePreviewFocusTarget`。该事件通过 `DirectoryPanel -> Chat/FileActionContext -> FilePreviewModal -> MonacoEditor` 传递。Monaco 侧以 focus target 对象身份去重，而不是只看 `requestId`，所以不同来源不会碰撞，同一行重复点击也能重新定位。
 - **Markdown 源码定位**：Markdown rendered preview 没有稳定源码行号映射。带 search focus target 打开 Markdown 时切到 edit/source Monaco 视图定位，不做 rendered DOM 反推。
-- **展开状态保留**：新 query 首次结果默认展开全部命中文件；同 query 后台 refresh 使用 `mergeExpandedFilesAfterRefresh`，保留用户手动折叠/展开，新增命中文件默认展开，消失文件被移除。
+- **Chunk 渐进披露**：每个 file 默认渲染前 2 条真实正文命中，显式“展开”后渲染 Rust 本次响应提供的全部命中（最多 10 条），并可“收起”回 2 条；file header 不再有把 chunk 全隐藏的 chevron。filename-only file 的 `matchCount` 为 0，只显示并高亮文件名，不显示 badge、空 chunk 或展开控件。
+- **展开状态保留**：expanded set 只表达“2 条 → 最多 10 条”。新 query、退出再进入 search 都清空；同 query 后台 refresh 使用 `mergeExpandedFilesAfterRefresh`，只保留仍存在文件的手动 expanded path，新增命中文件保持默认 2 条，消失文件被移除。Folder 没有折叠状态。
 
 ## 与 Pit-of-Success 模块的关系
 
@@ -308,6 +313,8 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 | 搜索命中同文件不跳转 | 右侧仍停在上一次行号 | 只依赖一次性的 `initialLineNumber` 或 remount editor | 使用 `FilePreviewFocusTarget` 事件驱动已 mount Monaco |
 | 点击“在文件目录中展示”后偶发跳旧文件 | 目录树重渲染时旧 reveal 再次执行 | `revealRequest` 没有被消费清空 | `WorkspaceTreeViewport` 成功 `scrollToIndex` 后调用 `onRevealHandled` |
 | Windows 搜索结果无法在树中定位 | 搜索 hit path 带 `\`，文件树 path 带 `/` | 前端没有在搜索结果入口归一化 path | `normalizeFileSearchHits` 入 state 前统一转 slash path |
+| 新增空目录后搜索不刷新 | 文件内容没有变化，`changedFiles` 仍为 0 | SWR 只在 file diff 非零时重搜 | refresh 完成后只要 query generation 仍有效就重搜，并原子提交 folder/file |
+| 文件名命中显示“1 条正文” | 后端用 `max(1)` 把 filename hit 冒充内容 hit | 文件对象命中与正文 chunk 混为一个计数 | filename-only 的 `matchCount = 0`；UI 不渲染 badge/chunk |
 
 ## 相关代码索引
 
@@ -317,4 +324,4 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 - 前端组件：`src/renderer/components/search/`
 - 搜索导航 helper：`src/renderer/utils/workspaceSearchNavigation.ts`
 - 文件预览跳转：`src/renderer/components/FilePreviewModal.tsx`, `MonacoEditor.tsx`
-- 产品需求：`specs/prd/prd_0.1.65_full_text_search.md`, `specs/prd/prd_0.2.31_workspace_search_result_navigation.md`
+- 产品需求：`specs/prd/prd_0.1.65_full_text_search.md`, `specs/prd/prd_0.2.31_workspace_search_result_navigation.md`, `specs/prd/prd_0.4.9_workspace-file-discovery-and-turn-edit-summary.md`

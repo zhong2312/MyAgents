@@ -7,6 +7,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.9] - 2026-08-16
+
+> MyAgents 0.4.9 带来完全离线的本地文档转换、统一的文件图标与回合文件操作，并将默认 Mino 工作区模板直接随应用发布。版本同时改善 Session 回退、Codex 子 Agent、Space 登录、Channel 与自动记忆维护的可靠性，让多 Runtime 和无人值守场景更稳定。
+
+### Added
+
+- **内置离线文档转换与 OCR**：可以通过 `myagents anydoc` 和专属 Skill 将 Office、PDF、OpenDocument、RTF、EPUB、CSV、扫描件与常见图片转换为 Markdown；队列、模型和原生运行库均由 App 管理，不依赖云端 API、系统 Python/Node 或本机安装 Office。
+- **AI 回合结束后集中展示文件改动**：新增本轮文件编辑摘要；每个文件保持单行展示，并可通过固定“更多”按钮或右键打开与 Chat 文件链接一致的预览、复制、引用、打开和定位菜单。
+- **内置小助理支持安全安装本地工具**：Space 驱动的工具安装请求使用小助理专属 `/tool-install` 流程，保持安装范围、来源和验证步骤一致。
+
+### Changed
+
+- **文件图标在整个产品中保持一致**：文件树、搜索、附件、文件卡片和回合摘要统一使用随应用打包的 Symbols 图标；常见格式使用专属识别，长尾格式按类别或通用文件图标兜底。
+- **Office 文档能力统一为 OfficeCLI**：Word、Excel 与 PowerPoint 使用同一工作流；旧 `docx`、`pptx`、`xlsx` 和 PDF bundle 不再预装，`agent-browser` 也不再由 MyAgents 管理。已有用户自行安装的副本不会被删除。
+- **默认 Mino 工作区不再依赖 GitHub 下载**：模板直接打包在应用中，首次启动、Bot 和模板库共用同一份只读来源；已有用户工作区保持独立且不会被升级覆盖。内置模板精简为 6 个常用 Skills。
+- **Skills 与工具管理更持续、更清晰**：`skill-creator` 成为可随版本更新的 optional system Skill；技能与工具页面的标题、卡片和开关层级进一步统一。
+- **历史搜索进入过程更连贯**：打开历史面板时先显示右侧紧凑搜索框，激活后再向左展开为整行输入；浏览筛选与键盘焦点保持连续。
+- **Channel 与主动 Agent 总开关解耦**：关闭 Heartbeat、Memory Update 或 Memory Evo 不再意外停止已经配置好的 Channel；归档工作区仍会安全停止后台能力。
+- **Runtime 与模型目录更新**：Builtin Claude Agent SDK 升级到 `0.3.233`，智谱默认旗舰模型更新为 GLM 5.3，同时保留 GLM 5 Turbo。
+
+### Fixed
+
+- **回退对话时不再替换产品 Session**：回退只重建需要更新的 SDK 执行身份，Tab、标题、历史和 Sidecar 归属保持不变；崩溃恢复也会精确判断应创建还是恢复原生 transcript。
+- **Codex 子 Agent 状态准确收敛**：子 Agent 的运行、完成、中断和失败状态来自真实 child turn，并在工具卡、Agent 状态面板、Companion 与恢复后的历史中保持一致。
+- **Space 登录过期后可以安全重新认证**：用户凭据收到 401 时进入明确的重新登录状态，旧请求不能覆盖刚完成的新登录；Registered Agent 身份继续独立工作。
+- **OpenAI Bridge 保留 Prompt Cache 语义**：将 SDK 的缓存断点投影到目标协议支持的位置，并准确归一缓存 Token；不支持相关字段的 Provider 只对当前运行代际安全降级。
+- **自动记忆维护更可观察、更稳定**：Gardener 和 Molt 只提交自己的文件，隐藏运行不会发送无效桌面通知，最近结果可在 Agent 设置中查看；历史 Memory Update 调度任务会自动修正 Session 绑定。
+- **文档资源构建可安全复用缓存**：已验证资源按构建输入和签名身份缓存，warm build 可离线复用；损坏或目标不匹配的缓存会拒绝使用并重新准备。
+- **Unicode 斜杠命令保持可见**：项目和全局 Command 使用来源路径确定调用身份，本地化名称不会再让命令从 Chat 或 Launcher 中消失。
+
+---
+
+## [0.4.8] - 2026-08-12
+
+> MyAgents 0.4.8 聚焦多 Runtime、订阅 Provider 与 IM 会话的可靠性：Managed Codex 会等工具真正就绪后再开始首轮，Grok 与 Gemini 的验证和模型发现不再走错误的进程或隐藏登录路径。版本同时改善 Agent CLI、Skill 详情、图片能力判断和 Chat 错误恢复。
+
+### Changed
+
+- **Agent CLI 的命令与诊断更准确**：不存在的命令会在请求前直接拒绝并给出可执行建议；`task get` 作为单条任务详情入口，dry-run、订阅 Provider 验证与 Sidecar 能力限制都有对应说明。
+- **System Skill 的所有权更清晰**：MyAgents 内置 system Skill 在用户范围内保持只读，optional Skill 仍可启停；项目内同名实体 Skill 继续独立可编辑。
+
+### Fixed
+
+- **Managed Codex 新会话与工具启动保持正确身份**：新建工作区对话会在 Runtime 启动前继承 Agent 选择的订阅身份，不再因模型目录尚未加载而误判为 AgentSDK；等待每个注入工具到达真实终态，临时 cancelled 后仍会观察后继 ready，对话页也始终保留已启用的工具配置。切换到 system Codex、Claude Code 或 Gemini 后，后续新会话不会再被遗留的订阅字段拉回 Managed Codex；Windows `npx` MCP 同样使用正确 Node 启动。
+- **Grok 订阅验证恢复正常**：设置页验证通过 Global Sidecar 执行，不再创建或借用虚假的聊天 Session；凭据仍只由 Rust 管理。
+- **Gemini 模型发现不再触发隐藏登录或遗留进程**：未认证时直接提示先在终端登录；请求取消会停止共享发现，并有界清理临时进程树。
+- **IM 新会话与运行状态更可靠**：缺失或过期绑定可以安全轮换，桌面接管与首条 IM 消息保持顺序；runtime status 显示当前 Channel 的真实 uptime。
+- **新一轮对话不会继续显示上一轮错误**：桌面发送或 IM 消息真正被接纳后会清除旧终态错误，同时保留新一轮自身的失败。
+- **未知模型的图片能力判断更准确**：保留 Provider 明确声明，未声明的自定义模型可使用可靠能力证据或用户确认，文本模型仍不会误收图片。
+
+---
+
+## [0.4.7] - 2026-08-11
+
+> MyAgents 0.4.7 新增按 Agent 管理工作区 Skills 与 Commands 的能力，并为 Managed Codex 提供原生上下文压缩和与真实 Runtime 一致的命令入口。版本同时修复单个 Skill、MCP 或扩展异常导致整个 Codex 会话不可用的问题，改善自动标题、IM 新会话、CLI 与全局 Skill 投影的可靠性。
+
+### Added
+
+- **工作区支持按 Agent 管理 Skills 与 Commands**：可以在 Agent 设置中查看能力来源并启用或停用可选项；项目内同名 Skill 优先于全局版本，Required 能力保持可用，Builtin 与 Managed Codex 使用同一份有效结果。
+- **Managed Codex 支持原生上下文压缩**：可以使用 `/compact`，也可以从上下文用量提示直接压缩；压缩过程沿用当前 Session 与队列，不会产生多余的对话消息。
+
+### Changed
+
+- **Goal 与斜杠命令更贴合当前 Runtime**：输入框可以直接进入 Goal 模式；Chat 与 Launcher 只展示所选 Runtime 真正支持的系统命令，同时保留项目 Skill、自定义 Command 和正确的来源标识。
+- **CLI 始终使用当前安装的 MyAgents 版本**：用户目录只保留指向当前 App 的轻量启动器，不再运行升级前遗留的旧业务副本；macOS、Windows、Linux 与内嵌终端使用一致的命令来源。
+- **Agent 设置与能力列表更清晰**：权限菜单、Workspace 控件、Skill、Command 与 Sub-Agent 卡片使用统一的交互和信息层级，窄宽度下也会优先保留关键名称。
+
+### Fixed
+
+- **Windows 源码构建恢复正常**：使用仓库固定的 Rust 工具链运行 Windows 构建脚本时，不再因平台文件身份 API 不稳定而编译失败；发布前会在原生 Windows 环境完成 Rust 编译验证。
+- **单个 Managed Codex 扩展异常不再阻塞整个 Session**：不适合安全投影的 HTTP MCP、连接失败、Skill 缺项、解析失败或投影异常只影响对应组件并记录到 Logs，其他能力与普通对话继续可用；Skill 枚举等待上限从 5 秒提高到 30 秒，修复 [#525](https://github.com/hAcKlyc/MyAgents/issues/525) 与 [#526](https://github.com/hAcKlyc/MyAgents/issues/526)。
+- **Managed Codex 自动标题恢复生成**：标题请求现在携带完整的初始 Turn 身份，不再在到达模型前被 Codex 拒绝；普通首轮消息与预热 Session 的身份仍保持隔离。
+- **损坏或重复的全局 Skill 不再拖垮其它能力**：异常项会被单独隔离，健康 Skill 继续加载；工作区中的全局 Skill 投影保持只读，避免一次编辑意外修改所有工作区共享的源文件。
+- **IM `/new` 不再影响桌面仍在使用的旧会话**：新会话只轮换当前 IM 绑定，桌面 Tab、并发回合和旧 Session 的其它 owner 保持原位。
+- **被动诊断不再显示为阻塞型 Chat 横条**：可选扩展跳过和普通配置降级只进入有界日志，真正需要用户操作的问题仍会保留明确提示。
+- **关于页的源代码入口保持指向仓库主页**：版本升级后不再错误跳转到对应版本的归档路径，许可证与第三方声明仍使用精确版本链接。
+
+---
+
+## [0.4.6] - 2026-08-08
+
+> MyAgents 0.4.6 让 Managed Codex 完整接入 MyAgents 的 Skills、Commands、Agents、Plugins、MCP 与产品工具，并在安全的 Runtime 生命周期边界应用配置变更。版本同时改善多会话恢复体验，并提升文件路径交互、Sidecar 锁恢复、支持日志脱敏与长上下文失败诊断的可靠性。
+
+### Added
+
+- **Managed Codex 完整接入 MyAgents 扩展能力**：工作区、全局和 Plugin Skills，Commands、Agents、外部 MCP 以及 MyAgents 进程内工具统一通过受管 Runtime 生效；配置变更在下一次启动或当前回合结束后的安全边界应用，正常等待状态保持安静，真实失败和不支持项仍提供明确诊断。
+
+### Changed
+
+- **回复中的文件路径按验证结果渐进增强**：AI 文本和工具输出里识别出的路径只有通过 Rust 的存在性与安全校验后才可点击；工作区变化会使旧验证失效，执行打开、预览或定位前还会再次检查，普通 URL 继续按链接处理。
+
+### Fixed
+
+- **恢复多个历史对话后连续关闭也不再永久转圈**：界面仍会先显示当前对话、首次切换时再加载其余 Chat 视图；关闭或替换 Sidecar 时，Rust 不再用全局进程锁或 WebView 主线程等待请求收尾，因此一个会话关闭不会冻结其它窗口；关闭期间重新打开同一历史会话也不会再被旧进程的终止事件误清理，历史消息与已接纳请求保持完整。
+- **Sidecar 可立即接管已死亡进程遗留的 Session 锁**：确认原 owner 进程退出后不再等待锁老化；存活或状态未知的 owner 仍保持保守保护，同时收敛 deferred readiness 的唯一终态来源，修复 [#522](https://github.com/hAcKlyc/MyAgents/issues/522)。
+- **小助理经链接 Skill 路径执行日志自检时仍会输出脱敏结果**：日志脱敏 CLI 不再因 symlink 路径与模块真实路径不同而静默跳过，真实路径与链接路径共用同一套脱敏核心。
+- **长上下文快速反复填满时展示正确的终态**：不再误报为会自动恢复的请求限流，而是明确提示减少文件或工具输出，或新建会话继续。
+- **Agent 工具目录移除不可靠的 `TaskOutput` 入口**：避免 Agent 进入无法稳定结算的等待路径；现有 Task、停止与协作能力保持不变。
+
+---
+
 ## [0.4.5] - 2026-08-06
 
 > MyAgents 0.4.5 带来“满足条件才唤醒 AI”的任务自动化、Codex 对话回退与分支，以及全新的 MyAgents Light 默认主题。任务中心、Agent CLI 和侧栏操作更顺手，并进一步提升配置、MCP、Provider 路由和长上下文会话的可靠性。

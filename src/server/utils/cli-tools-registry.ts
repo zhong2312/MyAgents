@@ -255,7 +255,8 @@ process.exit(result.status === null ? 1 : result.status);
 }
 
 export function buildWindowsCmdSource(name: string, bundledNodePath: string | null): string {
-  // pin-with-fallback（照 cmd_sync_cli 的烤入思路，但容忍安装位漂移）：
+  // pin-with-fallback（用户工具 shim 容忍外部安装位漂移；官方 myagents
+  // launcher 由 Rust bundle authority 管理，不复用这条 fallback）：
   // 优先用 shim 写入时的内置 node 绝对路径（裸终端无 node 也能跑）；
   // 该路径随更新失效时回落 PATH 上的 node（Agent session / 内嵌终端必有）。
   if (bundledNodePath) {

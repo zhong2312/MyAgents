@@ -23,6 +23,7 @@ html[data-theme-id='myagents-light'][data-color-scheme='light'] {
   --ink-faint: #c4c0b9;
   --paper: #f9f9f7;
   --global-sidebar-bg: #f5f4f1;
+  --global-sidebar-bg-a0: rgb(245 244 241 / 0);
   --paper-elevated: #fffefa;
   --message-user-bg: #fffefb;
   --paper-inset: #ece8e2;
@@ -133,6 +134,7 @@ html[data-theme-id='myagents-light'][data-color-scheme='dark'] {
   --ink-faint: #57534d;
   --paper: #2d2d2b;
   --global-sidebar-bg: #2a2a28;
+  --global-sidebar-bg-a0: rgb(42 42 40 / 0);
   --paper-elevated: #373633;
   --message-user-bg: #3a3834;
   --paper-inset: #242321;

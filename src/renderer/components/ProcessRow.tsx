@@ -18,7 +18,12 @@ import {
     getToolSummaryNode,
     isSubagentContainerTool
 } from '@/components/tools/toolBadgeConfig';
-import { isBackgroundSubagentTool, isSubagentContainerRunning } from '@/components/tools/subagentActivity';
+import {
+    getSubagentContainerDurationMs,
+    getSubagentContainerLifecycleStatus,
+    isBackgroundSubagentTool,
+    isSubagentContainerRunning,
+} from '@/components/tools/subagentActivity';
 import ToolUse from '@/components/ToolUse';
 import ToolAttachmentGallery from '@/components/tools/ToolAttachmentGallery';
 import type { ContentBlock } from '@/types/chat';
@@ -72,8 +77,15 @@ const ProcessRow = memo(function ProcessRow({
     const isThinkingActive = isThinking && block.isComplete !== true && isStreaming;
 
     // Tool: 是最后一个 block 且正在 streaming 且没有 result 就是 active
-    const isToolActive = isTool && isLastBlock && isStreaming && (Boolean(block.tool?.isLoading) || !block.tool?.result);
     const isTaskRunning = isTaskTool && isSubagentContainerRunning(block.tool);
+    const subagentLifecycleStatus = isTaskTool
+        ? getSubagentContainerLifecycleStatus(block.tool)
+        : null;
+    const isToolActive = isTool
+        && isLastBlock
+        && isStreaming
+        && (Boolean(block.tool?.isLoading) || !block.tool?.result)
+        && (!isTaskTool || isTaskRunning);
 
     const isBlockActive = isThinkingActive || isToolActive || isTaskRunning;
     const wasToolActiveRef = useRef(false);
@@ -118,15 +130,14 @@ const ProcessRow = memo(function ProcessRow({
 
     // Task tool timer - update elapsed time every second while running
     useEffect(() => {
-        if (!isTaskRunning || !block.tool?.taskStartTime) {
+        const startTime = block.tool?.subagentLifecycle?.startedAt ?? block.tool?.taskStartTime;
+        if (!isTaskRunning || !startTime) {
             if (taskTimerRef.current) {
                 clearInterval(taskTimerRef.current);
                 taskTimerRef.current = undefined;
             }
             return;
         }
-
-        const startTime = block.tool.taskStartTime;
 
         // Use requestAnimationFrame to set initial value asynchronously (avoids lint warning)
         const rafId = requestAnimationFrame(() => {
@@ -145,7 +156,7 @@ const ProcessRow = memo(function ProcessRow({
                 taskTimerRef.current = undefined;
             }
         };
-    }, [isTaskRunning, block.tool?.taskStartTime]);
+    }, [isTaskRunning, block.tool?.subagentLifecycle?.startedAt, block.tool?.taskStartTime]);
 
     // Parse Task result once (memoized to avoid repeated JSON parsing)
     const taskParsedResult = useMemo(() => {
@@ -168,6 +179,9 @@ const ProcessRow = memo(function ProcessRow({
         if (taskParsedResult?.totalDurationMs) {
             return formatDuration(taskParsedResult.totalDurationMs);
         }
+
+        const lifecycleDuration = getSubagentContainerDurationMs(block.tool);
+        if (lifecycleDuration !== null) return formatDuration(lifecycleDuration);
 
         return null;
     }, [isTaskTool, block.tool, isTaskRunning, taskElapsed, taskParsedResult]);
@@ -277,9 +291,9 @@ const ProcessRow = memo(function ProcessRow({
             // block also need the spinner so the icon stays coherent with
             // the dot and the detail panel's "Agent is running" badge.
             icon = <Loader2 className="size-4 animate-spin" />;
-        } else if (block.tool.isFailed) {
+        } else if (subagentLifecycleStatus === 'failed' || block.tool.isFailed) {
             icon = <XCircle className="size-4 text-[var(--error)]" />;
-        } else if (block.tool.isStopped) {
+        } else if (subagentLifecycleStatus === 'interrupted' || block.tool.isStopped) {
             icon = <StopCircle className="size-4 text-[var(--warning)]" />;
         } else if (block.tool.isError) {
             icon = <AlertCircle className="size-4 text-[var(--error)]" />;
@@ -317,9 +331,9 @@ const ProcessRow = memo(function ProcessRow({
                  *  internal "执行中" badge. */}
                 <div className={`flex size-1.5 shrink-0 rounded-full ${isBlockActive
                     ? 'bg-[var(--success)] animate-pulse'
-                    : block.isFailed || block.tool?.isFailed
+                    : block.isFailed || block.tool?.isFailed || subagentLifecycleStatus === 'failed'
                         ? 'bg-[var(--error)]'
-                        : block.isStopped || block.tool?.isStopped
+                        : block.isStopped || block.tool?.isStopped || subagentLifecycleStatus === 'interrupted'
                             ? 'bg-[var(--warning)]'
                             : 'bg-[var(--ink-muted)]/40'
                     }`} />

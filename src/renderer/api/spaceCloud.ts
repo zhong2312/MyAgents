@@ -142,6 +142,16 @@ export interface SpaceSession {
   updatedAt: string;
 }
 
+export type SpaceAccount = Omit<SpaceSession, "sessionBindingId" | "expiresAt">;
+
+export type SpaceSessionView =
+  | { state: "authenticated"; session: SpaceSession }
+  | {
+      state: "reauth_required";
+      account: SpaceAccount;
+      invalidatedSessionBindingId: string;
+    };
+
 export interface SpaceMember {
   id: string;
   spaceId: string;
@@ -663,6 +673,21 @@ export interface SpaceApiEnvelope<T> {
   hint?: string;
 }
 
+export interface SpaceCommandError {
+  code: string;
+  message: string;
+  cloudCode?: string;
+  httpStatus?: number;
+  requestId?: string;
+  retryable: boolean;
+  credentialKind?: "user_session" | "registered_agent";
+  sessionBindingId?: string;
+  recoveryHint?: SpaceApiEnvelope<unknown>["recoveryHint"];
+  quota?: string;
+  limit?: number;
+  usage?: number;
+}
+
 export interface SpaceErrorContext {
   method?: string;
   path?: string;
@@ -677,18 +702,67 @@ export interface NormalizedSpaceError {
 interface SpaceUserFacingError extends Error {
   readonly __spaceUserFacingError: true;
   readonly spaceCode?: string;
+  readonly cloudCode?: string;
+  readonly httpStatus?: number;
+  readonly requestId?: string;
+  readonly retryable?: boolean;
+  readonly sessionBindingId?: string;
 }
 
 function spaceUserFacingError(
   message: string,
-  details?: { code?: string },
+  details?: {
+    code?: string;
+    cloudCode?: string;
+    httpStatus?: number;
+    requestId?: string;
+    retryable?: boolean;
+    sessionBindingId?: string;
+  },
 ): SpaceUserFacingError {
   const error = new Error(message) as SpaceUserFacingError;
   Object.defineProperty(error, "__spaceUserFacingError", { value: true });
   if (details?.code) {
     Object.defineProperty(error, "spaceCode", { value: details.code });
   }
+  for (const key of [
+    "cloudCode",
+    "httpStatus",
+    "requestId",
+    "retryable",
+    "sessionBindingId",
+  ] as const) {
+    if (details?.[key] !== undefined) {
+      Object.defineProperty(error, key, { value: details[key] });
+    }
+  }
   return error;
+}
+
+function spaceErrorDetails(error: unknown): {
+  code?: string;
+  cloudCode?: string;
+  httpStatus?: number;
+  requestId?: string;
+  retryable?: boolean;
+  sessionBindingId?: string;
+} {
+  const value =
+    error && typeof error === "object"
+      ? (error as Partial<SpaceCommandError>)
+      : null;
+  return {
+    code: spaceErrorCode(error) ?? undefined,
+    cloudCode:
+      typeof value?.cloudCode === "string" ? value.cloudCode : undefined,
+    httpStatus:
+      typeof value?.httpStatus === "number" ? value.httpStatus : undefined,
+    requestId:
+      typeof value?.requestId === "string" ? value.requestId : undefined,
+    retryable:
+      typeof value?.retryable === "boolean" ? value.retryable : undefined,
+    sessionBindingId: spaceErrorSessionBindingId(error) ?? undefined,
+  };
 }
 
 function isSpaceUserFacingError(error: unknown): error is SpaceUserFacingError {
@@ -699,6 +773,14 @@ function isSpaceUserFacingError(error: unknown): error is SpaceUserFacingError {
 }
 
 function rawErrorMessage(error: unknown): string {
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
   if (
     error &&
     typeof error === "object" &&
@@ -829,7 +911,11 @@ export function normalizeSpaceError(
     };
   }
 
-  if (code === "NOT_AUTHENTICATED" || code === "SESSION_EXPIRED") {
+  if (
+    code === "NOT_AUTHENTICATED" ||
+    code === "SESSION_EXPIRED" ||
+    code === "SPACE_REAUTH_REQUIRED"
+  ) {
     return {
       userMessage: spaceText("templates.relogin", { operation }),
       debugMessage: [debugSuffix, sanitized].filter(Boolean).join(" · "),
@@ -915,13 +1001,25 @@ export function isSpaceSkillInstallConflict(error: unknown): boolean {
 }
 
 export function spaceErrorCode(error: unknown): string | null {
-  if (!error || typeof error !== "object") return null;
+  const raw = rawErrorMessage(error);
+  const rawCode = raw.match(/\b([A-Z][A-Z0-9_]+):/)?.[1] ?? null;
+  if (!error || typeof error !== "object") return rawCode;
   const maybeError = error as Partial<SpaceApiEnvelope<unknown>> & {
     spaceCode?: unknown;
   };
   if (typeof maybeError.spaceCode === "string") return maybeError.spaceCode;
   if (typeof maybeError.code === "string") return maybeError.code;
-  return null;
+  return rawCode;
+}
+
+export function spaceErrorSessionBindingId(error: unknown): string | null {
+  if (error && typeof error === "object") {
+    const value = (error as { sessionBindingId?: unknown }).sessionBindingId;
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return (
+    rawErrorMessage(error).match(/\[sessionBindingId=([^\]]+)\]/)?.[1] ?? null
+  );
 }
 
 export function isSpaceErrorCode(error: unknown, code: string): boolean {
@@ -949,7 +1047,7 @@ async function spaceApi<T>(
       path,
       error: normalized.debugMessage,
     });
-    throw spaceUserFacingError(normalized.userMessage);
+    throw spaceUserFacingError(normalized.userMessage, spaceErrorDetails(error));
   }
   if (!result.success) {
     const normalized = normalizeSpaceError(
@@ -961,7 +1059,11 @@ async function spaceApi<T>(
       path,
       error: normalized.debugMessage,
     });
-    throw spaceUserFacingError(normalized.userMessage, { code: result.code });
+    throw spaceUserFacingError(normalized.userMessage, {
+      code: result.code,
+      requestId: result.requestId,
+      retryable: false,
+    });
   }
   return result.data as T;
 }
@@ -979,11 +1081,11 @@ async function spaceMutationInvoke<T>(
       command,
       error: normalized.debugMessage,
     });
-    throw spaceUserFacingError(normalized.userMessage);
+    throw spaceUserFacingError(normalized.userMessage, spaceErrorDetails(error));
   }
 }
 
-export function spaceGetSession(): Promise<SpaceSession | null> {
+export function spaceGetSession(): Promise<SpaceSessionView | null> {
   return inv("cmd_space_get_session");
 }
 

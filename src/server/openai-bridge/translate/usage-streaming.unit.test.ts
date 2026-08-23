@@ -17,6 +17,7 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { StreamTranslator } from './stream';
 import { ResponsesStreamTranslator } from './stream-responses';
+import { fromOpenAIUsage, fromResponsesUsage } from './usage';
 import { handleStreamResponse, handleResponsesStreamResponse } from '../handler';
 import type { OpenAIStreamChunk } from '../types/openai';
 import type { AnthropicStreamEvent, AnthropicUsage } from '../types/anthropic';
@@ -96,7 +97,7 @@ describe('StreamTranslator usage (issue #277)', () => {
     expect(usage.output_tokens).toBe(20);
   });
 
-  it('maps cached_tokens → cache_read_input_tokens', () => {
+  it('partitions OpenAI total input into ordinary, cache-read, and cache-write tokens', () => {
     const events = runChat([
       chunk({ choices: [{ index: 0, delta: { content: 'x' }, finish_reason: null }] }),
       chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: null }),
@@ -106,15 +107,86 @@ describe('StreamTranslator usage (issue #277)', () => {
           prompt_tokens: 500,
           completion_tokens: 40,
           total_tokens: 540,
-          prompt_tokens_details: { cached_tokens: 320 },
+          prompt_tokens_details: { cached_tokens: 320, cache_write_tokens: 80 },
         },
       }),
     ]);
 
     const usage = accumulateUsage(events);
-    expect(usage.input_tokens).toBe(500);
+    expect(usage.input_tokens).toBe(100);
     expect(usage.output_tokens).toBe(40);
     expect(usage.cache_read_input_tokens).toBe(320);
+    expect(usage.cache_creation_input_tokens).toBe(80);
+  });
+
+  it('clamps malformed cache partitions and logs only normalized numeric metadata', () => {
+    const warnings: string[] = [];
+    const usage = fromOpenAIUsage({
+      prompt_tokens: 10,
+      completion_tokens: 2,
+      total_tokens: 12,
+      prompt_tokens_details: { cached_tokens: 12, cache_write_tokens: 4 },
+    }, message => warnings.push(message));
+
+    expect(usage).toMatchObject({
+      inputTokens: 0,
+      cacheReadInputTokens: 10,
+      cacheCreationInputTokens: 0,
+      outputTokens: 2,
+    });
+    expect(warnings).toEqual([
+      '[bridge] Malformed chat_completions usage fields=cache_partitions_exceed_total normalized_total=10 normalized_read=10 normalized_write=0',
+    ]);
+  });
+
+  it('normalizes negative and non-finite usage for both OpenAI protocols', () => {
+    const chatWarnings: string[] = [];
+    const responsesWarnings: string[] = [];
+    const chat = fromOpenAIUsage({
+      prompt_tokens: Number.NaN,
+      completion_tokens: -2,
+      total_tokens: 0,
+      prompt_tokens_details: { cached_tokens: -1, cache_write_tokens: Number.POSITIVE_INFINITY },
+    }, message => chatWarnings.push(message));
+    const responses = fromResponsesUsage({
+      input_tokens: 5,
+      output_tokens: Number.NaN,
+      total_tokens: 5,
+      input_tokens_details: { cached_tokens: 7, cache_write_tokens: -3 },
+    }, message => responsesWarnings.push(message));
+
+    expect(chat).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    });
+    expect(responses).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 5,
+      cacheCreationInputTokens: 0,
+    });
+    expect(chatWarnings).toHaveLength(1);
+    expect(responsesWarnings).toHaveLength(1);
+    expect(chatWarnings[0]).toContain('fields=total_input,cache_read,cache_write,output');
+    expect(responsesWarnings[0]).toContain('fields=cache_write,output,cache_partitions_exceed_total');
+  });
+
+  it('logs at most one malformed-usage warning for a streaming response', () => {
+    const warnings: string[] = [];
+    const translator = new StreamTranslator(MODEL, true, message => warnings.push(message));
+    const malformedUsage = {
+      prompt_tokens: 10,
+      completion_tokens: 1,
+      total_tokens: 11,
+      prompt_tokens_details: { cached_tokens: 12 },
+    };
+
+    translator.feed(chunk({ choices: [], usage: malformedUsage }));
+    translator.feed(chunk({ choices: [], usage: malformedUsage }));
+
+    expect(warnings).toHaveLength(1);
   });
 
   it('preserves tool_use stop_reason while still reporting usage from the trailing chunk', () => {
@@ -473,7 +545,7 @@ describe('handleStreamResponse [DONE]-driven finalization (issue #277)', () => {
     const { events, reachedDone } = await readAnthropicEvents(out.body!, 2000);
 
     const delta = events.find((e) => e.type === 'message_delta');
-    expect(delta && delta.type === 'message_delta' && delta.usage.input_tokens).toBe(2000);
+    expect(delta && delta.type === 'message_delta' && delta.usage.input_tokens).toBe(1872);
     expect(delta && delta.type === 'message_delta' && delta.usage.output_tokens).toBe(75);
     expect(delta && delta.type === 'message_delta' && delta.usage.cache_read_input_tokens).toBe(128);
     expect(events.some((e) => e.type === 'message_stop')).toBe(true);
@@ -496,7 +568,10 @@ describe('handleStreamResponse [DONE]-driven finalization (issue #277)', () => {
             status: 'failed',
             model: MODEL,
             output: [],
-            error: { code: 'upstream_failed', message: 'provider rejected the turn' },
+            error: {
+              code: 'upstream_failed',
+              message: 'provider rejected echo {"input":[{"content":"private prompt"}]}',
+            },
             usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
           },
         })));
@@ -514,13 +589,15 @@ describe('handleStreamResponse [DONE]-driven finalization (issue #277)', () => {
 
     const { events, reachedDone } = await readAnthropicEvents(out.body!, 2_000);
     expect(events.some((event) => event.type === 'message_stop')).toBe(true);
+    expect(JSON.stringify(events)).not.toContain('private prompt');
+    expect(JSON.stringify(events)).not.toContain('"input"');
     expect(reachedDone).toBe(true);
     expect(upstreamAbort.signal.aborted).toBe(true);
   });
 });
 
 describe('ResponsesStreamTranslator usage (issue #277)', () => {
-  it('reports input+output tokens from response.completed', () => {
+  it('reports mutually-exclusive Responses usage partitions from response.completed', () => {
     const t = new ResponsesStreamTranslator(MODEL);
     const events: AnthropicStreamEvent[] = [];
     events.push(...t.feed({ type: 'response.output_text.delta', delta: 'Hello' } as ResponsesStreamEvent));
@@ -530,18 +607,19 @@ describe('ResponsesStreamTranslator usage (issue #277)', () => {
       response: {
         status: 'completed',
         usage: {
-          input_tokens: 2000,
+          input_tokens: 2600,
           output_tokens: 75,
-          total_tokens: 2075,
-          input_tokens_details: { cached_tokens: 128 },
+          total_tokens: 2675,
+          input_tokens_details: { cached_tokens: 2000, cache_write_tokens: 400 },
         },
       },
     } as ResponsesStreamEvent));
     events.push(...t.finalize());
 
     const usage = accumulateUsage(events);
-    expect(usage.input_tokens).toBe(2000);
+    expect(usage.input_tokens).toBe(200);
     expect(usage.output_tokens).toBe(75);
-    expect(usage.cache_read_input_tokens).toBe(128);
+    expect(usage.cache_read_input_tokens).toBe(2000);
+    expect(usage.cache_creation_input_tokens).toBe(400);
   });
 });

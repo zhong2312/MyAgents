@@ -559,9 +559,9 @@ try {
     Write-Host "[5/7] 构建前端和服务端..." -ForegroundColor Blue
 
     # Sidecar / Bridge / CLI 三件套统一通过 npm scripts，由
-    # `scripts/esbuild-bundle.mjs` 单一入口驱动。Driver 自带 post-build：
-    #   - cli: 复制 myagents.cmd 到 resources/cli/
-    #   - server: 校验产物不含硬编码 __dirname 路径
+    # `scripts/esbuild-bundle.mjs` 单一入口驱动。Driver 自带 target 生命周期职责：
+    #   - cli: 构建前清理 staging，随后只产出 bundle authority myagents.cjs
+    #   - server: 构建后校验产物不含硬编码 __dirname 路径
     # 实际上 tauri:build 的 beforeBuildCommand (tauri.conf.json) 也会
     # 跑同一组 npm 脚本——这里显式提前一步是为了 build 阶段提早暴露
     # 错误（避免等到 cargo 链接成功才发现 server-dist.js 有问题）。
@@ -600,11 +600,6 @@ try {
     New-Item -ItemType Directory -Path $sdkDest -Force | Out-Null
     Copy-Item $claudeSrc (Join-Path $sdkDest "claude.exe") -Force
     Write-Host "    OK - Claude native binary 就绪 ($sdkTriple)" -ForegroundColor Green
-
-    # NOTE: agent-browser CLI is no longer bundled. The skill at
-    # bundled-skills/agent-browser/SKILL.md teaches AI to self-install via
-    # `npm install -g agent-browser@<pinned>` (with `npx` fallback) on first
-    # use. Removing the bundle saves ~84MB installer size + build time.
 
     # 预装 sharp 图像处理（替代 jimp，libvips 原生）
     Write-Host "  预装 sharp 图像处理（libvips 原生）..." -ForegroundColor Cyan
@@ -664,6 +659,10 @@ try {
     # ========================================
     Write-Host "[6/7] 构建 Tauri 应用 (Release)..." -ForegroundColor Blue
     Write-Host "  这可能需要几分钟，请耐心等待..." -ForegroundColor Yellow
+
+    Write-Host "  准备离线文档转换 Worker / OCR / PDFium 资源..." -ForegroundColor Cyan
+    & node "$ProjectDir\scripts\prepare-document-processing.mjs" "x86_64-pc-windows-msvc"
+    if ($LASTEXITCODE -ne 0) { throw "文档转换资源准备失败" }
 
     & npm run tauri:build -- --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
     if ($LASTEXITCODE -ne 0) {

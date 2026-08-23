@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+    isValidSlashCommandName,
     parseFullCommandContent,
     parseFullSkillContent,
     parseSkillFrontmatter,
     parseYamlFrontmatter,
     serializeSkillContent,
+    slashCommandNameFromSourceLocalId,
 } from './slashCommands';
 
 const invalidPlainScalarFrontmatter = `---
@@ -130,5 +132,20 @@ allowed-tools: [Bash, Edit
         } finally {
             warn.mockRestore();
         }
+    });
+});
+
+describe('slash command invocation identity', () => {
+    it('accepts Unicode command tokens without accepting whitespace or punctuation', () => {
+        expect(isValidSlashCommandName('中文总结')).toBe(true);
+        expect(isValidSlashCommandName('发布:生成-周报_2')).toBe(true);
+        expect(isValidSlashCommandName('中文 总结')).toBe(false);
+        expect(isValidSlashCommandName('总结.md')).toBe(false);
+    });
+
+    it('derives the invocation token from the source path instead of display metadata', () => {
+        expect(slashCommandNameFromSourceLocalId('中文-总结')).toBe('中文-总结');
+        expect(slashCommandNameFromSourceLocalId('发布/生成-周报')).toBe('发布:生成-周报');
+        expect(slashCommandNameFromSourceLocalId('invalid folder/ship')).toBeNull();
     });
 });

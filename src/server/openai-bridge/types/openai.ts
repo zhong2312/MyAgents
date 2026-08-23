@@ -29,7 +29,7 @@ export type OpenAIMessage =
 
 export interface OpenAISystemMessage {
   role: 'system';
-  content: string;
+  content: string | OpenAITextContentPart[];
 }
 
 export interface OpenAIUserMessage {
@@ -39,7 +39,7 @@ export interface OpenAIUserMessage {
 
 export interface OpenAIAssistantMessage {
   role: 'assistant';
-  content: string | null;
+  content: string | OpenAITextContentPart[] | null;
   reasoning_content?: string;
   tool_calls?: OpenAIToolCall[];
 }
@@ -47,12 +47,20 @@ export interface OpenAIAssistantMessage {
 export interface OpenAIToolMessage {
   role: 'tool';
   tool_call_id: string;
-  content: string;
+  content: string | OpenAITextContentPart[];
 }
 
 export type OpenAIContentPart =
-  | { type: 'text'; text: string }
-  | { type: 'image_url'; image_url: { url: string; detail?: string } };
+  | OpenAITextContentPart
+  | { type: 'image_url'; image_url: { url: string; detail?: string }; prompt_cache_breakpoint?: OpenAIPromptCacheBreakpoint };
+
+export type OpenAITextContentPart = {
+  type: 'text';
+  text: string;
+  prompt_cache_breakpoint?: OpenAIPromptCacheBreakpoint;
+};
+
+export type OpenAIPromptCacheBreakpoint = { mode: 'explicit' };
 
 /** Gemini extension: thought_signature nested in extra_content for OpenAI-compatible format */
 export interface GeminiExtraContent {
@@ -100,8 +108,11 @@ export interface OpenAIResponse {
 
 export interface OpenAIChoice {
   index: number;
-  message: OpenAIAssistantMessage & {
+  message: {
+    role: 'assistant';
+    content: string | null;
     reasoning_content?: string;
+    tool_calls?: OpenAIToolCall[];
   };
   finish_reason: OpenAIFinishReason | null;
 }
@@ -114,6 +125,7 @@ export interface OpenAIUsage {
   total_tokens: number;
   prompt_tokens_details?: {
     cached_tokens?: number;
+    cache_write_tokens?: number;
   };
   completion_tokens_details?: {
     reasoning_tokens?: number;

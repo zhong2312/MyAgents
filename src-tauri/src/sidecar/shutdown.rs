@@ -168,8 +168,9 @@ pub fn stop_all_sidecars(manager: &ManagedSidecarManager, reason: &str) -> Resul
         );
         error
     })?;
-    manager_guard.stop_all();
+    let retirement = manager_guard.stop_all();
     drop(manager_guard);
+    retirement.finish();
 
     ulog_info!(
         "[sidecar] stop_all action=complete reason={} scope=application",
@@ -186,6 +187,12 @@ pub fn shutdown_for_update_verified<R: Runtime>(
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,
 ) -> Result<(), String> {
+    // The document Worker is an App-owned native child and may hold bundled
+    // PDFium/ONNX Runtime files open. Settle it at the same verified update
+    // boundary before an installer replaces those resources.
+    if let Some(document_manager) = crate::document_processing::global() {
+        document_manager.shutdown()?;
+    }
     let protected_roots = update_protected_roots(app_handle);
     shutdown_for_update_inner(manager, &protected_roots)?;
     wait_for_update_file_locks(app_handle)?;

@@ -38,6 +38,7 @@ export function translateResponse(
   openaiResp: OpenAIResponse,
   requestModel: string,
   translateReasoning = true,
+  usageWarning?: UsageWarningLogger,
 ): AnthropicResponse {
   const choice = openaiResp.choices?.[0];
   const content: AnthropicResponseContentBlock[] = [];
@@ -87,7 +88,7 @@ export function translateResponse(
     content.push({ type: "text", text: "" });
   }
 
-  const usage = fromOpenAIUsage(openaiResp.usage);
+  const usage = fromOpenAIUsage(openaiResp.usage, usageWarning);
 
   return {
     id: generateMessageId(),

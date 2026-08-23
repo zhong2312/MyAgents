@@ -13,6 +13,7 @@ import {
 import { registerBridge as registerBridgeInRegistry, unregisterBridge as unregisterBridgeInRegistry, type UpstreamBridgeConfig } from './openai-bridge/bridge-registry';
 import { getScriptDir } from './utils/runtime';
 import { resolveNpxMcpInvocation } from './utils/mcp-command';
+import { resolveRemoteMcpTransportConfig } from './session-core/mcp-template-resolution';
 import { getCrossPlatformEnv } from './utils/platform';
 import { ensureDirSync } from './utils/fs-utils';
 import { getMyAgentsNpmGlobalBinDir, getMyAgentsNpmGlobalPrefix, scrubMyAgentsNpmPrefixEnv } from './utils/npm-prefix-env';
@@ -137,6 +138,7 @@ import {
 } from './utils/context-occupancy';
 import type { SystemInitInfo } from '../shared/types/system';
 import type { SlashCommand as UiSlashCommand } from '../shared/slashCommands';
+import type { EffectiveProjectCapabilitySnapshot } from '../shared/projectCapabilities';
 import type { OfficialToolId } from '../shared/official-tools';
 import type { WorkbenchAgentToolsetRequest } from '../shared/workbench-sdk';
 import { claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData, loadSessionTranscript } from './SessionStore';
@@ -164,6 +166,13 @@ import {
   getEnabledPluginSdkConfigs,
   getDefaultEnabledPluginIdsForWorkspace,
 } from './plugins/store';
+import { listPluginQualifiedSkillNames } from './plugins/manifest';
+import {
+  buildBuiltinSkillAllowlist,
+  filterSlashCommandsForCapabilities,
+  findDisabledCapabilityForSlashInput,
+  sanitizeSdkSkillAllowlist,
+} from './builtin-session/capabilities';
 import { initLogger, appendLog, getLogLines as getLogLinesFromLogger } from './AgentLogger';
 import { setAmbientLogContext, clearAmbientLogContextField } from './logger-context';
 import { beginTurn as beginTurnAbort, endTurn as endTurnAbort, abortTurn as abortTurnAbort } from './utils/turn-abort';
@@ -172,6 +181,7 @@ import { localTimestamp } from '../shared/logTime';
 import { trackServer } from './analytics';
 import { getCurrentRuntimeType, isExternalRuntime } from './runtimes/factory';
 import { decideBuiltinSessionResume } from './utils/builtin-session-resume';
+import { resolveBuiltinSdkSessionId } from './utils/session-runtime-identity';
 import {
   commitPendingProductSession,
   currentProductSessionId as sessionId,
@@ -217,10 +227,13 @@ import {
   trySyncProjectUserConfigFiles,
   type ProjectUserConfigSyncOptions,
 } from './utils/project-user-config-sync';
+import { resolveEffectiveProjectCapabilities } from './project-capabilities';
+import { createGlobalSkillInventorySnapshot } from './global-skill-inventory';
 import {
   appendOmittedImageNote,
   classifyToolAttachmentPresentation,
   extractToolResultRenderParts,
+  normalizeSdkToolUseResult,
   type ExtractedToolResultAttachment,
 } from './utils/tool-result-attachments';
 import { maybeSpill, type LargeValueRef } from './utils/large-value-store';
@@ -640,15 +653,15 @@ const DECORATIVE_TEXT_MAX_LENGTH = 5000;
 /**
  * Sync user-level skills and commands into a project's .claude/ as symlinks.
  *
- * The SDK has no API to filter skills/commands — it reads ALL entries from settingSources paths.
- * We use settingSources: ['project'] (reads from <cwd>/.claude/) and sync user-level
- * skills/commands as symlinks into the project's .claude/skills/ and .claude/commands/.
+ * This is a runtime-neutral compatibility inventory. Project-level selection
+ * is enforced separately at Runtime admission from AgentConfig; changing one
+ * Session must not rewrite shared links observed by other runtimes/Sidecars.
  *
  * This avoids setting CLAUDE_CONFIG_DIR (which would break Keychain credential lookup).
  *
  * Skills (directories):
- * - Creates symlinks for enabled skills: <project>/.claude/skills/<name> → ~/.myagents/skills/<name>
- * - Removes symlinks for disabled skills (only symlinks, never real project directories)
+ * - Creates symlinks for globally enabled skills: <project>/.claude/skills/<name> → ~/.myagents/skills/<name>
+ * - Removes links disabled by the global skills-config (not project selection)
  * - Does NOT touch real (non-symlink) skill directories in the project
  *
  * Commands (.md files):
@@ -661,57 +674,48 @@ export function syncProjectUserConfig(
   projectDir: string,
   options: ProjectUserConfigSyncOptions = {},
 ): void {
-  const synced = trySyncProjectUserConfigFiles(projectDir, options, 'skill-sync');
-  if (!synced) return;
-  // The symlinks above just changed what's on disk, but the live SDK session
-  // only scans skills at startup — without a reload, a skill installed
-  // mid-session is visible in the UI (Rust scans disk) yet unusable by the AI
-  // until the next session restart. Putting the reload HERE (not at each CRUD
-  // call site) makes every present and future "refresh project config" path
-  // pick it up automatically, with the order guaranteed correct: symlinks
-  // first, SDK rescan second. No-ops when no SDK session is alive (session
-  // startup path) or when the synced dir isn't this session's workspace.
-  reloadSessionSkillsAfterSync(projectDir);
+  let capabilitySnapshot = options.capabilitySnapshot;
+  if (!capabilitySnapshot) {
+    try {
+      capabilitySnapshot = resolveEffectiveProjectCapabilities(projectDir);
+    } catch (error) {
+      console.warn('[skill-sync] Project capability scan failed; reconciling only the global inventory:', error);
+    }
+  }
+  trySyncProjectUserConfigFiles(
+    projectDir,
+    { ...options, capabilitySnapshot },
+    'skill-sync',
+  );
+  // A live Query owns the allowlist captured at birth. Capability changes use
+  // the existing deferred-restart boundary; reloadSkills() alone cannot update
+  // Options.skills. The shared inventory itself remains runtime-neutral.
+  if (lifecycleState.query && agentDir && workspacePathsEqual(projectDir, agentDir)) {
+    scheduleDeferredRestart('capabilities');
+    return;
+  }
 }
 
 /**
  * Reload the live builtin SDK skill registry and prove that a product-owned
- * workflow contract is actually available to this Session. If no initialized
- * SDK query exists yet, its next subprocess start will scan the already-
- * verified project link before the first turn.
+ * workflow contract is actually available to this Session. Cold-start guards
+ * await the Query's existing initialization promise before reading the native
+ * registry; this rejects only the dependent turn, never Session startup.
  */
 export async function requireCurrentBuiltinSkill(skillName: string): Promise<void> {
   const query = lifecycleState.query;
-  if (!query || !lifecycleState.sdkControlReady) return;
+  if (!query) throw new Error(`builtin Runtime is unavailable for required system skill ${skillName}`);
+  if (!lifecycleState.sdkControlReady) {
+    await query.initializationResult();
+    if (lifecycleState.query !== query) {
+      throw new Error(`builtin Runtime changed before loading required system skill ${skillName}`);
+    }
+  }
 
   const refreshed = await query.reloadSkills();
   if (!refreshed.skills.some(skill => skill.name === skillName)) {
     throw new Error(`builtin Runtime did not load required system skill ${skillName}`);
   }
-}
-
-/**
- * Fire-and-forget mid-session skill rescan (SDK 0.3.169+ reloadSkills control
- * request). Failure degrades to the pre-0.2.34 behavior — skills refresh on
- * the next session — so it never blocks the CRUD response that triggered the
- * sync. External runtimes (Claude Code / Codex / Gemini CLI) have no such
- * control channel; they rescan on their next session naturally.
- */
-function reloadSessionSkillsAfterSync(syncedDir: string): void {
-  if (!lifecycleState.query) return;
-  // External runtimes never populate lifecycleState.query, so this guard is
-  // belt-and-suspenders — kept explicit per the external-routing red line.
-  if (isExternalRuntime(getCurrentRuntimeType())) return;
-  // Another workspace's dir was synced — this session's skill view is unaffected.
-  if (!agentDir || !workspacePathsEqual(syncedDir, agentDir)) return;
-  lifecycleState.query.reloadSkills()
-    .then(res => {
-      console.log(`[agent] skills reloaded mid-session (${res.skills.length} skill commands)`);
-    })
-    .catch(err => {
-      console.warn('[agent] reloadSkills failed — skills will refresh on next session:',
-        err instanceof Error ? err.message : err);
-    });
 }
 
 // (issue #174) `starting` separates "subprocess launched, awaiting system_init"
@@ -3369,7 +3373,7 @@ function dispatchSetModelToSdk(model: string): Promise<void> {
   return promise;
 }
 
-export function setSessionModel(model: string, opts?: { imConfigSync?: boolean }): void {
+export async function setSessionModel(model: string, opts?: { imConfigSync?: boolean }): Promise<void> {
   // #327 — snapshot authority. An owned (snapshotted) desktop session's model is
   // frozen at the snapshot, and the per-turn /api/im/enqueue resolver already
   // applies "snapshot wins" (index.ts). But the Rust IM router ALSO pushes the
@@ -3407,7 +3411,12 @@ export function setSessionModel(model: string, opts?: { imConfigSync?: boolean }
       console.log('[agent] model switch crosses provider-history boundary during active turn -> deferred fresh SDK session');
       if (lifecycleState.query) scheduleDeferredRestart('provider-history');
     } else {
-      resetForProviderHistoryBoundary();
+      try {
+        await resetForProviderHistoryBoundary();
+      } catch (error) {
+        if (configState.currentModel === model) configSetModel(oldModel);
+        throw error;
+      }
       console.log('[agent] model switch crosses provider-history boundary -> created fresh SDK session id');
       if (lifecycleState.query) {
         abortPersistentSession();
@@ -3523,22 +3532,40 @@ export function getSessionProviderId(): string | null {
   return configState.currentProviderEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID;
 }
 
-function resetForProviderHistoryBoundary(): void {
-  const previousSessionId = sessionId;
-  setPendingProviderHistoryBoundaryReset(false);
-  sessionRegistered = false;
-  setCurrentSessionId(randomUUID());
-  hasInitialPrompt = false;
-  resetSessionMaterializationState({ allowLazySessionMaterialization: true });
-  clearMessages();
-  resetTranscriptPersistenceForSession(previousSessionId);
-  clearCurrentSessionUuids();
-  clearLiveSessionUuids();
-  setMessageSequence(0);
-  pendingResumeSessionAt = undefined;
-  setPendingReloadAnchor(undefined);
-  setSystemInitInfo(null);
-  setSdkControlReady(false);
+async function resetForProviderHistoryBoundary(): Promise<void> {
+  return runSerializedSessionMutation(async () => {
+    const productSessionId = sessionId;
+    const metadata = getSessionMetadata(productSessionId);
+    if (metadata) {
+      const sourceSdkSessionId = resolveBuiltinSdkSessionId(metadata);
+      const replacementSdkSessionId = randomUUID();
+      const updated = await updateSessionMetadata(productSessionId, {
+        sdkSessionId: replacementSdkSessionId,
+        unifiedSession: false,
+        forkFrom: undefined,
+        runtimeUsageTotals: undefined,
+        lastContextUsage: undefined,
+      }, (current) => (
+        (current.runtime ?? 'builtin') === 'builtin'
+        && resolveBuiltinSdkSessionId(current) === sourceSdkSessionId
+        && !current.pendingConversationMutation
+      ));
+      if (!updated) {
+        throw new Error(`[agent] provider history boundary reset lost Session authority for ${productSessionId}`);
+      }
+    } else if (transcriptState.messages.length > 0) {
+      throw new Error(`[agent] provider history boundary reset refused unindexed Session ${productSessionId}`);
+    }
+
+    setPendingProviderHistoryBoundaryReset(false);
+    sessionRegistered = false;
+    clearCurrentSessionUuids();
+    clearLiveSessionUuids();
+    pendingResumeSessionAt = undefined;
+    setPendingReloadAnchor(undefined);
+    setSystemInitInfo(null);
+    setSdkControlReady(false);
+  });
 }
 
 /** Set provider env (called by Rust IM router via /api/provider/set on sidecar creation or config hot-reload).
@@ -3551,7 +3578,7 @@ function resetForProviderHistoryBoundary(): void {
  * go through schedulePreWarm's 500ms debounce — provider changes are discrete
  * Rust-layer calls, not rapid-fire React state sync.
  */
-export function setSessionProviderEnv(providerEnv: ProviderEnv | undefined): void {
+export async function setSessionProviderEnv(providerEnv: ProviderEnv | undefined): Promise<void> {
   const oldLabel = configState.currentProviderEnv?.baseUrl ?? 'anthropic';
   const newLabel = providerEnv?.baseUrl ?? 'anthropic';
   // Full equality check — all ProviderEnv fields affect subprocess env (authType, apiProtocol, etc.)
@@ -3577,7 +3604,12 @@ export function setSessionProviderEnv(providerEnv: ProviderEnv | undefined): voi
       setPendingProviderHistoryBoundaryReset(true);
       console.log('[agent] provider switch crosses history boundary during active turn — fresh SDK session will be created after restart');
     } else {
-      resetForProviderHistoryBoundary();
+      try {
+        await resetForProviderHistoryBoundary();
+      } catch (error) {
+        if (configState.currentProviderEnv === providerEnv) configSetProviderEnv(providerUpdate.oldProviderEnv);
+        throw error;
+      }
       console.log('[agent] provider switch crosses history boundary — created fresh SDK session id');
     }
   }
@@ -3867,7 +3899,7 @@ function checkMcpToolPermission(toolName: string): { allowed: true } | { allowed
  * - 'project': <cwd>/.claude/ (project-level config)
  *
  * We use 'project' only:
- * - User-level skills are synced as symlinks into <cwd>/.claude/skills/ by syncProjectUserConfig()
+ * - Enabled MyAgents global Skills are projected into <cwd>/.claude/skills/ at Query birth
  * - Avoids setting CLAUDE_CONFIG_DIR which would break Keychain credential lookup
  * - Project-level: SDK reads project's .claude/skills/, .claude/commands/, CLAUDE.md
  *
@@ -4063,15 +4095,11 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
 
       result[server.id] = mcpConfig;
     } else if ((server.type === 'sse' || server.type === 'http') && server.url) {
-      // Substitute {{ENV_VAR}} placeholders in URL with values from server.env
-      let resolvedUrl = server.url;
-      if (server.env) {
-        resolvedUrl = resolvedUrl.replace(/\{\{(\w+)\}\}/g, (_, key) => server.env?.[key] ?? '');
-      }
+      const remote = resolveRemoteMcpTransportConfig(server);
 
       // Inject OAuth token as Authorization header (auto-refreshes if needed)
       // Respect user-supplied Authorization — don't overwrite if already present
-      const headers = { ...server.headers };
+      const headers = { ...remote.headers };
       if (!headers['Authorization'] && !headers['authorization']) {
         const oauthHeaders = await resolveAuthHeaders(server.id);
         if (oauthHeaders['Authorization']) {
@@ -4082,11 +4110,11 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
 
       result[server.id] = {
         type: server.type,
-        url: resolvedUrl,
+        url: remote.url,
         headers,
       };
       // Log URL with API key masked for security
-      const maskedUrl = resolvedUrl.replace(/([?&]\w*[Kk]ey=)[^&]+/g, '$1***');
+      const maskedUrl = remote.url.replace(/([?&]\w*[Kk]ey=)[^&]+/g, '$1***');
       console.log(`[agent] MCP ${server.id}: ${server.type} → ${maskedUrl}`);
     } else if (server.type === 'sse' || server.type === 'http') {
       console.warn(`[agent] MCP ${server.id}: Missing url for ${server.type} server, skipping`);
@@ -6015,16 +6043,8 @@ export function buildClaudeSessionEnv(
     env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = '1';
   }
   // DO NOT set CLAUDE_CONFIG_DIR here — it would change the Keychain service name
-  // and break Anthropic subscription OAuth. User-level skills are synced as symlinks
-  // into project .claude/skills/ by syncProjectUserConfig() instead.
-
-  // agent-browser: no env injection needed. The CLI ships its own config
-  // discovery (~/.agent-browser/config.json default path) and is installed
-  // by the AI via the agent-browser skill on first use, not bundled here.
-  // Earlier versions set AGENT_BROWSER_HOME on Windows to bypass a Rust
-  // canonicalize() UNC path issue (vercel-labs/agent-browser#393); that
-  // workaround required the bundled CLI path to derive HOME, and is now
-  // upstream's responsibility.
+  // and break Anthropic subscription OAuth. Enabled global Skills are instead
+  // projected into project .claude/skills/ at Query birth.
 
   // Self-Config CLI: expose sidecar port so the `myagents` CLI can call back
   if (sidecarPort > 0) {
@@ -7664,7 +7684,7 @@ function pushInboxAbortReplyForQueuedItem(
  * IMPORTANT: Must properly terminate SDK session to prevent context leakage.
  * Simply interrupting is not enough - we must wait for the session to fully end.
  */
-export async function resetSession(): Promise<void> {
+export async function resetSession(options?: { sessionId?: string }): Promise<void> {
   return runSerializedSessionMutation(async () => {
   console.log('[agent] resetSession: starting new conversation');
   configState.currentWorkbenchSystemPrompt = undefined;
@@ -7705,8 +7725,10 @@ export async function resetSession(): Promise<void> {
   clearImBridgeToolsContext();
   clearNovelWorkbenchContext();
 
-  // 3. Generate new session ID (don't persist yet - wait for first message)
-  setCurrentSessionId(randomUUID());
+  // 3. Bind the caller-proven target identity, or mint one for ordinary
+  // desktop reset. Surface migration passes its Rust-generated target so
+  // Router, SidecarManager, Runtime, and renderer adopt one exact identity.
+  setCurrentSessionId(options?.sessionId ?? randomUUID());
   hasInitialPrompt = false; // Reset so first message creates a new session in SessionStore
   resetSessionMaterializationState({ allowLazySessionMaterialization: true });
 
@@ -7849,7 +7871,16 @@ export async function initializeAgent(
   // function called getSessionMetadata(initialSessionId) three times (at resume
   // decision, message load, and MCP self-resolve); each call scans sessions.json
   // and a large JSONL can cost ~30-100ms. Read once, reuse.
-  const initMeta = initialSessionId ? getSessionMetadata(initialSessionId) : null;
+  let initMeta = initialSessionId ? getSessionMetadata(initialSessionId) : null;
+  if (initialSessionId && initMeta?.pendingConversationMutation) {
+    const resolved = await resolvePendingConversationMutation(initialSessionId);
+    if (!resolved.success) {
+      throw new Error(
+        `[agent] refused to initialize ${initialSessionId}: pending conversation mutation could not recover: ${resolved.error}`,
+      );
+    }
+    initMeta = resolved.metadata;
+  }
   resetSessionMaterializationState({ allowLazySessionMaterialization: !initialSessionId });
 
   if (initialSessionId) {
@@ -7881,7 +7912,7 @@ export async function initializeAgent(
           console.log(`[agent] initializeAgent: external runtime ${currentRuntimeType}, builtin SDK resume disabled for ${initialSessionId}`);
         } else if (resumeDecision.reason === 'probe-error') {
           const msg = resumeDecision.error instanceof Error ? resumeDecision.error.message : String(resumeDecision.error);
-          console.warn(`[agent] initializeAgent: SDK transcript probe failed for ${initialSessionId}, will create fresh session: ${msg}`);
+          throw new Error(`[agent] SDK transcript probe failed for ${initialSessionId}; refusing to replace its bound SDK identity: ${msg}`);
         } else {
           console.log(`[agent] initializeAgent: will create fresh SDK session ${initialSessionId} (resume skipped: ${resumeDecision.reason})`);
         }
@@ -8102,10 +8133,30 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
   }
 
   // Get the target session metadata to find SDK session_id
-  const sessionMeta = getSessionMetadata(targetSessionId);
+  let sessionMeta = getSessionMetadata(targetSessionId);
   if (!sessionMeta) {
     console.error(`[agent] switchToSession: session ${targetSessionId} not found`);
     return false;
+  }
+  if (sessionMeta.pendingConversationMutation) {
+    const resolved = await resolvePendingConversationMutation(targetSessionId);
+    if (!resolved.success) {
+      throw new Error(
+        `[agent] refused to switch to ${targetSessionId}: pending conversation mutation could not recover: ${resolved.error}`,
+      );
+    }
+    sessionMeta = resolved.metadata;
+  }
+  const targetAgentDir = sessionMeta.agentDir || agentDir;
+  const resumeDecision = await decideBuiltinSessionResume({
+    meta: sessionMeta,
+    currentRuntime: getCurrentRuntimeType(),
+    agentDir: targetAgentDir,
+    probeSdkTranscript: sdkGetSessionMessages,
+  });
+  if (!resumeDecision.shouldResume && resumeDecision.reason === 'probe-error') {
+    const msg = resumeDecision.error instanceof Error ? resumeDecision.error.message : String(resumeDecision.error);
+    throw new Error(`[agent] SDK transcript probe failed for ${targetSessionId}; refusing to replace its bound SDK identity: ${msg}`);
   }
 
   configState.currentWorkbenchSystemPrompt = undefined;
@@ -8168,13 +8219,6 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
 
   // Set sessionRegistered based on whether the SDK can actually resume this
   // session. Metadata-only sessions must start fresh with the same sessionId.
-  const targetAgentDir = sessionMeta.agentDir || agentDir;
-  const resumeDecision = await decideBuiltinSessionResume({
-    meta: sessionMeta,
-    currentRuntime: getCurrentRuntimeType(),
-    agentDir: targetAgentDir,
-    probeSdkTranscript: sdkGetSessionMessages,
-  });
   if (resumeDecision.shouldResume) {
     sessionRegistered = true;
     console.log(`[agent] switchToSession: will resume session ${resumeDecision.resumeSessionId} (reason=${resumeDecision.reason})`);
@@ -8182,10 +8226,6 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
     // External runtimes (codex/gemini/CC) don't use builtin SDK resume state.
     // Their resume is driven by runtimeSessionId in external-session.ts.
     sessionRegistered = false;
-  } else if (resumeDecision.reason === 'probe-error') {
-    sessionRegistered = false;
-    const msg = resumeDecision.error instanceof Error ? resumeDecision.error.message : String(resumeDecision.error);
-    console.warn(`[agent] switchToSession: SDK transcript probe failed, will start fresh: ${msg}`);
   } else {
     // 从未 query 过的 session，用 sessionId 创建
     sessionRegistered = false;
@@ -8594,6 +8634,38 @@ function scheduleWatchdogAutoResumeAfterAbort(
   })();
 }
 
+/** Recover or reject the exact persisted builtin rewind intent before Runtime use. */
+async function resolvePendingBuiltinConversationMutationForActiveSession(): Promise<void> {
+  const productSessionId = sessionId;
+  const metadata = getSessionMetadata(productSessionId);
+  const intent = metadata?.pendingConversationMutation;
+  if (!intent) return;
+  if (intent.kind !== 'builtin-rewind') {
+    throw new Error(`[agent] refusing builtin Runtime for ${productSessionId}: incompatible pending conversation mutation`);
+  }
+
+  const resolved = await resolvePendingConversationMutation(productSessionId);
+  if (!resolved.success) {
+    throw new Error(
+      `[agent] refusing builtin Runtime for ${productSessionId}: pending conversation mutation could not recover: ${resolved.error}`,
+    );
+  }
+  if (sessionId !== productSessionId) {
+    throw new Error(
+      `[agent] refusing recovered conversation mutation after Product Session changed from ${productSessionId} to ${sessionId}`,
+    );
+  }
+
+  clearCurrentSessionUuids();
+  clearLiveSessionUuids();
+  loadTranscriptFromSessionMessages(resolved.messages, resolved.cursor);
+  if (resolved.metadata.sdkSessionId === intent.replacementSdkSessionId) {
+    sessionRegistered = false;
+    pendingResumeSessionAt = undefined;
+    setPendingReloadAnchor(undefined);
+  }
+}
+
 export async function enqueueUserMessage(
   text: string,
   images?: ImagePayload[],
@@ -8641,6 +8713,50 @@ export async function enqueueUserMessage(
     return { queued: false, error: 'Missing explicit channel delivery ownership' };
   }
   const channelDelivery = options.channelDelivery;
+
+  try {
+    const globalSkillInventory = createGlobalSkillInventorySnapshot();
+    const desiredCapabilities = resolveEffectiveProjectCapabilities(agentDir, { globalSkillInventory });
+    const disabledCapability = findDisabledCapabilityForSlashInput(trimmed, desiredCapabilities);
+    if (disabledCapability) {
+      return {
+        queued: false,
+        error: `/${disabledCapability.canonicalName} is disabled for this workspace`,
+      };
+    }
+    const currentCapabilities = configState.currentCapabilitySnapshot;
+    let projectionChanged = false;
+    if (
+      lifecycleState.query
+      && currentCapabilities
+      && !isTurnInFlight()
+      && (currentCapabilities.revision !== desiredCapabilities.revision
+        || currentCapabilities.integrityRevision !== desiredCapabilities.integrityRevision)
+    ) {
+      projectionChanged = trySyncProjectUserConfigFiles(agentDir, {
+        globalSkillInventory,
+        capabilitySnapshot: desiredCapabilities,
+      }, 'skill-sync').changed;
+      if (currentCapabilities.revision === desiredCapabilities.revision && !projectionChanged) {
+        configState.currentCapabilitySnapshot = desiredCapabilities;
+      }
+    }
+    if (
+      lifecycleState.query
+      && (currentCapabilities?.revision !== desiredCapabilities.revision || projectionChanged)
+    ) {
+      scheduleDeferredRestart('capabilities');
+      // Quiescent/pre-warmed Queries are replaced immediately. During a turn,
+      // the latch is drained by the terminal owner and the queued message is
+      // dispatched only by the replacement Query.
+      applyDeferredRestartIfNeeded();
+    }
+  } catch (error) {
+    return {
+      queued: false,
+      error: `Workspace capabilities are unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
 
   const queueId = options?.queueId ?? randomUUID();
   const deferVisibleAdmission = options?.beforeUserPersistence !== undefined;
@@ -8720,6 +8836,7 @@ export async function enqueueUserMessage(
   if (rewindPromise) {
     await rewindPromise;
   }
+  await resolvePendingBuiltinConversationMutationForActiveSession();
   if (admissionTicket?.canceled) {
     return { queued: false, error: 'Queue item was cancelled before dispatch' };
   }
@@ -8913,14 +9030,14 @@ export async function enqueueUserMessage(
     imTextBlockIndices.clear();
 
     if (crossesProviderHistoryBoundary) {
-      resetForProviderHistoryBoundary();
+      await resetForProviderHistoryBoundary();
       console.log('[agent] Fresh session: provider history boundary changed');
     }
 
     if (isDebugMode) console.log(`[agent] session terminated for provider switch`);
   } else if (providerChanged || crossesProviderHistoryBoundary) {
     if (crossesProviderHistoryBoundary) {
-      resetForProviderHistoryBoundary();
+      await resetForProviderHistoryBoundary();
       console.log('[agent] Fresh session: provider history boundary changed');
     }
     if (providerChanged) {
@@ -10215,6 +10332,7 @@ export async function rewindSession(userMessageId: string): Promise<{
   fileRewindStatus?: FileRewindStatus;
 }> {
   const doRewind = async () => {
+    const productSessionId = sessionId;
     // 1. 找到目标 user message
     const targetIndex = transcriptState.messages.findIndex(m => m.id === userMessageId && m.role === 'user');
     if (targetIndex < 0) return { success: false as const, error: 'Message not found' };
@@ -10273,13 +10391,9 @@ export async function rewindSession(userMessageId: string): Promise<{
     const removedContent = typeof targetMessage.content === 'string' ? targetMessage.content : '';
     const removedAttachments = targetMessage.attachments;
 
-    // 6. SessionStore validates and commits the durable truncation before the
-    // live/UI projection changes. The returned cursor remains the sole append
-    // authority for the shortened transcript.
-    await truncateTranscriptPersistenceForRewind(sessionId, targetMessage.id, targetIndex);
-    truncateMessages(targetIndex);
-
-    // 7. 设置下次 query 的对话截断点 — 三分支决策树
+    // 6. Decide whether the existing SDK transcript can remain the execution
+    // identity. This decision is made before persistence so a fresh branch can
+    // commit the transcript truncation and SDK binding replacement together.
     //    UUID 有效性校验（OR 逻辑）：
     //    - transcriptState.liveSessionUuids: SDK subprocess stdout 确认过的 UUID（权威但不完整 — resume 后
     //      SDK 不会重新输出旧历史的 UUID）
@@ -10288,7 +10402,7 @@ export async function rewindSession(userMessageId: string): Promise<{
     //    分支：
     //      A. uuidIsLive=true        → 设 anchor，传给 SDK 截断
     //      B. 锚点 stale 但 session 仍活跃 → 仅清 anchor，**保留 session id** (#189 修复)
-    //      C. 没有锚点 / session 未注册 → 真正的 fresh start，新建 session id
+    //      C. 没有锚点 / session 未注册 → Product Session 不变，仅换 fresh SDK identity
     //
     //    **注意**：这两个集合只是 MyAgents 自己的视角，**不是 SDK 持久化状态的权威 proxy**。
     //    MyAgents 的 JSONL 与 SDK 的 JSONL (~/.claude/projects/.../*.jsonl) 是双份存储、
@@ -10301,8 +10415,33 @@ export async function rewindSession(userMessageId: string): Promise<{
     //    AI 看到的历史可能比 UI 截断后更多（短期分歧），但绝对优于上下文全失忆。
     //    这一行为与 catch-block 的 "No message found" recovery (~line 9219) 对齐 —
     //    SDK 真正拒绝 anchor 时也走同样语义。
-    const uuidIsLive = lastAssistantUuid
+    const uuidIsLive = sessionRegistered && lastAssistantUuid
       && (transcriptState.liveSessionUuids.has(lastAssistantUuid) || transcriptState.currentSessionUuids.has(lastAssistantUuid));
+    const requiresFreshSdkIdentity = !uuidIsLive && !(lastAssistantUuid && sessionRegistered);
+    let freshSdkIdentity: {
+      sourceSdkSessionId: string | null;
+      replacementSdkSessionId: string;
+    } | undefined;
+    if (requiresFreshSdkIdentity) {
+      const metadata = getSessionMetadata(productSessionId);
+      freshSdkIdentity = {
+        sourceSdkSessionId: metadata ? (resolveBuiltinSdkSessionId(metadata) ?? null) : null,
+        replacementSdkSessionId: randomUUID(),
+      };
+    }
+
+    // SessionStore validates and commits the durable truncation before the
+    // live/UI projection changes. When SDK history cannot be reused, the same
+    // bounded intent also replaces only A's SDK binding (S1 -> S2).
+    await truncateTranscriptPersistenceForRewind(
+      productSessionId,
+      targetMessage.id,
+      targetIndex,
+      freshSdkIdentity,
+    );
+    truncateMessages(targetIndex);
+
+    // 7. 设置下次 query 的对话截断点 — 三分支决策树
     if (uuidIsLive) {
       pendingResumeSessionAt = lastAssistantUuid;
     } else if (lastAssistantUuid && sessionRegistered) {
@@ -10317,15 +10456,17 @@ export async function rewindSession(userMessageId: string): Promise<{
       // 关键：**不**修改 sessionId / sessionRegistered / hasInitialPrompt。
       // 下次 startStreamingSession 会用 resume: sessionId 加载 SDK 全量历史。
     } else {
-      // 两种合法的"fresh start"场景：
+      // 两种合法的"fresh SDK start"场景：
       //   (a) lastAssistantUuid 为 undefined：rewind 到第一条 user message 之前 / 无 SDK
       //       tracked assistant —— 没有 SDK 上下文可保留
       //   (b) sessionRegistered=false：SDK 从未注册过这个 session（首次 pre-warm 失败等）
       pendingResumeSessionAt = undefined;
       sessionRegistered = false;
-      setCurrentSessionId(randomUUID());
-      hasInitialPrompt = false; // Reset so next message creates metadata for the new session
-      resetSessionMaterializationState({ allowLazySessionMaterialization: true });
+      setPendingReloadAnchor(undefined);
+      clearCurrentSessionUuids();
+      clearLiveSessionUuids();
+      // Product Session A, its transcript cursor, title, config and Sidecar
+      // ownership remain unchanged. Only the persisted SDK identity is fresh.
     }
 
     // 8. 预热下次 session
@@ -10340,7 +10481,7 @@ export async function rewindSession(userMessageId: string): Promise<{
     };
   };
 
-  const promise = doRewind();
+  const promise = runSerializedSessionMutation(doRewind);
   rewindPromise = promise;
   try {
     return await promise;
@@ -10592,6 +10733,9 @@ export async function forkSession(assistantMessageId: string): Promise<{
 }
 
 async function startStreamingSession(preWarm = false): Promise<void> {
+  const sessionMutationBarrier = getSessionMutationBarrier();
+  if (sessionMutationBarrier) await sessionMutationBarrier;
+  await resolvePendingBuiltinConversationMutationForActiveSession();
   await awaitSessionTermination(10_000, 'startStreamingSession');
 
   // (issue #174) Cold-start abort race: enqueueUserMessage schedules this
@@ -10663,13 +10807,39 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   setPreWarmInProgress(preWarm);
   if (configState.pendingProviderHistoryBoundaryReset) {
     console.log('[agent] applying deferred provider history boundary reset before SDK start');
-    resetForProviderHistoryBoundary();
+    await resetForProviderHistoryBoundary();
   }
-  // Sync enabled user-level skills as symlinks into project's .claude/skills/
-  // Must happen before buildClaudeSessionEnv() so SDK sees them via settingSources: ['project']
   const adminConfigForSession = loadAdminConfig();
   const cliToolRegistryEnabled = isCliToolRegistryEnabled(adminConfigForSession);
-  syncProjectUserConfig(agentDir, { cliToolRegistryEnabled });
+  // One resolver owns UI and Runtime admission. The same inventory and
+  // project-winner snapshot also drive the compatibility projection before
+  // launch, so every Runtime observes one canonical result.
+  let launchCapabilitySnapshot: EffectiveProjectCapabilitySnapshot;
+  let unavailableBuiltinSkillNames: string[] = [];
+  try {
+    const globalSkillInventory = createGlobalSkillInventorySnapshot({ cliToolRegistryEnabled });
+    launchCapabilitySnapshot = resolveEffectiveProjectCapabilities(agentDir, { globalSkillInventory });
+    unavailableBuiltinSkillNames = trySyncProjectUserConfigFiles(agentDir, {
+      cliToolRegistryEnabled,
+      globalSkillInventory,
+      capabilitySnapshot: launchCapabilitySnapshot,
+    }).unavailableSkillNames;
+  } catch (error) {
+    const message = `Workspace capability admission failed: ${error instanceof Error ? error.message : String(error)}`;
+    console.error(`[agent] ${message}`);
+    lastAgentError = message;
+    const hadQueuedInput = getMessageQueue().length > 0;
+    if (!preWarm || hadQueuedInput) {
+      drainQueueWithCancellation();
+      broadcast('chat:agent-error', { message });
+    }
+    // Capability projection happens before the ordinary Query try/finally.
+    // Release the pre-warm owner here so a failed replacement cannot strand
+    // its requeued user message behind a permanently "pre-warming" Session.
+    setPreWarmInProgress(false);
+    setSessionState('idle');
+    return;
+  }
   ensureGitignorePattern(agentDir, SESSION_PLANS_GITIGNORE_PATTERN);
   // PRD #124: register a FRESH bridge token for this SDK subprocess.
   // `freshToken: true` retires the previous token (if any) so any late
@@ -11108,15 +11278,37 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       configState.currentEnabledOfficialToolIds,
     );
     const claudeCodeExecutable = resolveClaudeCodeCli();
+    const contextPluginIds = configState.currentEnabledPluginIds !== null
+      ? configState.currentEnabledPluginIds
+      : getDefaultEnabledPluginIdsForWorkspace(agentDir ?? '');
+    const enabledPluginConfigs = getEnabledPluginSdkConfigs(contextPluginIds);
+    const enabledPluginSkillNames = enabledPluginConfigs.flatMap(plugin => (
+      listPluginQualifiedSkillNames(plugin.path)
+    ));
+    const rawEnabledSkillAllowlist = buildBuiltinSkillAllowlist(
+      launchCapabilitySnapshot,
+      enabledPluginSkillNames,
+      unavailableBuiltinSkillNames,
+    );
+    const {
+      allowlist: enabledSkillAllowlist,
+      rejected: incompatibleSdkSkillNames,
+    } = sanitizeSdkSkillAllowlist(rawEnabledSkillAllowlist);
+    for (const rejected of incompatibleSdkSkillNames) {
+      console.warn(`[skills] Skipping SDK-incompatible Skill ${JSON.stringify(rejected.name)}: ${rejected.reason}`);
+    }
 
     const commonQueryOptions = {
       enableFileCheckpointing: true,
       thinking: thinkingConfig,
       effort: sdkEffort,
       // Load settings from project scope only (.claude/)
-      // User-level skills are synced as symlinks into <cwd>/.claude/skills/ by syncProjectUserConfig()
+      // Enabled global Skills are projected into <cwd>/.claude/skills/ before Query launch.
       // CLAUDE_CONFIG_DIR is NOT set — preserves Anthropic subscription Keychain lookup
       settingSources: buildSettingSources(),
+      // SDK-level allowlist is the execution gate for both project and global
+      // Skills. Disk projection remains the compatibility bridge for Commands.
+      skills: [...new Set(enabledSkillAllowlist)].sort(),
       settings: {
         cleanupPeriodDays: claudeTranscriptCleanupPeriodDays,
         // MyAgents does not expose Anthropic feedback submission. Keep the
@@ -11133,13 +11325,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // an outward data flow MyAgents has not product-decided to expose.
         // Keep the tool surface frozen; revisit as its own feature if wanted.
         disableArtifact: true,
-        // CC's own bundled skills duplicate the skill set MyAgents ships and
-        // seeds itself (bundled-skills/ → ~/.myagents/skills → <cwd>/.claude/skills
-        // symlinks): docx/pdf/pptx/xlsx/skill-creator all collide. Disabling
-        // removes the duplicate listings + their per-turn context cost; our
-        // seeded copies load via .claude/skills/ which this flag does NOT
-        // touch. Built-in slash commands stay typable (programmatic /compact
-        // unaffected) — they are only hidden from the model.
+        // Claude Code's native bundled skills can duplicate identities owned by
+        // MyAgents' effective Skill inventory (for example skill-creator).
+        // Disabling them removes duplicate listings and per-turn context cost;
+        // MyAgents-owned Skills still load through <cwd>/.claude/skills, which
+        // this flag does not touch. Built-in slash commands remain typable
+        // (programmatic /compact is unaffected); they are only hidden from the model.
         disableBundledSkills: true,
       },
       // Permission mode mapping (uses mapToSdkPermissionMode):
@@ -11217,21 +11408,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // already filters to entries that exist on disk as valid plugin roots.
       // Field omitted entirely when no plugins are enabled so empty-array
       // noise doesn't show up in SDK debug output.
-      ...((): { plugins?: { type: 'local'; path: string }[] } => {
-        // Two-layer plugin resolution (mirrors MCP):
-        //   1. Per-session override (configState.currentEnabledPluginIds, set via
-        //      setSessionEnabledPluginIds when the renderer toggles in the
-        //      chat input "插件" submenu)
-        //   2. Fallback: Agent.enabledPluginIds (or Project's) for this
-        //      workspace (agentDir)
-        // Layer 1 still applies the AppConfig.enabledPlugins global
-        // visibility gate inside getEnabledPluginSdkConfigs.
-        const contextIds = configState.currentEnabledPluginIds !== null
-          ? configState.currentEnabledPluginIds
-          : getDefaultEnabledPluginIdsForWorkspace(agentDir ?? '');
-        const pluginCfgs = getEnabledPluginSdkConfigs(contextIds);
-        return pluginCfgs.length > 0 ? { plugins: pluginCfgs } : {};
-      })(),
+      ...(enabledPluginConfigs.length > 0 ? { plugins: enabledPluginConfigs } : {}),
       // (v0.2.12) Enable --replay-user-messages so CLI emits SDKUserMessageReplay
       // (isReplay=true) when it drains a mid-turn queued_command attachment from
       // its commandQueue into the model's context. We use this signal to know
@@ -11783,6 +11960,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         productSessionId: queryProductSessionId,
         expectedSdkSessionId: effectiveSdkSessionId,
       });
+      configState.currentCapabilitySnapshot = launchCapabilitySnapshot;
     } catch (queryError: unknown) {
       // Defensive fallback: metadata lost but SDK disk data exists → switch to resume
       // Note: "already in use" may surface asynchronously during for-await iteration
@@ -11803,6 +11981,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           productSessionId: queryProductSessionId,
           expectedSdkSessionId: effectiveSdkSessionId,
         });
+        configState.currentCapabilitySnapshot = launchCapabilitySnapshot;
       } else {
         throw queryError;
       }
@@ -11878,7 +12057,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           return;
         }
         setSdkControlReady(true);
-        const slashCommands = normalizeSdkSlashCommands(initResult?.commands);
+        const normalizedSlashCommands = normalizeSdkSlashCommands(initResult?.commands);
+        const slashCommands = normalizedSlashCommands
+          ? filterSlashCommandsForCapabilities(normalizedSlashCommands, launchCapabilitySnapshot)
+          : null;
         if (slashCommands) {
           broadcastSdkSlashCommands(slashCommands, 'initialize');
         }
@@ -12278,7 +12460,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
       }
 
-      const changedSlashCommands = parseSdkCommandsChanged(sdkMessage);
+      const normalizedChangedSlashCommands = parseSdkCommandsChanged(sdkMessage);
+      const changedSlashCommands = normalizedChangedSlashCommands
+        ? filterSlashCommandsForCapabilities(normalizedChangedSlashCommands, launchCapabilitySnapshot)
+        : null;
       if (changedSlashCommands) {
         broadcastSdkSlashCommands(changedSlashCommands, 'commands_changed');
       }
@@ -13017,6 +13202,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
           // Check for structured tool_use_result data (e.g., WebSearch results)
           const toolUseResultData = (sdkMessage as { tool_use_result?: unknown }).tool_use_result;
+          const normalizedToolUseResult = normalizeSdkToolUseResult(toolUseResultData);
 
           // Only iterate if content is an array (tool_result blocks)
           if (Array.isArray(messageContent)) {
@@ -13038,14 +13224,20 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // below; the remaining text has every base64-ish payload redacted to
               // `[N bytes omitted]`. Session JSONL / SSE only ever carry path refs —
               // the SDK's own transcript (what the model sees) is untouched.
-              const renderParts = extractToolResultRenderParts(toolResultBlock.content);
+              const renderParts = extractToolResultRenderParts(
+                normalizedToolUseResult.isMetadataEnvelope
+                  ? normalizedToolUseResult.content
+                  : toolResultBlock.content,
+              );
 
               // For WebSearch/WebFetch, prefer structured tool_use_result data if available
               // This contains query, results array with titles/urls, etc.
               // Otherwise use renderParts.text: passes plain strings / JSON through
               // verbatim, joins non-image blocks, and (finding 2) yields '' for a bare
               // data-URL string whose bytes were extracted — so base64 never persists.
-              const contentStr = (toolUseResultData && typeof toolUseResultData === 'object')
+              const contentStr = normalizedToolUseResult.isMetadataEnvelope
+                ? renderParts.text
+                : (toolUseResultData && typeof toolUseResultData === 'object')
                 ? JSON.stringify(toolUseResultData)
                 : renderParts.text;
 
@@ -13637,6 +13829,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // 安全关闭 SDK session
     const session = lifecycleState.query as Query | null;
     setQuerySession(null);
+    configState.currentCapabilitySnapshot = null;
     try { session?.close(); } catch { /* subprocess 可能已退出 */ }
 
     // TypeScript cannot observe assignments performed through the nested
@@ -13879,6 +14072,59 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     }
     beginPromotedItem(item);
     const promotedQuery = lifecycleState.query;
+    let desiredCapabilities: EffectiveProjectCapabilitySnapshot;
+    try {
+      const globalSkillInventory = createGlobalSkillInventorySnapshot();
+      desiredCapabilities = resolveEffectiveProjectCapabilities(agentDir, { globalSkillInventory });
+      const currentCapabilities = configState.currentCapabilitySnapshot;
+      let projectionChanged = false;
+      if (
+        currentCapabilities
+        && (currentCapabilities.revision !== desiredCapabilities.revision
+          || currentCapabilities.integrityRevision !== desiredCapabilities.integrityRevision)
+      ) {
+        projectionChanged = trySyncProjectUserConfigFiles(agentDir, {
+          globalSkillInventory,
+          capabilitySnapshot: desiredCapabilities,
+        }, 'skill-sync').changed;
+        if (currentCapabilities.revision === desiredCapabilities.revision && !projectionChanged) {
+          configState.currentCapabilitySnapshot = desiredCapabilities;
+        }
+      }
+      if (projectionChanged) {
+        requeuePromotedItemBeforeSdkDispatch(item);
+        scheduleDeferredRestart('capabilities');
+        applyDeferredRestartIfNeeded();
+        if (promotedQuery) await waitForQueryExit(promotedQuery);
+        return;
+      }
+    } catch (error) {
+      await rejectPromotedMessageBeforeDispatch(item, {
+        accepted: false,
+        error: `Workspace capabilities are unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+      });
+      continue;
+    }
+    const disabledCapability = findDisabledCapabilityForSlashInput(item.messageText, desiredCapabilities);
+    if (disabledCapability) {
+      await rejectPromotedMessageBeforeDispatch(item, {
+        accepted: false,
+        error: `/${disabledCapability.canonicalName} is disabled for this workspace`,
+        rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+      });
+      continue;
+    }
+    if (configState.currentCapabilitySnapshot?.revision !== desiredCapabilities.revision) {
+      // Files/config may change after enqueue but before promotion. Return the
+      // exact item to the local queue and replace the Query before it crosses
+      // the SDK boundary; the replacement generator will retry it.
+      requeuePromotedItemBeforeSdkDispatch(item);
+      scheduleDeferredRestart('capabilities');
+      applyDeferredRestartIfNeeded();
+      if (promotedQuery) await waitForQueryExit(promotedQuery);
+      return;
+    }
     const activeMcpMutation = getQueryMcpMutation();
     if (activeMcpMutation) {
       const cancellation = getPromotedItemCancellation(item.id);

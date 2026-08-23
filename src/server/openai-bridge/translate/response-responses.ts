@@ -3,7 +3,7 @@
 import type { AnthropicResponse, AnthropicResponseContentBlock, AnthropicStopReason } from '../types/anthropic';
 import type { ResponsesResponse, ResponsesOutputItem } from '../types/openai-responses';
 import { generateMessageId } from '../utils/id';
-import { emptyUsage, toAnthropicUsage, type UsageSnapshot } from './usage';
+import { fromResponsesUsage, toAnthropicUsage, type UsageWarningLogger } from './usage';
 import { safeParseJson } from './tools';
 
 /** Map Responses API status → Anthropic stop_reason */
@@ -20,6 +20,7 @@ function translateResponsesStatus(status: string): AnthropicStopReason {
 export function translateResponsesResponse(
   resp: ResponsesResponse,
   requestModel: string,
+  usageWarning?: UsageWarningLogger,
 ): AnthropicResponse {
   // Surface upstream failure as a thrown error so handler returns 502
   if (resp.status === 'failed') {
@@ -42,13 +43,7 @@ export function translateResponsesResponse(
   }
 
   // Build usage
-  const usage: UsageSnapshot = resp.usage ? {
-    inputTokens: resp.usage.input_tokens ?? 0,
-    outputTokens: resp.usage.output_tokens ?? 0,
-    cacheReadInputTokens: resp.usage.input_tokens_details?.cached_tokens ?? 0,
-    cacheCreationInputTokens: 0,
-    reasoningTokens: resp.usage.output_tokens_details?.reasoning_tokens ?? 0,
-  } : emptyUsage();
+  const usage = fromResponsesUsage(resp.usage, usageWarning);
 
   // Determine stop reason
   let stopReason: AnthropicStopReason;

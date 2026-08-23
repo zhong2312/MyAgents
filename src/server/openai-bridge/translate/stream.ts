@@ -47,10 +47,18 @@ export class StreamTranslator {
   private bufferedContent = "";
   private hasStandardToolCalls = false;
 
-  constructor(requestModel: string, translateReasoning = true) {
+  constructor(requestModel: string, translateReasoning = true, usageWarning?: UsageWarningLogger) {
     this.messageId = generateMessageId();
     this.requestModel = requestModel;
     this.translateReasoning = translateReasoning;
+    let warned = false;
+    this.usageWarning = usageWarning
+      ? (message) => {
+          if (warned) return;
+          warned = true;
+          usageWarning(message);
+        }
+      : undefined;
   }
 
   /** Feed an OpenAI stream chunk, returns Anthropic SSE events to emit */
@@ -65,7 +73,7 @@ export class StreamTranslator {
 
     // Track usage
     if (chunk.usage) {
-      this.usage = mergeUsage(this.usage, chunk.usage);
+      this.usage = mergeUsage(this.usage, chunk.usage, this.usageWarning);
     }
 
     const choice = chunk.choices?.[0];

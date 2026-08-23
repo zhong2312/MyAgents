@@ -18,6 +18,23 @@ export type SessionResourceTransitionClaim = {
     holders: number;
 };
 
+export type SessionResourceTransitionState = {
+    claims: Map<string, SessionResourceTransitionClaim>;
+    openingRevision: number;
+};
+
+export function createSessionResourceTransitionState(): SessionResourceTransitionState {
+    return { claims: new Map(), openingRevision: 0 };
+}
+
+/** True while App is materializing a new owner for this fixed Session identity. */
+export function isSessionOpening(
+    state: SessionResourceTransitionState,
+    sessionId: string,
+): boolean {
+    return state.claims.get(sessionId)?.transition === 'opening';
+}
+
 /**
  * Synchronous App-level admission for operations that can create or destroy a
  * mounted Session. JavaScript runs this check-and-set without an await gap, so
@@ -25,12 +42,12 @@ export type SessionResourceTransitionClaim = {
  * vice versa). The returned release only clears its own claim.
  */
 export function tryClaimSessionResourceTransition(
-    transitions: Map<string, SessionResourceTransitionClaim>,
+    state: SessionResourceTransitionState,
     sessionId: string,
     transition: SessionResourceTransition,
     ownerId?: string,
 ): (() => void) | null {
-    const existing = transitions.get(sessionId);
+    const existing = state.claims.get(sessionId);
     if (existing) {
         if (
             transition === 'opening'
@@ -41,11 +58,11 @@ export function tryClaimSessionResourceTransition(
             existing.holders += 1;
             let released = false;
             return () => {
-                if (released || transitions.get(sessionId) !== existing) return;
+                if (released || state.claims.get(sessionId) !== existing) return;
                 released = true;
                 existing.holders -= 1;
                 if (existing.holders === 0) {
-                    transitions.delete(sessionId);
+                    state.claims.delete(sessionId);
                 }
             };
         }
@@ -56,14 +73,17 @@ export function tryClaimSessionResourceTransition(
         ...(ownerId !== undefined ? { ownerId } : {}),
         holders: 1,
     };
-    transitions.set(sessionId, claim);
+    if (transition === 'opening') {
+        state.openingRevision += 1;
+    }
+    state.claims.set(sessionId, claim);
     let released = false;
     return () => {
-        if (released || transitions.get(sessionId) !== claim) return;
+        if (released || state.claims.get(sessionId) !== claim) return;
         released = true;
         claim.holders -= 1;
         if (claim.holders === 0) {
-            transitions.delete(sessionId);
+            state.claims.delete(sessionId);
         }
     };
 }

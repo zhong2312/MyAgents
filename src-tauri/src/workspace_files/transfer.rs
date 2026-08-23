@@ -16,8 +16,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::path_safety::{
-    resolve_existing_inside_workspace, resolve_inside_workspace, validate_external_read_path,
-    validate_workspace_root,
+    reject_managed_global_skill_mutation, resolve_existing_inside_workspace,
+    resolve_inside_workspace, validate_external_read_path, validate_workspace_root,
 };
 
 const MAX_COLLISION_SUFFIX: u32 = 9999;
@@ -81,6 +81,7 @@ pub async fn cmd_workspace_copy_paths(
 
     let workspace_root = validate_workspace_root(&workspace)?;
     let target_root = resolve_inside_workspace(&workspace_root, &target_dir)?;
+    reject_managed_global_skill_mutation(&workspace_root, &target_root)?;
     fs::create_dir_all(&target_root)
         .map_err(|e| format!("Failed to create target directory: {}", e))?;
 
@@ -137,6 +138,7 @@ pub async fn cmd_workspace_copy_internal(
     }
     let workspace_root = validate_workspace_root(&workspace)?;
     let target_root = resolve_inside_workspace(&workspace_root, target_dir.trim())?;
+    reject_managed_global_skill_mutation(&workspace_root, &target_root)?;
     if !target_root.is_dir() {
         return Err("Target must be an existing directory".to_string());
     }

@@ -1,8 +1,11 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { REQUIRED_SYSTEM_SKILLS } from '../../shared/systemSkills';
+import type { EffectiveProjectCapabilitySnapshot } from '../../shared/projectCapabilities';
+import { resolveEffectiveProjectCapabilities } from '../project-capabilities';
 
 import { getMyAgentsUserDir, syncProjectUserConfigFiles, trySyncProjectUserConfigFiles } from './project-user-config-sync';
 
@@ -33,6 +36,7 @@ describe('project-user-config-sync', () => {
     vi.stubEnv('TMPDIR', temp);
     vi.stubEnv('TEMP', temp);
     vi.stubEnv('TMP', temp);
+    for (const name of REQUIRED_SYSTEM_SKILLS) writeUserSkill(home, name);
     return { root, home, workspace };
   }
 
@@ -108,18 +112,106 @@ describe('project-user-config-sync', () => {
     writeFileSync(join(projectSkillDir, 'SKILL.md'), 'project-owned');
 
     syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
-
     expect(lstatSync(projectSkillDir).isSymbolicLink()).toBe(false);
     expect(readFileSync(join(projectSkillDir, 'SKILL.md'), 'utf-8')).toBe('project-owned');
   });
 
+  it('removes a global projection shadowed by a project canonical winner', () => {
+    const { home, workspace } = makeEnv();
+    const globalName = 'review-helper';
+    writeUserSkill(home, globalName);
+    syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
+    const globalLink = join(workspace, '.claude', 'skills', globalName);
+    expect(lstatSync(globalLink).isSymbolicLink()).toBe(true);
+
+    const projectFolder = 'local-review';
+    const projectSkill = join(workspace, '.claude', 'skills', projectFolder);
+    mkdirSync(projectSkill, { recursive: true });
+    writeFileSync(
+      join(projectSkill, 'SKILL.md'),
+      `---\nname: ${globalName}\ndescription: Project winner\n---\n`,
+    );
+    const capabilitySnapshot: EffectiveProjectCapabilitySnapshot = {
+      workspacePath: workspace,
+      agentId: 'agent-1',
+      revision: 'revision',
+      integrityRevision: 'integrity',
+      integrityIssues: [],
+      candidates: [{
+        id: `project:skill:${projectFolder}`,
+        kind: 'skill',
+        source: 'project',
+        sourceLocalId: projectFolder,
+        canonicalName: globalName,
+        name: globalName,
+        description: 'Project winner',
+        path: join(projectSkill, 'SKILL.md'),
+        required: false,
+        systemOwned: false,
+        enabled: true,
+        contentSha256: 'project-winner',
+      }],
+      enabledSkills: [],
+      enabledCommands: [],
+    };
+
+    const result = syncProjectUserConfigFiles(workspace, {
+      cliToolRegistryEnabled: true,
+      capabilitySnapshot,
+    });
+
+    expect(existsSync(globalLink)).toBe(false);
+    expect(result.unavailableSkillNames).toEqual([]);
+    expect(readFileSync(join(projectSkill, 'SKILL.md'), 'utf8')).toContain('Project winner');
+  });
+
+  itNonWindows('marks a canonical Skill unavailable when a shadowed global link cannot be removed', () => {
+    const { home, workspace } = makeEnv();
+    const globalFolder = 'global-review';
+    const canonicalName = 'review';
+    const globalSkill = join(home, '.myagents', 'skills', globalFolder);
+    mkdirSync(globalSkill, { recursive: true });
+    writeFileSync(
+      join(globalSkill, 'SKILL.md'),
+      `---\nname: ${canonicalName}\ndescription: Global review\n---\n`,
+    );
+    syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
+    const projectSkillsDir = join(workspace, '.claude', 'skills');
+    const staleGlobalLink = join(projectSkillsDir, globalFolder);
+    expect(lstatSync(staleGlobalLink).isSymbolicLink()).toBe(true);
+
+    const projectFolder = 'local-review';
+    const projectSkill = join(projectSkillsDir, projectFolder);
+    mkdirSync(projectSkill, { recursive: true });
+    writeFileSync(
+      join(projectSkill, 'SKILL.md'),
+      `---\nname: ${canonicalName}\ndescription: Project review\n---\n`,
+    );
+    const capabilitySnapshot = resolveEffectiveProjectCapabilities(workspace);
+
+    chmodSync(projectSkillsDir, 0o555);
+    const result = (() => {
+      try {
+        return syncProjectUserConfigFiles(workspace, {
+          cliToolRegistryEnabled: true,
+          capabilitySnapshot,
+        });
+      } finally {
+        chmodSync(projectSkillsDir, 0o755);
+      }
+    })();
+
+    expect(lstatSync(staleGlobalLink).isSymbolicLink()).toBe(true);
+    expect(result.unavailableSkillNames).toContain(canonicalName);
+  });
+
   itNonWindows('replaces broken managed skill symlinks with current user skills', () => {
-    const { home, root, workspace } = makeEnv();
+    const { home, workspace } = makeEnv();
     writeUserSkill(home, 'review-helper');
     const projectSkillsDir = join(workspace, '.claude', 'skills');
     mkdirSync(projectSkillsDir, { recursive: true });
     const linkPath = join(projectSkillsDir, 'review-helper');
-    symlinkSync(join(root, 'missing-old-skill'), linkPath, 'dir');
+    symlinkSync(join(home, '.myagents', 'skills', 'missing-old-skill'), linkPath, 'dir');
     expect(existsSync(linkPath)).toBe(false);
 
     syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
@@ -139,19 +231,129 @@ describe('project-user-config-sync', () => {
     expect(readFileSync(linkPath, 'utf-8')).toBe('# ship-it\n');
   });
 
-  itNonWindows('replaces broken managed command symlinks with current user commands', () => {
+  it('does not make healthy Skills unavailable when the Command source cannot be scanned', () => {
+    const { home, workspace } = makeEnv();
+    writeUserSkill(home, 'review-helper');
+    const userCommandsPath = join(home, '.myagents', 'commands');
+    writeFileSync(userCommandsPath, 'not a directory');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const capabilitySnapshot = resolveEffectiveProjectCapabilities(workspace);
+
+    const result = trySyncProjectUserConfigFiles(workspace, {
+      cliToolRegistryEnabled: true,
+      capabilitySnapshot,
+    });
+
+    expect(result.unavailableSkillNames).toEqual([]);
+    expect(lstatSync(join(workspace, '.claude', 'skills', 'review-helper')).isSymbolicLink()).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[command-sync] Failed to reconcile project Commands: ENOTDIR'),
+    );
+  });
+
+  itNonWindows('keeps already-correct managed links stable across Session births', () => {
+    const { home, workspace } = makeEnv();
+    writeUserSkill(home, 'review-helper');
+    writeUserCommand(home, 'ship-it');
+    const first = syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
+    const skillLink = join(workspace, '.claude', 'skills', 'review-helper');
+    const commandLink = join(workspace, '.claude', 'commands', 'ship-it.md');
+    const before = { skill: lstatSync(skillLink).ino, command: lstatSync(commandLink).ino };
+
+    const second = syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
+
+    expect(first.changed).toBe(true);
+    expect(second.changed).toBe(false);
+    expect(lstatSync(skillLink).ino).toBe(before.skill);
+    expect(lstatSync(commandLink).ino).toBe(before.command);
+  });
+
+  itNonWindows('does not project symlinked global Skill sources', () => {
     const { home, root, workspace } = makeEnv();
+    const globalSkills = join(home, '.myagents', 'skills');
+    const outsideSkill = join(root, 'outside-skill');
+    writeUserSkill(home, 'real-skill');
+    mkdirSync(outsideSkill, { recursive: true });
+    writeFileSync(join(outsideSkill, 'SKILL.md'), 'outside');
+    symlinkSync(join(globalSkills, 'real-skill'), join(globalSkills, 'inside-alias'), 'dir');
+    symlinkSync(outsideSkill, join(globalSkills, 'outside-alias'), 'dir');
+
+    syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
+
+    expect(existsSync(join(workspace, '.claude', 'skills', 'real-skill'))).toBe(true);
+    expect(existsSync(join(workspace, '.claude', 'skills', 'inside-alias'))).toBe(false);
+    expect(existsSync(join(workspace, '.claude', 'skills', 'outside-alias'))).toBe(false);
+  });
+
+  it('projects only global Skill candidates admitted by the effective snapshot', () => {
+    const { home, workspace } = makeEnv();
+    writeUserSkill(home, 'review-helper');
+    const invalidFolder = 'bad\nname';
+    const invalidDir = join(home, '.myagents', 'skills', invalidFolder);
+    mkdirSync(invalidDir, { recursive: true });
+    writeFileSync(
+      join(invalidDir, 'SKILL.md'),
+      '---\nname: review-helper\ndescription: Invalid source identity\n---\n',
+    );
+    const capabilitySnapshot = resolveEffectiveProjectCapabilities(workspace);
+
+    syncProjectUserConfigFiles(workspace, {
+      cliToolRegistryEnabled: true,
+      capabilitySnapshot,
+    });
+
+    expect(existsSync(join(workspace, '.claude', 'skills', invalidFolder))).toBe(false);
+    expect(lstatSync(join(workspace, '.claude', 'skills', 'review-helper')).isSymbolicLink()).toBe(true);
+  });
+
+  itNonWindows('removes only the stale managed link for a blocked optional Skill', () => {
+    const { home, workspace } = makeEnv();
+    const damaged = join(home, '.myagents', 'skills', 'pdf');
+    mkdirSync(damaged, { recursive: true });
+    writeFileSync(join(damaged, 'SKILL(1).md'), 'preserved backup');
+    const projectSkills = join(workspace, '.claude', 'skills');
+    mkdirSync(projectSkills, { recursive: true });
+    const link = join(projectSkills, 'pdf');
+    symlinkSync(damaged, link, 'dir');
+
+    const result = syncProjectUserConfigFiles(workspace, {
+      cliToolRegistryEnabled: true,
+    });
+
+    expect(result.changed).toBe(true);
+    expect(existsSync(link)).toBe(false);
+    expect(readFileSync(join(damaged, 'SKILL(1).md'), 'utf8')).toBe('preserved backup');
+  });
+
+  itNonWindows('replaces broken managed command symlinks with current user commands', () => {
+    const { home, workspace } = makeEnv();
     writeUserCommand(home, 'ship-it');
     const projectCommandsDir = join(workspace, '.claude', 'commands');
     mkdirSync(projectCommandsDir, { recursive: true });
     const linkPath = join(projectCommandsDir, 'ship-it.md');
-    symlinkSync(join(root, 'missing-old-command.md'), linkPath);
+    symlinkSync(join(home, '.myagents', 'commands', 'missing-old-command.md'), linkPath);
     expect(existsSync(linkPath)).toBe(false);
 
     syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
 
     expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
     expect(readFileSync(linkPath, 'utf-8')).toBe('# ship-it\n');
+  });
+
+  itNonWindows('preserves foreign project symlinks without failing projection', () => {
+    const { home, root, workspace } = makeEnv();
+    writeUserSkill(home, 'review-helper');
+    const foreignTarget = join(root, 'foreign-skill');
+    mkdirSync(foreignTarget, { recursive: true });
+    writeFileSync(join(foreignTarget, 'SKILL.md'), 'foreign-project-skill', 'utf8');
+    const projectSkillsDir = join(workspace, '.claude', 'skills');
+    mkdirSync(projectSkillsDir, { recursive: true });
+    const linkPath = join(projectSkillsDir, 'review-helper');
+    symlinkSync(foreignTarget, linkPath, 'dir');
+
+    const result = syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
+    expect(readFileSync(join(linkPath, 'SKILL.md'), 'utf8')).toBe('foreign-project-skill');
+    expect(result.unavailableSkillNames).toContain('review-helper');
   });
 
   it('reports sync failures without throwing from the tolerant wrapper', () => {
@@ -161,7 +363,11 @@ describe('project-user-config-sync', () => {
     writeFileSync(workspaceFile, 'not a directory');
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    expect(trySyncProjectUserConfigFiles(workspaceFile, { cliToolRegistryEnabled: true }, 'test-sync')).toBe(false);
+    expect(trySyncProjectUserConfigFiles(
+      workspaceFile,
+      { cliToolRegistryEnabled: true },
+      'test-sync',
+    )).toEqual({ changed: false, unavailableSkillNames: [] });
 
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('[test-sync] project user config sync failed; continuing without refreshed .claude config:'),

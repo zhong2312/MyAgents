@@ -1,6 +1,6 @@
 [package]
 name = "myagents"
-version = "0.4.5"
+version = "0.4.9"
 description = "MyAgents - Desktop Claude Code for everyone"
 authors = ["MyAgents Team <myagents.io@gmail.com>"]
 license = "AGPL-3.0-only"
@@ -71,11 +71,12 @@ portable-pty = "0.8"
 tantivy = "0.22"
 tantivy-jieba = "0.11"
 notify-debouncer-full = "0.6"
-sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+sysinfo = { version = "0.33", default-features = false, features = ["disk", "system"] }
 same-file = "1.0"
 trash = "5.2.3"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 sha2 = "0.10"
+zeroize = "1"
 zip = { version = "2.4.2", default-features = false, features = ["deflate-zlib"] }
 
 # Pattern 5: stale-lock recovery needs `kill(pid, 0)` for liveness probing on Unix.
@@ -141,9 +142,9 @@ windows-sys = { version = "0.59", features = [
 ] }
 # `junction` creates NTFS directory junctions without admin / Developer Mode
 # (`std::os::windows::fs::symlink_dir` would otherwise need ERROR_PRIVILEGE_NOT_HELD
-# elevated rights). Used by `workspace_files::skill_sync` to mirror
-# user-level skills into `<workspace>/.claude/skills/` — the Node.js
-# sidecar uses `symlinkSync(target, link, 'junction')` for the same reason.
+# elevated rights). The path-safety Windows tests use this to verify that
+# no-follow workspace IO rejects junction races. Runtime inventory projection
+# itself is Node-owned (`symlinkSync(target, link, 'junction')`).
 junction = "1.0"
 # WinRT toast notifications with click activation. `tauri-plugin-notification`
 # wraps this same crate but doesn't expose the `on_activated` callback we need

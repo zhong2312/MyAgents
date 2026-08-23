@@ -175,7 +175,7 @@ cd MyAgents
 .\build_windows.ps1
 ```
 
-`setup.sh` 会准备内置 Node.js runtime、安装依赖并拉取默认工作区 `mino`。如果你没有 GitHub SSH key，`openmino` 的 SSH clone 可能失败；可以先配置 GitHub SSH，或手动把默认工作区准备到仓库根目录的 `mino/` 后重新运行。
+`setup.sh` 会准备内置 Node.js runtime、安装依赖并缓存离线文档转换资源；重复运行会复用已校验的文档资源缓存。默认 Mino 工作区模板已经提交在 `bundled-workspaces/mino/`，构建和初始化不需要额外的 GitHub SSH 或模板下载。
 
 ### 常用命令
 
@@ -450,7 +450,7 @@ cd MyAgents
 .\build_windows.ps1
 ```
 
-`setup.sh` prepares the bundled Node.js runtime, installs dependencies, and pulls the default `mino` workspace. If you do not have a GitHub SSH key, the SSH clone for `openmino` may fail. Configure GitHub SSH first, or prepare the default workspace manually under `mino/` and rerun the script.
+`setup.sh` prepares the bundled Node.js runtime, installs dependencies, and caches the offline document-processing resources. Repeated runs reuse the verified document-resource cache. The default Mino workspace template is committed under `bundled-workspaces/mino/`, so builds and initialization require no extra GitHub SSH access or template download.
 
 ### Common Commands
 

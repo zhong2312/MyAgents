@@ -39,6 +39,12 @@ export interface ToolResultRenderParts {
   attachments: ExtractedToolResultAttachment[];
 }
 
+export interface NormalizedSdkToolUseResult {
+  content: unknown;
+  metadata: unknown;
+  isMetadataEnvelope: boolean;
+}
+
 const DEFAULT_IMAGE_MIME = 'image/png';
 const DATA_URL_RE = /^data:([^;,]+);base64,(.*)$/is;
 
@@ -79,6 +85,32 @@ export function appendOmittedImageNote(text: string, imageCount: number): string
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * SDK 0.3.232 wraps subagent MCP results that carry `_meta` as
+ * `{ content, _meta }`. Normalize that transport envelope at the SDK ingress so
+ * render/persistence keeps consuming the actual result content. Metadata stays
+ * available for a future product-owned renderer without leaking into the basic
+ * text representation today. Legacy bare values pass through unchanged.
+ */
+export function normalizeSdkToolUseResult(value: unknown): NormalizedSdkToolUseResult {
+  if (
+    isRecord(value)
+    && Object.prototype.hasOwnProperty.call(value, 'content')
+    && Object.prototype.hasOwnProperty.call(value, '_meta')
+  ) {
+    return {
+      content: value.content,
+      metadata: value._meta,
+      isMetadataEnvelope: true,
+    };
+  }
+  return {
+    content: value,
+    metadata: undefined,
+    isMetadataEnvelope: false,
+  };
 }
 
 function readString(record: Record<string, unknown>, keys: string[]): string | undefined {

@@ -1229,6 +1229,16 @@ pub struct AgentConfigRust {
     pub setup_completed: Option<bool>,
 }
 
+impl AgentConfigRust {
+    /// Effective heartbeat gate. The persisted child config keeps the user's
+    /// independent choice; execution additionally requires Proactive Agent.
+    pub fn effective_heartbeat(&self) -> HeartbeatConfig {
+        let mut heartbeat = self.heartbeat.clone().unwrap_or_default();
+        heartbeat.enabled = self.enabled && heartbeat.enabled;
+        heartbeat
+    }
+}
+
 fn default_permission_mode() -> String {
     "plan".to_string()
 }
@@ -1490,7 +1500,9 @@ impl ChannelConfigRust {
             allowed_users: self.allowed_users.clone(),
             permission_mode,
             default_workspace_path: Some(agent.resolved_workspace_path.clone()),
-            enabled: self.enabled && agent.enabled,
+            // Channel availability is owned by ChannelConfig. Proactive Agent
+            // mode gates heartbeat/memory only and must not stop chat ingress.
+            enabled: self.enabled,
             feishu_app_id: self.feishu_app_id.clone(),
             feishu_app_secret: self.feishu_app_secret.clone(),
             dingtalk_client_id: self.dingtalk_client_id.clone(),
@@ -1668,6 +1680,16 @@ mod tests {
 
         assert_eq!(config.permission_mode, "fullAgency");
         assert_eq!(channel.effective_permission_mode(&agent), "fullAgency");
+    }
+
+    #[test]
+    fn agent_channel_enablement_is_independent_from_proactive_agent() {
+        let mut agent = base_agent();
+        agent.enabled = false;
+        let channel = base_channel();
+
+        assert!(channel.to_im_config(&agent).enabled);
+        assert!(!agent.effective_heartbeat().enabled);
     }
 
     #[test]

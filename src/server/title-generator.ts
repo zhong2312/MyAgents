@@ -985,6 +985,7 @@ export function buildExternalTitleSessionOptions(input: {
   sessionId: string;
   workspacePath: string;
   userPrompt: string;
+  clientUserMessageId: string;
   runtimeType: RuntimeType;
   model: string;
   runtimeSource?: RuntimeSource;
@@ -992,7 +993,10 @@ export function buildExternalTitleSessionOptions(input: {
   return {
     sessionId: input.sessionId,
     workspacePath: input.workspacePath,
-    initialMessage: input.userPrompt,
+    initialTurn: {
+      message: input.userPrompt,
+      clientUserMessageId: input.clientUserMessageId,
+    },
     systemPromptAppend: SYSTEM_PROMPT,
     ...(input.model ? { model: input.model } : {}),
     permissionMode: titlePermissionMode(input.runtimeType),
@@ -1028,7 +1032,7 @@ export function buildExternalTitleSessionOptions(input: {
 /**
  * Generate a title using the session's external runtime (claude-code / codex /
  * gemini). Spawns a brand-new short-lived process, sends the title prompt as
- * initialMessage, accumulates text_delta, returns on turn_complete or
+ * initialTurn, accumulates text_delta, returns on turn_complete or
  * session_complete. The process is always stopped afterwards (including on
  * timeout), so Gemini's temporary GEMINI_SYSTEM_MD file is cleaned up.
  *
@@ -1047,6 +1051,10 @@ export async function generateTitleExternal(
   // "Invalid session ID. Must be a valid UUID." A `title-` prefix would tank
   // every CC title-gen call. Logs are already tagged with `[title-generator]`.
   const titleSessionId = randomUUID();
+  // This utility turn has no Product SessionMessage. It still owns an ephemeral
+  // caller identity so Codex can establish its root-turn admission invariant
+  // without pretending the title prompt belongs to the user's transcript.
+  const titleClientUserMessageId = randomUUID();
   const userPrompt = buildUserPrompt(rounds);
 
   let runtime: AgentRuntime;
@@ -1086,6 +1094,7 @@ export async function generateTitleExternal(
     sessionId: titleSessionId,
     workspacePath,
     userPrompt,
+    clientUserMessageId: titleClientUserMessageId,
     runtimeType,
     model,
     runtimeSource,

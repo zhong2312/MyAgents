@@ -17,6 +17,10 @@ const mocks = vi.hoisted(() => ({
       success: true,
       enabledIds,
     })),
+    updateEnabledPluginIds: vi.fn(async (enabledIds: unknown) => ({
+      success: true,
+      enabledIds,
+    })),
     updateAgents: vi.fn(async () => ({ success: true })),
     updateProviderEnv: vi.fn(async () => ({ success: true, skipped: 'external-runtime' })),
     updatePermissionMode: vi.fn(async () => ({ success: true })),
@@ -59,6 +63,10 @@ describe('handleSessionConfigRoute', () => {
     }));
     mocks.engine.updateAgents.mockResolvedValue({ success: true });
     mocks.engine.updateOfficialToolIds.mockImplementation(async (enabledIds: unknown) => ({
+      success: true,
+      enabledIds,
+    }));
+    mocks.engine.updateEnabledPluginIds.mockImplementation(async (enabledIds: unknown) => ({
       success: true,
       enabledIds,
     }));
@@ -125,6 +133,40 @@ describe('handleSessionConfigRoute', () => {
       enabledIds: ['image-understanding'],
     });
     expect(mocks.engine.updateOfficialToolIds).toHaveBeenCalledWith(['image-understanding']);
+  });
+
+  it('routes Session Plugin overrides through the active engine and preserves null tracking', async () => {
+    const enabled = await handleSessionConfigRoute(
+      '/api/cc-plugin/session-enable',
+      new Request('http://local/api/cc-plugin/session-enable', {
+        method: 'POST',
+        body: JSON.stringify({ enabledIds: ['review', 7, 'testing'] }),
+      }),
+    );
+    expect(enabled?.status).toBe(200);
+    expect(mocks.engine.updateEnabledPluginIds).toHaveBeenLastCalledWith(['review', 'testing']);
+
+    const tracking = await handleSessionConfigRoute(
+      '/api/cc-plugin/session-enable',
+      new Request('http://local/api/cc-plugin/session-enable', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(tracking?.status).toBe(200);
+    expect(mocks.engine.updateEnabledPluginIds).toHaveBeenLastCalledWith(null);
+  });
+
+  it('rejects malformed Session Plugin overrides', async () => {
+    const response = await handleSessionConfigRoute(
+      '/api/cc-plugin/session-enable',
+      new Request('http://local/api/cc-plugin/session-enable', {
+        method: 'POST',
+        body: JSON.stringify({ enabledIds: 'review' }),
+      }),
+    );
+    expect(response?.status).toBe(400);
+    expect(mocks.engine.updateEnabledPluginIds).not.toHaveBeenCalled();
   });
 
   it('preserves the legacy provider route response shape even when the engine skips mutation', async () => {

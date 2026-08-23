@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { localTimestamp } from '../shared/logTime';
 import { isLiveRevisionEnvelope, type LiveRevisionEnvelope } from '../shared/liveRevision';
+import { summarizeSensitiveValueForLog } from './utils/log-summary';
 
 type SseClient = {
   id: string;
@@ -117,6 +118,7 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   'chat:subagent-tool-use': 'critical',
   'chat:subagent-tool-result-start': 'critical',
   'chat:subagent-tool-result-complete': 'critical',
+  'chat:subagent-status': 'critical',
   'chat:permission-mode-changed': 'critical',
   'chat:session-title-changed': 'critical',
   'chat:task-notification': 'critical',
@@ -234,47 +236,6 @@ const lastValueCache: Map<string, unknown> =
   (globalThis as Record<string, unknown>)[LAST_VALUE_CACHE_KEY] as Map<string, unknown> ??
   ((globalThis as Record<string, unknown>)[LAST_VALUE_CACHE_KEY] = new Map<string, unknown>());
 
-const TEXT_SUMMARY_LIMIT = 30;
-const ERROR_TEXT_SUMMARY_LIMIT = 120;
-const GENERAL_STRING_SUMMARY_LIMIT = 160;
-const LONG_TEXT_FIELD_KEYS = new Set([
-  'content', 'delta', 'text', 'result', 'command', 'inputJson',
-  'output', 'stdout', 'stderr', 'error',
-]);
-
-function normalizeTextForLog(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
-}
-
-function summarizeTextField(value: string, limit = TEXT_SUMMARY_LIMIT): string {
-  const normalized = normalizeTextForLog(value);
-  if (normalized.length <= limit) {
-    return normalized;
-  }
-  return `${normalized.slice(0, limit)}……（共 ${value.length} 字符）`;
-}
-
-function summarizeLongFields(value: unknown, limit = TEXT_SUMMARY_LIMIT, fieldName?: string): unknown {
-  if (typeof value === 'string') {
-    const fieldLimit = fieldName && LONG_TEXT_FIELD_KEYS.has(fieldName)
-      ? limit
-      : GENERAL_STRING_SUMMARY_LIMIT;
-    return summarizeTextField(value, fieldLimit);
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => summarizeLongFields(item, limit, fieldName));
-  }
-  if (!value || typeof value !== 'object') {
-    return value;
-  }
-
-  const result: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    result[key] = summarizeLongFields(item, limit, key);
-  }
-  return result;
-}
-
 export function summarizeSsePayload(event: string, data: unknown): string {
   if (event === 'chat:message-replay' && typeof data === 'object' && data !== null) {
     const replay = data as {
@@ -295,16 +256,19 @@ export function summarizeSsePayload(event: string, data: unknown): string {
   if (event === 'chat:message-chunk' && typeof data === 'string') {
     return `chars=${data.length}`;
   }
-  if (typeof data === 'string') {
-    const trimmed = data.replace(/\s+/g, ' ').slice(0, 120);
-    return `text="${trimmed}"`;
-  }
   if (data === null || data === undefined) {
     return 'data=null';
   }
+
+  // SSE is a transport boundary. Its payload may contain prompts, tool
+  // arguments/results, commands, passwords, local paths, or provider errors.
+  // Never preview recursively: field names evolve and a new payload shape
+  // would otherwise silently become a new plaintext logging surface.
   try {
     const isErrorPayload = typeof data === 'object' && data !== null && (data as { isError?: unknown }).isError === true;
-    return `data=${JSON.stringify(summarizeLongFields(data, isErrorPayload ? ERROR_TEXT_SUMMARY_LIMIT : TEXT_SUMMARY_LIMIT))}`;
+    const serialized = typeof data === 'string' ? data : JSON.stringify(data);
+    const summary = summarizeSensitiveValueForLog(serialized ?? null);
+    return `payload=${JSON.stringify(summary)}${isErrorPayload ? ' isError=true' : ''}`;
   } catch {
     return 'data=[unserializable]';
   }

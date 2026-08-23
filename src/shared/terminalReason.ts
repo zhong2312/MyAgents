@@ -50,9 +50,9 @@ const MAP: Record<TerminalReason, TerminalReasonInfo> = {
     severity: 'error',
   },
   rapid_refill_breaker: {
-    label: '请求过于频繁，已自动退避',
-    detail: 'SDK 触发快速补发熔断器，正在自动退避重试。稍后会自行恢复。',
-    severity: 'notice',
+    label: '上下文反复填满，本轮已停止',
+    detail: '自动压缩后，上下文仍在短时间内多次达到上限。请缩小文件或工具输出后重试；若仍失败，可新开会话继续。',
+    severity: 'error',
   },
   aborted_tools: {
     label: '工具执行被中断',
@@ -170,8 +170,8 @@ export function shouldSurfaceTerminalReason(reason: unknown): boolean {
  * - error 级别：用户需要处理，通常涉及 Provider / Hook / 图像 / 上下文边界
  * - 未知枚举：SDK 升级后前端还没认识，值得诊断
  *
- * notice/info（max_turns / background_requested / rapid_refill_breaker 等）
- * 是正常边界或自恢复状态，不默认打扰用户。
+ * notice/info（max_turns / background_requested 等）是正常边界或无需排查的状态，
+ * 不默认打扰用户。
  */
 export function shouldOfferTerminalReasonDiagnostics(reason: unknown): boolean {
   const info = describeTerminalReason(reason);

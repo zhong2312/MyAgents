@@ -1,32 +1,53 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const sdkMocks = vi.hoisted(() => ({
+  query: vi.fn(),
+  dispatchedPrompts: [] as unknown[],
+}));
+
+vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@anthropic-ai/claude-agent-sdk')>();
+  return {
+    ...actual,
+    query: (...args: Parameters<typeof actual.query>) => sdkMocks.query(...args),
+  };
+});
+
 vi.mock('../SessionStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../SessionStore')>();
   return {
     ...actual,
     claimPreparedSessionForTurnAdmission: vi.fn(),
+    appendSessionMessages: vi.fn(),
+    commitBuiltinConversationRewind: vi.fn(),
     deleteSession: vi.fn(async () => ({ deleted: true as const })),
     migratePendingSessionIdentity: vi.fn(),
+    resolvePendingConversationMutation: vi.fn(),
     getSessionMetadata: vi.fn(),
     saveSessionMetadata: vi.fn(async () => undefined),
     updateSessionMetadata: vi.fn(),
   };
 });
 
-import { claimPreparedSessionForTurnAdmission, deleteSession, getSessionMetadata, loadSessionTranscript, migratePendingSessionIdentity, saveSessionMetadata, updateSessionMetadata } from '../SessionStore';
-import { setQuerySessionWithAuthority } from '../builtin-session/lifecycle';
+import { appendSessionMessages, claimPreparedSessionForTurnAdmission, commitBuiltinConversationRewind, deleteSession, getSessionMetadata, loadSessionTranscript, migratePendingSessionIdentity, resolvePendingConversationMutation, saveSessionMetadata, updateSessionMetadata, type TranscriptWriteCursor } from '../SessionStore';
+import { loadTranscriptFromSessionMessages } from '../builtin-session/transcript-persistence';
+import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
+import { setQuerySession, setQuerySessionWithAuthority } from '../builtin-session/lifecycle';
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import {
   resetProductSessionMaterializationState as resetSessionMaterializationState,
   setPendingProductSessionMaterialization as setPendingDesktopMaterialization,
 } from '../session-engine/product-session-binding';
-import { claimPreparedMaterializationForTurnAdmission, ensureSessionMetadataForSdkSystemInit, getSessionId, initializeAgent, materializePendingDesktopSession } from '../agent-session';
+import { claimPreparedMaterializationForTurnAdmission, enqueueUserMessage, ensureSessionMetadataForSdkSystemInit, getSessionId, initializeAgent, materializePendingDesktopSession, rewindSession, waitForSessionIdle } from '../agent-session';
 import type { SessionMetadata } from '../types/session';
 
 const mockedDeleteSession = vi.mocked(deleteSession);
 const mockedClaimPreparedSessionForTurnAdmission = vi.mocked(claimPreparedSessionForTurnAdmission);
+const mockedAppendSessionMessages = vi.mocked(appendSessionMessages);
+const mockedCommitBuiltinConversationRewind = vi.mocked(commitBuiltinConversationRewind);
 const mockedGetSessionMetadata = vi.mocked(getSessionMetadata);
 const mockedMigratePendingSessionIdentity = vi.mocked(migratePendingSessionIdentity);
+const mockedResolvePendingConversationMutation = vi.mocked(resolvePendingConversationMutation);
 const mockedSaveSessionMetadata = vi.mocked(saveSessionMetadata);
 const mockedUpdateSessionMetadata = vi.mocked(updateSessionMetadata);
 
@@ -34,7 +55,21 @@ describe('materializePendingDesktopSession rollback guard', () => {
   beforeEach(() => {
     resetSessionMaterializationState();
     vi.clearAllMocks();
+    sdkMocks.dispatchedPrompts.length = 0;
     mockedClaimPreparedSessionForTurnAdmission.mockResolvedValue({ status: 'not-found' });
+    mockedAppendSessionMessages.mockImplementation(async (_sessionId, cursor, messages) => ({
+      ok: true,
+      action: messages.length > 0 ? 'appended' : 'noop',
+      count: messages.length,
+      totalCount: cursor.persistedMessageCount + messages.length,
+      cursor: { persistedMessageCount: cursor.persistedMessageCount + messages.length } as TranscriptWriteCursor,
+    }));
+    mockedCommitBuiltinConversationRewind.mockResolvedValue({
+      success: true,
+      metadata: {} as SessionMetadata,
+      messages: [],
+      cursor: { persistedMessageCount: 0 } as TranscriptWriteCursor,
+    });
   });
 
   afterEach(() => {
@@ -369,7 +404,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
     expect(mockedUpdateSessionMetadata).toHaveBeenCalledWith(productSessionId, {
       sdkSessionId,
       unifiedSession: false,
-    });
+    }, expect.any(Function));
   });
 
   it('keeps a non-UUID Product Session id when a fresh Query receives its expected SDK id', async () => {
@@ -403,7 +438,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
     expect(mockedUpdateSessionMetadata).toHaveBeenCalledWith(productSessionId, {
       sdkSessionId,
       unifiedSession: false,
-    });
+    }, expect.any(Function));
   });
 
   it('rejects a delayed system_init after its Query authority has been replaced', async () => {
@@ -420,6 +455,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
     };
     mockedGetSessionMetadata.mockImplementation(id => id === productSessionId ? metadata : null);
     await initializeAgent('/tmp/workspace', null, productSessionId, { preWarmDisabled: true });
+    setQuerySession(null);
     const oldAuthority = setQuerySessionWithAuthority({} as Query, {
       productSessionId,
       expectedSdkSessionId: oldSdkSessionId,
@@ -441,6 +477,43 @@ describe('materializePendingDesktopSession rollback guard', () => {
     expect(mockedUpdateSessionMetadata).not.toHaveBeenCalled();
     expect(mockedSaveSessionMetadata).not.toHaveBeenCalled();
     expect(mockedMigratePendingSessionIdentity).not.toHaveBeenCalled();
+  });
+
+  it('rejects a system_init metadata commit after its Query binding was replaced (#541)', async () => {
+    const productSessionId = '12121212-1212-4121-8121-121212121212';
+    const staleSdkSessionId = '13131313-1313-4131-8131-131313131313';
+    const replacementSdkSessionId = '14141414-1414-4141-8141-141414141414';
+    const metadata: SessionMetadata = {
+      id: productSessionId,
+      runtime: 'builtin',
+      sdkSessionId: staleSdkSessionId,
+      unifiedSession: false,
+      agentDir: '/tmp/workspace',
+      title: 'Authority race',
+      createdAt: '2026-08-14T00:00:00.000Z',
+      lastActiveAt: '2026-08-14T00:00:00.000Z',
+    };
+    mockedGetSessionMetadata.mockImplementation(id => id === productSessionId ? metadata : null);
+    await initializeAgent('/tmp/workspace', null, productSessionId, { preWarmDisabled: true });
+    const staleAuthority = setQuerySessionWithAuthority({} as Query, {
+      productSessionId,
+      expectedSdkSessionId: staleSdkSessionId,
+    });
+    mockedUpdateSessionMetadata.mockImplementation(async (_id, _updates, precondition) => {
+      setQuerySessionWithAuthority({} as Query, {
+        productSessionId,
+        expectedSdkSessionId: replacementSdkSessionId,
+      });
+      expect(precondition?.({ ...metadata, sdkSessionId: replacementSdkSessionId })).toBe(false);
+      return null;
+    });
+
+    await expect(ensureSessionMetadataForSdkSystemInit({
+      session_id: staleSdkSessionId,
+      tools: [],
+      mcp_servers: [],
+      timestamp: '2026-08-14T00:00:00.000Z',
+    }, staleAuthority)).rejects.toThrow('failed to update session metadata');
   });
 
   it('rejects system_init whose SDK id does not match the Query launch authority', async () => {
@@ -465,6 +538,196 @@ describe('materializePendingDesktopSession rollback guard', () => {
       timestamp: '2026-06-23T00:00:00.000Z',
     })).rejects.toThrow(`expected ${expectedSdkSessionId}`);
     expect(mockedUpdateSessionMetadata).not.toHaveBeenCalled();
+  });
+
+  it('rewinds a fresh SDK branch without changing the Product Session identity (#541)', async () => {
+    const productSessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const replacementSdkSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    let metadata: SessionMetadata = {
+      id: productSessionId,
+      runtime: 'builtin',
+      sdkSessionId: 'abababab-abab-4aba-8aba-abababababab',
+      unifiedSession: false,
+      agentDir: '/tmp/workspace',
+      title: 'Stable Product Session',
+      createdAt: '2026-08-14T00:00:00.000Z',
+      lastActiveAt: '2026-08-14T00:00:00.000Z',
+    };
+    mockedGetSessionMetadata.mockImplementation(id => id === productSessionId ? metadata : null);
+    await initializeAgent('/tmp/workspace', null, productSessionId, { preWarmDisabled: true });
+    setQuerySession(null);
+    loadTranscriptFromSessionMessages([
+      { id: 'user-1', role: 'user', content: 'retry me', timestamp: '2026-08-14T00:00:00.000Z' },
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'old answer',
+        timestamp: '2026-08-14T00:00:01.000Z',
+        sdkUuid: 'historical-assistant-uuid',
+      },
+    ], { persistedMessageCount: 2 } as TranscriptWriteCursor);
+    vi.clearAllMocks();
+    mockedGetSessionMetadata.mockImplementation(id => id === productSessionId ? metadata : null);
+    mockedCommitBuiltinConversationRewind.mockImplementation(async () => {
+      metadata = { ...metadata, sdkSessionId: replacementSdkSessionId };
+      return {
+        success: true,
+        metadata,
+        messages: [],
+        cursor: { persistedMessageCount: 0 } as TranscriptWriteCursor,
+      };
+    });
+    sdkMocks.query.mockImplementation((args: { prompt: AsyncIterable<unknown> }) => {
+      const prompt = args.prompt[Symbol.asyncIterator]();
+      let consumed = false;
+      const iterator: AsyncIterableIterator<unknown> = {
+        async next() {
+          if (!consumed) {
+            consumed = true;
+            const next = await prompt.next();
+            if (!next.done) sdkMocks.dispatchedPrompts.push(next.value);
+          }
+          return { done: true, value: undefined };
+        },
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+      };
+      return Object.assign(iterator, {
+        initializationResult: vi.fn(async () => ({ commands: [] })),
+        interrupt: vi.fn(async () => undefined),
+        close: vi.fn(),
+        mcpServerStatus: vi.fn(async () => []),
+        setModel: vi.fn(async () => undefined),
+        setPermissionMode: vi.fn(async () => undefined),
+        setMcpServers: vi.fn(async () => undefined),
+      });
+    });
+
+    await expect(rewindSession('user-1')).resolves.toMatchObject({
+      success: true,
+      content: 'retry me',
+    });
+
+    expect(getSessionId()).toBe(productSessionId);
+    expect(mockedCommitBuiltinConversationRewind).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: productSessionId,
+      sourceSdkSessionId: 'abababab-abab-4aba-8aba-abababababab',
+      targetMessageId: 'user-1',
+      targetMessageCount: 0,
+    }));
+    expect(mockedGetSessionMetadata.mock.calls.every(([id]) => id === productSessionId)).toBe(true);
+    mockedUpdateSessionMetadata.mockImplementation(async (_id, updates) => {
+      metadata = { ...metadata, ...updates };
+      return metadata;
+    });
+    setQuerySession(null);
+
+    await expect(enqueueUserMessage(
+      'retry me',
+      [], undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined,
+      { channelDelivery: NO_CHANNEL_DELIVERY },
+    )).resolves.toMatchObject({ queued: false });
+
+    await vi.waitFor(() => {
+      expect(sdkMocks.query).toHaveBeenCalledTimes(1);
+      expect(sdkMocks.dispatchedPrompts).toHaveLength(1);
+    });
+    expect(mockedAppendSessionMessages).toHaveBeenCalledTimes(1);
+    expect(mockedAppendSessionMessages).toHaveBeenCalledWith(
+      productSessionId,
+      expect.objectContaining({ persistedMessageCount: 0 }),
+      [expect.objectContaining({ role: 'user', content: 'retry me' })],
+    );
+    expect(sdkMocks.query.mock.calls[0]?.[0]).toMatchObject({
+      options: { sessionId: replacementSdkSessionId },
+    });
+    expect(sdkMocks.query.mock.calls[0]?.[0]?.options).not.toHaveProperty('resume');
+    expect(await waitForSessionIdle(2_000, 10)).toBe(true);
+  });
+
+  it('fails closed before send when a builtin rewind intent cannot recover (#541)', async () => {
+    const productSessionId = '15151515-1515-4151-8151-151515151515';
+    const metadata: SessionMetadata = {
+      id: productSessionId,
+      runtime: 'builtin',
+      unifiedSession: false,
+      agentDir: '/tmp/workspace',
+      title: 'Pending rewind',
+      createdAt: '2026-08-14T00:00:00.000Z',
+      lastActiveAt: '2026-08-14T00:00:00.000Z',
+    };
+    mockedGetSessionMetadata.mockImplementation(id => id === productSessionId ? metadata : null);
+    await initializeAgent('/tmp/workspace', null, productSessionId, { preWarmDisabled: true });
+    setQuerySession(null);
+    const pending: SessionMetadata = {
+      ...metadata,
+      pendingConversationMutation: {
+        schemaVersion: 1,
+        kind: 'builtin-rewind',
+        sourceSdkSessionId: null,
+        replacementSdkSessionId: '16161616-1616-4161-8161-161616161616',
+        sourceMessageCount: 2,
+        targetMessageCount: 0,
+      },
+    };
+    mockedGetSessionMetadata.mockImplementation(id => id === productSessionId ? pending : null);
+    mockedResolvePendingConversationMutation.mockResolvedValue({
+      success: false,
+      reason: 'storage_consistency_error',
+      error: 'Conversation mutation count mismatch',
+    });
+
+    await expect(enqueueUserMessage(
+      'must not dispatch',
+      [], undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined,
+      { channelDelivery: NO_CHANNEL_DELIVERY },
+    )).rejects.toThrow(
+      'pending conversation mutation could not recover',
+    );
+    expect(mockedAppendSessionMessages).not.toHaveBeenCalled();
+  });
+
+  it('recovers a committed builtin rewind intent before deciding SDK resume (#541)', async () => {
+    const productSessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const replacementSdkSessionId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const pending: SessionMetadata = {
+      id: productSessionId,
+      runtime: 'builtin',
+      sdkSessionId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      unifiedSession: false,
+      agentDir: '/tmp/workspace',
+      title: 'Recovering session',
+      createdAt: '2026-08-14T00:00:00.000Z',
+      lastActiveAt: '2026-08-14T00:00:00.000Z',
+      pendingConversationMutation: {
+        schemaVersion: 1,
+        kind: 'builtin-rewind',
+        sourceSdkSessionId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        replacementSdkSessionId,
+        sourceMessageCount: 2,
+        targetMessageCount: 0,
+      },
+    };
+    const recovered = {
+      ...pending,
+      sdkSessionId: replacementSdkSessionId,
+      pendingConversationMutation: undefined,
+    };
+    mockedGetSessionMetadata.mockImplementation(id => id === productSessionId ? pending : null);
+    mockedResolvePendingConversationMutation.mockResolvedValue({
+      success: true,
+      metadata: recovered,
+      messages: [],
+      cursor: { persistedMessageCount: 0 } as TranscriptWriteCursor,
+    });
+
+    await initializeAgent('/tmp/workspace', null, productSessionId, { preWarmDisabled: true });
+
+    expect(mockedResolvePendingConversationMutation).toHaveBeenCalledWith(productSessionId);
+    expect(getSessionId()).toBe(productSessionId);
   });
 
   it('commits a prepared row even when the active session id is already the prepared id', async () => {

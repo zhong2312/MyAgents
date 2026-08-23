@@ -38,7 +38,7 @@ check_install() {
     fi
 }
 
-echo -e "${BLUE}[1/6] 检查依赖${NC}"
+echo -e "${BLUE}[1/7] 检查依赖${NC}"
 MISSING=0
 
 check_install "Node.js" "node --version" "https://nodejs.org (≥ v20)" || MISSING=1
@@ -54,13 +54,13 @@ if [ $MISSING -eq 1 ]; then
 fi
 
 # 固定 Rust toolchain/components，避免 rustfmt/clippy 或 IDE 使用系统 Rust 漂移。
-echo -e "${BLUE}[1.5/6] 准备 Rust toolchain / components${NC}"
+echo -e "${BLUE}[2/7] 准备 Rust toolchain / components${NC}"
 "${PROJECT_DIR}/scripts/ensure_rust_toolchain.sh"
 echo ""
 
 # 下载 Node.js 二进制（Sidecar + MCP Server + 社区工具 统一 runtime）
 echo ""
-echo -e "${BLUE}[2/6] 下载 Node.js 运行时${NC}"
+echo -e "${BLUE}[3/7] 下载 Node.js 运行时${NC}"
 "${PROJECT_DIR}/scripts/download_nodejs.sh"
 echo ""
 
@@ -70,7 +70,7 @@ echo ""
 # 网络失败 / R2 短暂不可用属软失败：dev 模式 getBundledCusePath() 返
 # null → MCP 优雅 skip + warn，用户事后可手动重跑 download_cuse.sh，
 # 不应阻断整个 setup（其他 99% 的功能跟 cuse 无关）。
-echo -e "${BLUE}[3/6] 下载 cuse computer-use 二进制${NC}"
+echo -e "${BLUE}[4/7] 下载 cuse computer-use 二进制${NC}"
 if [[ "$(uname -s)" == "Darwin" ]]; then
     if ! "${PROJECT_DIR}/scripts/download_cuse.sh"; then
         echo -e "${YELLOW}⚠ cuse 下载失败（网络或 R2 不可用）— computer-use 功能在 dev 模式下将不可用${NC}"
@@ -82,7 +82,7 @@ fi
 echo ""
 
 # 安装依赖（使用 npm — v0.2.0 起不再依赖 Bun）
-echo -e "${BLUE}[4/6] 安装依赖${NC}"
+echo -e "${BLUE}[5/7] 安装依赖${NC}"
 npm install
 if [[ "$(uname -s)" == "Darwin" ]]; then
     echo -e "  ${CYAN}Validating Claude Agent SDK native package...${NC}"
@@ -100,22 +100,18 @@ echo -e "${GREEN}✓ 依赖安装完成${NC}"
 echo ""
 
 # 安装 Rust 依赖
-echo -e "${BLUE}[5/6] 检查 Rust 依赖${NC}"
+echo -e "${BLUE}[6/7] 检查 Rust 依赖${NC}"
 cd src-tauri
 cargo check --quiet 2>/dev/null || cargo fetch
 cd ..
 echo -e "${GREEN}✓ Rust 依赖准备完成${NC}"
 echo ""
 
-# 准备默认工作区 (mino) — 每次拉取最新版本
-# .git 不保留：避免 Tauri 资源打包权限问题 + rerun-if-changed 性能问题
-echo -e "${BLUE}[6/6] 准备默认工作区 (mino)${NC}"
-MINO_DIR="${PROJECT_DIR}/mino"
-rm -rf "$MINO_DIR"
-echo -e "  ${CYAN}克隆 openmino 默认工作区 (最新版本)...${NC}"
-git clone git@github.com:hAcKlyc/openmino.git "$MINO_DIR"
-rm -rf "$MINO_DIR/.git"
-echo -e "${GREEN}✓ mino 默认工作区已就绪${NC}"
+# 准备 host target 的离线文档转换资源。setup 完成后用户可直接运行
+# `npm run tauri:dev`；prepare owner 自带 fingerprint，重复 setup 为 no-op。
+echo -e "${BLUE}[7/7] 准备离线文档转换资源${NC}"
+node "${PROJECT_DIR}/scripts/prepare-document-processing.mjs"
+echo -e "${GREEN}✓ 文档转换资源 ready${NC}"
 echo ""
 
 # 完成

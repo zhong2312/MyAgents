@@ -2,7 +2,6 @@ import type { RuntimeConfig, RuntimeSource, RuntimeType } from '../../shared/typ
 import { coerceModelForRuntime } from '../../shared/types/runtime';
 import type { RequiredSystemSkill } from '../../shared/systemSkills';
 import type { DispatchGuard } from '../session-core/turn-queue';
-import { assertOfficialSystemSkillExposed } from '../utils/system-skill-readiness';
 
 export function runtimeConfigModel(
   config: RuntimeConfig | null | undefined,
@@ -21,7 +20,6 @@ export function runtimeConfigSource(
 
 export function createScheduledDispatchGuard(input: {
   preceding: DispatchGuard;
-  workspacePath: string;
   requiredSystemSkill?: RequiredSystemSkill;
   requireNativeSystemSkill?: (skill: RequiredSystemSkill) => Promise<void>;
 }): DispatchGuard {
@@ -39,10 +37,6 @@ export function createScheduledDispatchGuard(input: {
       return { accepted: false, code: 'system_skill_dispatch_canceled', error: 'System skill dispatch was canceled' };
     }
     try {
-      assertOfficialSystemSkillExposed({
-        workspacePath: input.workspacePath,
-        skillName: requiredSystemSkill,
-      });
       await input.requireNativeSystemSkill?.(requiredSystemSkill);
       return canceled
         ? { accepted: false, code: 'system_skill_dispatch_canceled', error: 'System skill dispatch was canceled' }

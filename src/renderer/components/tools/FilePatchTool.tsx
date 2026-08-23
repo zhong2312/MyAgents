@@ -1,9 +1,10 @@
-import { ArrowRight, FileText, Info } from 'lucide-react';
+import { ArrowRight, Info } from 'lucide-react';
 import { useId, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { createElement as createSyntaxElement, Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 
+import { FileIcon } from '@/components/file-icon';
 import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
 import { useResolvedTheme } from '@/theme';
 import type { ToolUseSimple } from '@/types/chat';
@@ -186,8 +187,8 @@ function FilePatchSection({
       className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--line)] bg-[var(--paper-elevated)] shadow-[var(--shadow-xs)]"
     >
       <header className="flex min-h-12 flex-wrap items-center gap-2.5 border-b border-[var(--line-subtle)] px-3 py-2 sm:flex-nowrap">
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[var(--accent-warm-subtle)] text-[var(--accent)]">
-          <FileText className="size-4" aria-hidden="true" />
+        <span className="flex size-7 shrink-0 items-center justify-center">
+          <FileIcon name={path.fileName} size="regular" />
         </span>
 
         <div className="min-w-0 flex-1 basis-[calc(100%-2.5rem)] sm:basis-auto" title={change.path}>

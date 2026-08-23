@@ -16,9 +16,10 @@
  *  - Multiple endpoints (/health/ready) need to *peek* at the state without
  *    awaiting it.
  *
- * The existing `__myagentsDeferredInit` Promise stays alongside (other parts
- * of the codebase await it). This module is the new source of truth for
- * health endpoints and the route gate.
+ * This state machine is the sole source of truth for health endpoints and the
+ * route gate. Keeping a second Promise failure channel would duplicate terminal
+ * ownership and turn an already-modeled startup failure into an unhandled
+ * rejection diagnostic.
  */
 
 export type DeferredInitState =
@@ -60,6 +61,29 @@ export function markDeferredInitReady(): void {
 export function markDeferredInitFailed(phase: string, error: unknown, retryable = false): void {
   const message = error instanceof Error ? error.message : String(error);
   state = { kind: 'failed', phase, error: message, retryable };
+}
+
+/**
+ * Run the one deferred bootstrap and settle its terminal state without
+ * creating a rejecting failure channel. Diagnostic callbacks are best-effort:
+ * a logger failure must not replace the already-recorded readiness terminal.
+ */
+export async function runDeferredInit(
+  initializer: () => Promise<void>,
+  getPhase: () => string,
+  onFailure?: (error: unknown) => void,
+): Promise<void> {
+  try {
+    await initializer();
+    markDeferredInitReady();
+  } catch (error) {
+    markDeferredInitFailed(getPhase(), error, false);
+    try {
+      onFailure?.(error);
+    } catch {
+      // Readiness is the terminal authority; diagnostics cannot reopen it.
+    }
+  }
 }
 
 /**

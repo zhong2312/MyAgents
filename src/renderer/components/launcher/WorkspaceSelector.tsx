@@ -47,6 +47,21 @@ interface WorkspaceSelectorProps {
     onSetDefault?: (project: Project) => void;
 }
 
+export function orderWorkspaceSelectorProjects(
+    projects: readonly Project[],
+    defaultWorkspacePath?: string,
+): Project[] {
+    return [...projects].sort((a, b) => {
+        const aIsDefault = workspacePathsEqual(a.path, defaultWorkspacePath);
+        const bIsDefault = workspacePathsEqual(b.path, defaultWorkspacePath);
+        if (aIsDefault && !bIsDefault) return -1;
+        if (!aIsDefault && bIsDefault) return 1;
+        const aTime = a.lastOpened ? new Date(a.lastOpened).getTime() : 0;
+        const bTime = b.lastOpened ? new Date(b.lastOpened).getTime() : 0;
+        return bTime - aTime;
+    });
+}
+
 export default function WorkspaceSelector({
     projects,
     selectedProject,
@@ -68,16 +83,7 @@ export default function WorkspaceSelector({
     // to avoid re-sorting on every render — list size scales with project
     // count which is small but the sort runs on every dropdown open otherwise.
     const orderedProjects = useMemo(() => {
-        const sorted = [...projects].sort((a, b) => {
-            const aIsDefault = workspacePathsEqual(a.path, defaultWorkspacePath);
-            const bIsDefault = workspacePathsEqual(b.path, defaultWorkspacePath);
-            if (aIsDefault && !bIsDefault) return -1;
-            if (!aIsDefault && bIsDefault) return 1;
-            const aTime = a.lastOpened ? new Date(a.lastOpened).getTime() : 0;
-            const bTime = b.lastOpened ? new Date(b.lastOpened).getTime() : 0;
-            return bTime - aTime;
-        });
-        return sorted;
+        return orderWorkspaceSelectorProjects(projects, defaultWorkspacePath);
     }, [projects, defaultWorkspacePath]);
 
     if (projects.length === 0) {
@@ -154,6 +160,7 @@ interface WorkspaceRowProps {
     onSelect: (p: Project) => void;
     /** Undefined = no button (hidden). Provided = button is hover-rendered. */
     onSetDefault?: (p: Project) => void;
+    showDefaultBadge?: boolean;
 }
 
 /** Single row, two-line layout:
@@ -170,12 +177,13 @@ interface WorkspaceRowProps {
  *
  *  The path on line 2 spans the full inner width (no spacer for the
  *  hover trigger — which now sits on line 1, not in the path slot). */
-function WorkspaceRow({
+export function WorkspaceRow({
     project,
     isDefault,
     isSelected,
     onSelect,
     onSetDefault,
+    showDefaultBadge = true,
 }: WorkspaceRowProps) {
     const { t } = useTranslation('launcher');
     const displayName = project.displayName || getFolderName(project.path);
@@ -204,7 +212,7 @@ function WorkspaceRow({
                  *  + "设为默认" hover trigger pinned to the right. */}
                 <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 truncate font-medium">{displayName}</span>
-                    {isDefault && (
+                    {showDefaultBadge && isDefault && (
                         <span className="shrink-0 rounded-full bg-[var(--accent)]/12 px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wider text-[var(--accent)]">
                             {t('workspaceSelector.defaultBadge')}
                         </span>

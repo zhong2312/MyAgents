@@ -75,14 +75,23 @@ pub fn ensure_sidecar_running<R: Runtime>(
 ) -> Result<u16, String> {
     const LEGACY_TAB_ID: &str = "__legacy__";
 
-    // Check if already running
-    {
+    // Reusing a running legacy Global instance is still an admission: the
+    // launcher may have been removed or replaced since this Sidecar was born.
+    let running_port = {
         let mut manager_guard = state.lock().map_err(|e| e.to_string())?;
         if let Some(instance) = manager_guard.get_instance_mut(LEGACY_TAB_ID) {
             if instance.is_running() {
-                return Ok(instance.port);
+                Some(instance.port)
+            } else {
+                None
             }
+        } else {
+            None
         }
+    };
+    if let Some(port) = running_port {
+        crate::cli::ensure_launcher()?;
+        return Ok(port);
     }
 
     // Need to restart

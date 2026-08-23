@@ -10,6 +10,7 @@ import type { ExternalSessionState, ExternalSystemInitPayload } from './types';
 let activeProcess: RuntimeProcess | null = null;
 let activeRuntime: AgentRuntime | null = null;
 let activeOfficialToolIds: OfficialToolId[] | null = null;
+let activeCapabilityRevision: string | null = null;
 let isRunning = false;
 let startingPromise: Promise<void> | null = null;
 let startingSessionId: string | null = null;
@@ -31,6 +32,7 @@ export function resetExternalLifecycleState(): void {
   activeProcess = null;
   activeRuntime = null;
   activeOfficialToolIds = null;
+  activeCapabilityRevision = null;
   isRunning = false;
   startingPromise = null;
   startingSessionId = null;
@@ -93,9 +95,11 @@ export function getExternalActiveRuntime(): AgentRuntime | null {
 export function setExternalActiveProcess(
   process: RuntimeProcess | null,
   officialToolIds: readonly OfficialToolId[],
+  capabilityRevision?: string,
 ): void {
   activeProcess = process;
   activeOfficialToolIds = process ? [...officialToolIds] : null;
+  activeCapabilityRevision = process ? capabilityRevision ?? null : null;
 }
 
 export function getExternalActiveProcess(): RuntimeProcess | null {
@@ -104,6 +108,10 @@ export function getExternalActiveProcess(): RuntimeProcess | null {
 
 export function getExternalActiveOfficialToolIds(): readonly OfficialToolId[] | null {
   return activeOfficialToolIds;
+}
+
+export function getExternalActiveCapabilityRevision(): string | null {
+  return activeCapabilityRevision;
 }
 
 export function getExternalActivePair(): { runtime: AgentRuntime; process: RuntimeProcess } | null {
@@ -115,6 +123,7 @@ export function clearExternalActiveRuntimeProcess(): void {
   activeProcess = null;
   activeRuntime = null;
   activeOfficialToolIds = null;
+  activeCapabilityRevision = null;
   isRunning = false;
 }
 
@@ -157,6 +166,10 @@ export function getExternalLifecycleWorkspacePath(): string {
 
 export function getExternalLifecycleScenario(): InteractionScenario {
   return lastScenario;
+}
+
+export function setExternalLifecycleScenario(scenario: InteractionScenario): void {
+  lastScenario = scenario;
 }
 
 export function getExternalLifecycleAnalyticsSource(): TurnAnalyticsSource {

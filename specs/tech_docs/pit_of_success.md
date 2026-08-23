@@ -109,6 +109,8 @@
 
 **Don't.** 不要直接使用 `std::process::Command::new()`；Sidecar / Plugin Bridge 也不能直接 `.spawn()`。正常 shutdown 不能通过进程名、安装路径或 argv 子串扫描整机来弥补 owner 缺失。`process_cleanup::kill_stale_processes()` 只用于确认前一实例已经退出后的启动恢复，以及更新器的残留进程检查（Windows 更新器另有受保护目录和文件锁验证）；它不是正常生命周期 API。
 
+`myagents-document-worker` 同样走 `process_cmd::new()` + `spawn_tree()`，但它是一 job 一进程的 App-owned 隔离边界，不属于 Sidecar。Manager 必须同时保留 `ChildTree`、stdin 和 active `(jobId, generation)`；4-byte big-endian length + JSON frame 上限 1 MiB，clean EOF 与截断 prefix/payload 必须分开处理，terminal identity 不匹配一律按协议失败。密码不进入 argv/env：只在 start frame 中出现，序列化/接收 buffer 写完即 zeroize；取消先发 exact generation frame，2 秒后仍存活才 kill retained tree。完整协议见 `document_processing.md`。
+
 **例外（已内联处理或不适用）：**
 - `#[cfg(windows)]` 守卫内的系统工具命令（taskkill / powershell）
 - `commands.rs` / `workspace_files/system_open.rs` 的 OS opener（open / explorer / xdg-open）——用户可见的系统命令，无需隐藏
@@ -238,8 +240,8 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 
 **Invariants enforced.**
 - Atomic-mkdir-based 协议，跨进程互斥
-- Owner sentinel `<runtime>:<pid>:<startMs>`，stale recovery 通过 `/proc/<pid>/stat`(Linux) 或 `ps -p ... -o lstart=`(macOS) 检测 pid reuse；Windows fallback 到 age-only
-- Rust 端 parser 支持 2-tuple（旧）和 3-tuple（新）owner，混部署期不会误删 live lock
+- Owner sentinel `<runtime>:<pid>:<startMs>`；确认 PID 已死亡时立即回收，不等待 stale age。合法进程 owner 只要仍存活或 liveness 不确定就必须保守保留；v1 `startMs` 受墙上时间与平台 probe 差异影响，只用于兼容和 release fencing，mismatch 不能授权删除 live writer
+- Node/Rust parser 只接受严格 ASCII 十进制的 2-tuple（旧）与 3-tuple（新）owner，并共享 PID / `startMs` 数值范围；owner 缺失、格式不可识别或 `renderer:*` 时才等待 stale age
 - `delay()` **不** `unref`——unref 会让进程在 acquire 等待中提前退出
 - Async 实现，零 sync busy-wait
 
@@ -381,10 +383,10 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - Phases: `cleanup / skill-seed / socks-bridge / sdk-init / external-runtime-restore`
 - `GET /health` —— liveness alias（旧 watchdog 兼容）
 - `GET /health/live` —— 显式 liveness
-- `GET /health/ready` —— 200 only when `state=ready`；503 + `{ state, phase?, error?, retryable? }` + `Retry-After: 1` 否则
+- `GET /health/ready` —— 200 only when `state=ready`；否则返回 503 + `{ state, phase?, error?, retryable? }`
 - `GET /health/functional` —— sidecar 等同 ready；plugin bridge 检"过去 60s 是否成功 forward 到 Rust"
-- `POST /health/ready/retry` —— 重置 `failed → pending`
-- Route gate 改成查状态机返结构化 503，不再 await indefinitely 或 rethrow
+- failed readiness 不提供进程内 retry route；由 Sidecar 进程重启重新建立初始化 owner
+- 普通 Route gate 改成查状态机并返回结构化 503 + `Retry-After: 1`，不再 await indefinitely 或 rethrow
 - Rust `wait_for_readiness`（30s timeout / 250ms cadence）wired 到 `ensure_session_sidecar`，启动 loading 自然覆盖 warm-up
 
 **Invariants enforced.**
@@ -464,6 +466,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - 别给 `claude-sonnet-4-6` 开 1M：Anthropic Sonnet 4.6 wire-default 200K，1M 需要 `context-1m-2025-08-07` beta header + Tier-4 配额或 "extra usage" 付费开关，订阅默认开 1M 会报 `Extra usage is required for 1M context`（v0.2.11 修复，预设 contextLength 已降回 200K）。
 - registry key 永远存**裸 id**：`[1m]` / 手填空格形 ` 1m` 必须在 ingest + lookup 两侧 strip（#338 双成因之一，只修一侧会残留）；不完整 capability 条目（有 modalities 无 contextLength）要 per-FIELD merge（`mergeCapabilityInto`），per-entry first-wins 会遮蔽预设的真实窗口。
 - LiteLLM 的 `provider/model` 只能生成安全的 tail fallback：有不带 provider 的 literal 时按 literal（大小写归一后）裁决；没有 literal 时只暴露候选一致的字段。禁止按目录顺序或取 max 选一个——相同 tail 在不同 Provider 上可能是 8K 与 10M，取 max 会让真实小窗口端点在自动压缩前先溢出（#516）。
+- 模态能力必须保留 `supported / unsupported / unknown` 三态和逐字段来源。LiteLLM 的 `supports_vision`、`supports_audio_input`、`supports_video_input` 是不完整证据，字段缺失不能转成 `false`；`supported_modalities` 才可作为完整列表。tail alias 同样逐模态取共识，冲突就保持 unknown。图片理解模型选择以 Provider offering row 为 authority：显式 `inputModalities` 无 `image` 才拒绝；缺失时 LiteLLM 只可提供正向 “inferred” 提示，负向或缺失不得跨 Provider veto，完全 unknown 由用户保存选择完成确认（#538）。
 
 ---
 
@@ -474,7 +477,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 
 **排查信号.** 点击后页面不变但 React 已 commit → 用 double-rAF `chat_painted` 探针量**真实绘制时刻**（不是 commit 时刻）；若绘制时刻 ≈ 某同步命令返回时刻，即是它。注意 unified 日志只显 commit 不显 paint，容易被误导去改前端。
 
-**正确做法.** 改 `pub async fn` + 把阻塞部分丢进 `tauri::async_runtime::spawn_blocking`。先把 `State` 里的 Arc clone 出来，**别跨 `.await` 持 State guard**。快速查表 / getter 类同步命令不受影响，无需改。
+**正确做法.** 改 `pub async fn` + 把阻塞部分丢进 `tauri::async_runtime::spawn_blocking`。先把 `State` 里的 Arc clone 出来，**别跨 `.await` 持 State guard**。Condvar drain 即使不做 IO 也属于阻塞等待，不能直接占用 async runtime worker；等待 per-Session 资源时也不能持有跨 Session 共享的 manager / Router 锁。快速查表 / getter 类同步命令不受影响，无需改。
 
 **Don't.** 在同步命令里做：等 sidecar 就绪 / 轮询 / 网络请求 / 大量文件 copy / kill+wait。改动任何可能阻塞 >1 帧的命令时必查此节。
 
@@ -562,6 +565,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 | `validate_workspace_root(path)` | 工作区根校验：必须是绝对路径 + 存在 + 通过 `commands::validate_file_path` 黑名单 | 所有 cmd 入口（读+写）|
 | `resolve_inside_workspace(root, rel)` | **写侧** 路径解析：lexical resolve `..`/`.` + `starts_with(root)` 校验。允许目标不存在（write/create cmd 必须） | `crud`、`gitignore`、`transfer`、`save_file` 等创建/重命名场景 |
 | `resolve_existing_inside_workspace(root, rel)` | **读侧** 路径解析：先调 lexical 版本，再 `fs::canonicalize` 把整条 symlink 链解开，最终路径必须 `starts_with(canonicalize(root))`。不存在 → 返回 `File not found` | `read_preview`、`download`、`save_file`（require existing）、`check_paths`、`claude_md` |
+| `reject_managed_global_skill_mutation(root, target)` | **mutation-only**：逐组件检查 canonical target、junction/symlink payload 与最近存在祖先，拒绝写入 `.claude/skills/*` 中指向 `~/.myagents/skills` 的链接叶子或后代（含目标尚不存在、断链） | `save_file`、`crud`、`delete`、`transfer` destination、`files_b64` destination |
 | `read_workspace_file_no_follow(root, rel, max)` | workspace 附件的强 no-follow 有界读：Unix 用目录 fd + `openat(O_NOFOLLOW)`；Windows 用 `NtCreateFile(ObjectAttributes.RootDirectory=parentHandle, FILE_OPEN_REPARSE_POINT)` 逐级相对打开目录与 leaf | Space CLI workspace attachments |
 | `open_regular_file_no_follow(path, label)` | 显式用户选择本地文件的统一 leaf opener，拒绝 symlink / Windows reparse leaf | Space GUI attachments、avatar、Skill package |
 | `validate_external_read_path(abs)` | 绝对路径外部读校验（drag-drop / launcher 工作区根）：lexical blacklist；路径**存在**时再 `fs::canonicalize` 复查一遍 blacklist（0.2.33 cross-review：中间 symlink 组件 `lure → ~/.ssh` 可穿透纯 lexical 检查）；不存在时仅 lexical 放行（slash.rs 要校验尚未创建的新工作区根）。返回 **lexical** 路径，保住调用方的 leaf-symlink 拒绝语义 | `slash`（workspace 根）、`transfer::copy_paths`、`files_b64::read_files_b64` |
@@ -575,6 +579,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - **写侧不存在路径可解析**：`resolve_inside_workspace` 是纯 lexical，不调 fs，可处理 `new_file` 这种"目标不存在"场景。
 - **读侧 symlink 逃逸防护**：`resolve_existing_inside_workspace` canonicalize 双侧（path + workspace_root），通过 `starts_with` 拦截 `evil_link → /etc/passwd`。读 `read_preview`/`download`/`save_file` 必须用此 helper；只用 lexical 版会被穿透。
 - **destructive 写用 `fs::symlink_metadata`**：`crud.rs::slot_occupied`、`transfer.rs::slot_occupied` 都是 `fs::symlink_metadata(p).is_ok()`，**不**是 `Path::exists()`——断链 symlink 必须报告为占用，否则后续 `fs::write` / `fs::rename` 会写穿或报莫名错误。
+- **managed Skill 投影是 mutation-only 只读边界**：读取、揭示路径和从 Skill 向工作区 copy-out 继续允许；保存、新建、重命名、移动、删除、copy/import destination 必须经过 `reject_managed_global_skill_mutation`。不要把它并入通用 read resolver，也不要给 Node 投影增加 bypass flag。
 - **bounded read 防 TOCTOU**：所有读取大文件命令（`read_preview` 512KB cap、`download` 25MB、`files_b64::read_one_image_as_b64` 10MB）用 `File::open + take(MAX+1).read_to_end` 模式——不是 `fs::read_to_string` / `fs::read`。元数据 `len()` 与实际读取之间文件可能被攻击者扩张，bounded read 是唯一可靠防御。
 - **validate 与 open 必须是一体的**：workspace attachment 不得退回 `metadata/canonicalize → File::open(path)`；Windows 的 share flags 不约束 `FILE_WRITE_ATTRIBUTES`，攻击者仍可把空目录原地设为 junction。必须由 `read_workspace_file_no_follow` 从已验证 parent handle 做 handle-relative child open/create，leaf 与 temp/final rename 也不得重新解析可变路径。
 
@@ -583,6 +588,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - 读侧 cmd 用 `resolve_inside_workspace`（lexical 版）——symlink 逃逸不被拦。MUST 用 `resolve_existing_inside_workspace`。
 - 读取大文件用 `fs::read_to_string` 不带 cap——TOCTOU 增长直接 OOM。MUST 用 `take(MAX+1).read_to_end`。
 - 把 workspace 路径 hardcode 在 cmd 内部——renderer 端 `useWorkspaceFileService(workspacePath)` 传入，不要在 Rust 侧再 hardcode `dirs::home_dir().join(".myagents/workspaces")`。
+- 在单个 mutation command 里自行判断 `.claude/skills` 字符串前缀——Windows junction、大小写与断链会绕过。MUST 调用共享 mutation guard；普通项目 Skill 物理目录不应被误伤。
 - watcher 用 path-derived key 做 stop 索引——重命名/删除/symlink swap 后 stop 失效。MUST 用 `watch_start` 返回的 opaque token；`watch_stop({token})` 索引；进程 nonce 防跨重启 token 碰撞。
 
 **Phase E（PRD 0.2.7）状态**：18 个 sidecar HTTP workspace IO endpoint 已全部下线，renderer 唯一入口是 `useWorkspaceFileService(workspacePath)`。eslint `no-restricted-syntax` 规则封禁了被删 endpoint 的字符串字面量。
@@ -659,8 +665,10 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - 版本戳 `complete = missing.is_empty() && incomplete.is_empty()` 时才写；任一缺/不完整 → 不写戳 → 下次启动重试。平台跳过的 skill 是有意的、不算缺陷、不阻塞。
 - Rust `cmd_sync_system_skills` 与 Node `seedBundledSkills` 两条 seed 路径**同款逻辑**。
 - `SYSTEM_SKILLS` 是版本化安装集合；`src/shared/systemSkills.ts::REQUIRED_SYSTEM_SKILLS` 是其中始终启用的 canonical 产品契约子集，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定。读取/写回 `skills-config.json` 都会移除 Required 的 stale disabled 项，list 投影固定为 `required:true, enabled:true`，disable API fail closed；普通系统/用户 Skill 仍保留可禁用语义。
+- 同步之后的 Runtime admission 不再把“目录存在”当“Skill 完整”。`global-skill-inventory.ts` 每个业务边界完整扫描一次，只把可信物理目录、可读 canonical `SKILL.md` 且未命中强冲突证据的项交给 resolver / workspace projection。`SKILL(N).md` sibling 与无其它证据的 `(N)` 目录只 warning；缺 canonical、collision identity/sibling、global symlink/junction 与扫描竞态 blocked。Required blocked/missing 拒绝 Runtime；optional blocked 只移除当前工作区 managed link，所有原始文件保留。
+- `EffectiveProjectCapabilitySnapshot.revision` 仍只表示 effective Runtime 内容；`integrityRevision` 单独表示诊断与 desired managed-link set。纯 warning/no-op reconcile 不换代，只有实际 unlink/create 才复用既有 deferred replacement。二者不进入持久 cache。Rust Launcher 使用共享 JSON fixtures 镜像 classifier，并先跳过指向 global root 的 project junction，避免同一 Skill 被误认成 project winner。
 
-**Don't.** seed/sync 里覆盖前不验源完整就 `remove_dir_all(dst)`；或对不完整结果照写版本戳。两者都会把瞬时打包缺陷固化成持久态。改 Required 名单时必须同步 TS canonical 与 Rust mirror，禁止在 UI、CLI 或其它模块新增第三份名单，也不要把 Required 名称重新写进 disabled 配置。
+**Don't.** seed/sync 里覆盖前不验源完整就 `remove_dir_all(dst)`；或对不完整结果照写版本戳。两者都会把瞬时打包缺陷固化成持久态。不要用 watcher、后台 timer、持久 registry 或全工作区 sweep 代替 admission snapshot，也不要自动 rename/delete/merge 可疑目录。改 Required 名单时必须同步 TS canonical 与 Rust mirror，禁止在 UI、CLI 或其它模块新增第三份名单，也不要把 Required 名称重新写进 disabled 配置。
 
 ---
 

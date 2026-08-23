@@ -170,15 +170,12 @@ export function CliToolsSection() {
 
     return (
         <div className="mt-9 border-t border-[var(--line)] pt-7">
-            {/* 分区头（字号按 playground 定稿放大） */}
-            <div className="flex items-center gap-2.5">
-                <h3 className="flex items-center gap-2 text-lg font-semibold text-[var(--ink)]">
-                    <SquareTerminal className="h-4 w-4 text-[var(--ink-muted)]" />
+            <div className="flex items-center gap-2">
+                <SquareTerminal className="h-5 w-5 text-[var(--ink-muted)]" />
+                <h3 className="text-base font-semibold text-[var(--ink)]">
                     {t('toolbox.cliTools.title')}
-                    <span className="rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
-                        {tools.length}
-                    </span>
                 </h3>
+                <span className="text-xs text-[var(--ink-muted)]">({tools.length})</span>
             </div>
             <p className="mb-4 mt-1 text-sm text-[var(--ink-muted)]">
                 {t('toolbox.cliTools.description')}
@@ -229,31 +226,20 @@ export function CliToolsSection() {
                         {tools.map((tool) => (
                             <div key={tool.name} className="min-w-0 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                                 <div className="flex items-start justify-between gap-2">
-                                    <div className="min-w-0 flex-1">
-                                        <div className="flex items-center gap-2">
-                                            <SquareTerminal className="h-4 w-4 shrink-0 text-[var(--accent)]/80" />
-                                            <h3 className="truncate font-mono font-semibold text-[var(--ink)]" title={tool.name}>{tool.name}</h3>
-                                            {tool.version && (
-                                                <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
-                                                    v{tool.version}
-                                                </span>
-                                            )}
-                                            <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${tool.kind === 'api'
-                                                ? 'border border-[var(--info)]/20 bg-[var(--info-bg)] text-[var(--info)]'
-                                                : 'border border-[var(--success)]/20 bg-[var(--success-bg)] text-[var(--success)]'
-                                                }`}>
-                                                {tool.kind === 'api' ? 'API' : t('toolbox.cliTools.localKind')}
+                                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                                        <SquareTerminal className="h-4 w-4 shrink-0 text-[var(--accent)]/80" />
+                                        <h3 className="min-w-0 truncate font-mono font-semibold text-[var(--ink)]" title={tool.name}>{tool.name}</h3>
+                                        {tool.version && (
+                                            <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
+                                                v{tool.version}
                                             </span>
-                                        </div>
-                                        {/* 描述行 = manifest.description（触发描述）截断；五件套首句即能力声明，截断后天然可读 */}
-                                        <p className="mt-1 truncate text-xs text-[var(--ink-muted)]" title={tool.description}>
-                                            {tool.description}
-                                        </p>
-                                        {tool.missingEnvKeys.length > 0 && (
-                                            <p className="mt-1 text-xs text-[var(--warning)]">
-                                                {t('toolbox.cliTools.needsApiKey')}
-                                            </p>
                                         )}
+                                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${tool.kind === 'api'
+                                            ? 'border border-[var(--info)]/20 bg-[var(--info-bg)] text-[var(--info)]'
+                                            : 'border border-[var(--success)]/20 bg-[var(--success-bg)] text-[var(--success)]'
+                                            }`}>
+                                            {tool.kind === 'api' ? 'API' : t('toolbox.cliTools.localKind')}
+                                        </span>
                                     </div>
                                     <div className="flex shrink-0 items-center gap-2">
                                         <button
@@ -264,14 +250,26 @@ export function CliToolsSection() {
                                             <Settings2 className="h-4 w-4" />
                                         </button>
                                         <button
+                                            type="button"
+                                            role="switch"
+                                            aria-checked={tool.enabled}
                                             onClick={() => void handleToggle(tool)}
-                                            className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${tool.enabled ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'}`}
+                                            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 ${tool.enabled ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'}`}
                                             title={tool.enabled ? t('toolbox.cliTools.toggleEnabledTitle') : t('toolbox.cliTools.toggleDisabledTitle')}
                                         >
-                                            <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${tool.enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                            <span className={`pointer-events-none inline-block h-3.5 w-3.5 rounded-full bg-[var(--toggle-thumb)] shadow-sm transition-transform ${tool.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
                                         </button>
                                     </div>
                                 </div>
+                                {/* 描述行 = manifest.description（触发描述）截断；五件套首句即能力声明，截断后天然可读 */}
+                                <p className="mt-1 truncate text-xs text-[var(--ink-muted)]" title={tool.description}>
+                                    {tool.description}
+                                </p>
+                                {tool.missingEnvKeys.length > 0 && (
+                                    <p className="mt-1 text-xs text-[var(--warning)]">
+                                        {t('toolbox.cliTools.needsApiKey')}
+                                    </p>
+                                )}
                             </div>
                         ))}
                     </div>

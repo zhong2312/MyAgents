@@ -107,7 +107,7 @@ export function useDeliveryChannels(currentWorkspacePath?: string) {
     const sortedEntries = Object.entries(statuses).sort(([a], [b]) => a.localeCompare(b));
 
     for (const [agentKey, agentStatus] of sortedEntries) {
-      if (!agentStatus.enabled || agentStatus.channels.length === 0) continue;
+      if (agentStatus.channels.length === 0) continue;
 
       const agentId = agentStatus.agentId || agentKey;
       const displayName = agentDisplayNames.get(agentId) || agentStatus.agentName || agentKey;

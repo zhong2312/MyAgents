@@ -8,6 +8,7 @@ import {
   formatCronTaskScheduleForDisplay,
   buildRequestBody,
   buildRoute,
+  adminHttpErrorResult,
   buildClaimCancelBody,
   buildSpaceCompleteOperationKey,
   commandResultExitCode,
@@ -21,6 +22,8 @@ import {
   sessionTransportExitCode,
   readWorkspaceTextFile,
   rejectUnsupportedSpaceDryRun,
+  resolveCliPort,
+  validateCliCommand,
 } from './myagents';
 
 const inheritedMyAgentsSessionId = process.env.MYAGENTS_SESSION_ID;
@@ -32,6 +35,256 @@ beforeEach(() => {
 afterEach(() => {
   if (inheritedMyAgentsSessionId === undefined) delete process.env.MYAGENTS_SESSION_ID;
   else process.env.MYAGENTS_SESSION_ID = inheritedMyAgentsSessionId;
+});
+
+describe('myagents CLI port authority', () => {
+  it('keeps --port above inherited Session or Rust-injected Global ports', () => {
+    expect(resolveCliPort('32003', '32002')).toBe('32003');
+    expect(resolveCliPort(undefined, '32002')).toBe('32002');
+    expect(resolveCliPort(undefined, '')).toBe('');
+  });
+});
+
+describe('myagents CLI command grammar', () => {
+  it('rejects unknown groups and leaves before any HTTP request is possible', () => {
+    expect(validateCliCommand(['definitely-unknown'])).toMatchObject({
+      code: 'UNKNOWN_COMMAND_GROUP',
+      error: expect.stringContaining('definitely-unknown'),
+      suggestedCommand: 'myagents --help',
+    });
+  });
+
+  it('rejects unknown leaves while accepting published nested commands', () => {
+    expect(validateCliCommand(['mcp', 'definitely-unknown'])).toMatchObject({
+      code: 'UNKNOWN_COMMAND',
+      error: expect.stringContaining('mcp definitely-unknown'),
+      suggestedCommand: 'myagents mcp --help',
+    });
+    expect(validateCliCommand(['mcp', 'oauth', 'start'])).toBeUndefined();
+    expect(validateCliCommand(['space', 'issue', 'comment', 'get'])).toBeUndefined();
+    expect(validateCliCommand(['task', 'trigger', 'test'])).toBeUndefined();
+  });
+
+  it('allows group-only help without treating the default action as a command', () => {
+    expect(validateCliCommand(['config'], true)).toBeUndefined();
+    expect(validateCliCommand(['im'], true)).toBeUndefined();
+  });
+
+  it('publishes AnyDoc under one command group and redirects the retired draft name', () => {
+    expect(TOP_HELP).toContain('anydoc');
+    expect(validateCliCommand(['anydoc', 'convert'])).toBeUndefined();
+    expect(validateCliCommand(['anydoc', 'wait'])).toBeUndefined();
+    expect(buildRoute('anydoc', 'wait', ['20260815_7f3a91c2b6d4']))
+      .toBe('anydoc/status');
+    expect(validateCliCommand(['document'])).toMatchObject({
+      code: 'UNKNOWN_COMMAND_GROUP',
+      suggestedCommand: 'myagents anydoc --help',
+    });
+  });
+});
+
+describe('myagents CLI AnyDoc contracts', () => {
+  it('resolves source and output paths locally without forwarding CLI-only wait', () => {
+    const parsed = parseArgs([
+      'anydoc',
+      'convert',
+      '--file',
+      './fixtures/report.docx',
+      '--output',
+      './converted',
+      '--password',
+      'marker-secret',
+      '--wait',
+    ]);
+    expect(parsed.flags.wait).toBe(true);
+    expect(buildRequestBody('anydoc', 'convert', [], parsed.flags)).toEqual({
+      sourcePath: join(process.cwd(), 'fixtures/report.docx'),
+      outputRoot: join(process.cwd(), 'converted'),
+      password: 'marker-secret',
+    });
+  });
+
+  it('keeps list bounded and gives status/cancel one exact job identity', () => {
+    expect(buildRequestBody('anydoc', 'list', [], {})).toEqual({ limit: 20 });
+    expect(buildRequestBody('anydoc', 'list', [], { limit: '100' })).toEqual({ limit: 100 });
+    expect(buildRequestBody('anydoc', 'status', ['20260815_7f3a91c2b6d4'], {}))
+      .toEqual({ jobId: '20260815_7f3a91c2b6d4' });
+    expect(buildRequestBody('anydoc', 'cancel', ['20260815_7f3a91c2b6d4'], {}))
+      .toEqual({ jobId: '20260815_7f3a91c2b6d4' });
+  });
+
+  it('rejects URLs, repeated files, dry-run, and invalid list bounds before transport', () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(() => buildRequestBody('anydoc', 'convert', [], {
+        file: ['https://example.test/report.pdf'],
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('anydoc', 'convert', [], {
+        file: ['one.pdf', 'two.pdf'],
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('anydoc', 'convert', [], {
+        file: ['one.pdf'],
+        dryRun: true,
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('anydoc', 'list', [], { limit: '0' }))
+        .toThrow('process.exit(2)');
+    } finally {
+      exit.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('prints an accepted receipt with actionable status and cancel commands', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printResult('anydoc', 'convert', {
+        success: true,
+        data: {
+          job: {
+            jobId: '20260815_7f3a91c2b6d4',
+            state: 'queued',
+            output: { documentPath: '/tmp/out/document.md' },
+          },
+        },
+      }, false);
+      const output = log.mock.calls.flat().join('\n');
+      expect(output).toContain('myagents anydoc status 20260815_7f3a91c2b6d4');
+      expect(output).toContain('myagents anydoc cancel 20260815_7f3a91c2b6d4');
+      expect(output).toContain('/tmp/out/document.md');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('prints list items from the stable list response contract', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printResult('anydoc', 'list', {
+        success: true,
+        data: {
+          items: [{
+            jobId: '20260815_7f3a91c2b6d4',
+            state: 'succeeded',
+            output: { documentPath: '/tmp/out/document.md', artifactAvailable: true },
+          }],
+          retentionDays: 30,
+        },
+      }, false);
+      expect(log.mock.calls.flat().join('\n')).toContain(
+        '20260815_7f3a91c2b6d4  succeeded  /tmp/out/document.md',
+      );
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('keeps AnyDoc warnings and terminal errors off stdout', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      printResult('anydoc', 'status', {
+        success: true,
+        data: {
+          job: {
+            jobId: '20260815_7f3a91c2b6d4',
+            state: 'succeeded_with_warnings',
+            stage: 'finalizing',
+            output: { documentPath: '/tmp/out/document.md', artifactAvailable: true },
+            warnings: [{ code: 'DOCUMENT_ASSET_SKIPPED', message: 'image omitted' }],
+          },
+        },
+      }, false);
+      expect(log.mock.calls.flat().join('\n')).not.toContain('image omitted');
+      expect(error.mock.calls.flat().join('\n')).toContain(
+        'Warning [DOCUMENT_ASSET_SKIPPED]: image omitted',
+      );
+      expect(log.mock.calls.flat().join('\n')).not.toContain('Stage: finalizing');
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('does not advertise ghost artifact paths for terminal jobs', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printResult('anydoc', 'list', {
+        success: true,
+        data: {
+          items: [
+            {
+              jobId: '20260815_failed000001',
+              state: 'failed',
+              output: { documentPath: '/tmp/ghost-failed/document.md', artifactAvailable: false },
+            },
+            {
+              jobId: '20260815_cancelled001',
+              state: 'cancelled',
+              output: { documentPath: '/tmp/ghost-cancelled/document.md', artifactAvailable: false },
+            },
+          ],
+        },
+      }, false);
+      printResult('anydoc', 'status', {
+        success: true,
+        data: {
+          job: {
+            jobId: '20260815_failed000001',
+            state: 'failed',
+            stage: 'finalizing',
+            output: { documentPath: '/tmp/ghost-status/document.md', artifactAvailable: false },
+          },
+        },
+      }, false);
+
+      const output = log.mock.calls.flat().join('\n');
+      expect(output).toContain('20260815_failed000001  failed  (no artifact)');
+      expect(output).toContain('20260815_cancelled001  cancelled  (no artifact)');
+      expect(output).toContain('Document: unavailable');
+      expect(output).not.toContain('/tmp/ghost-');
+      expect(output).not.toContain('Stage: finalizing');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('keeps active job progress visible without claiming an artifact', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printResult('anydoc', 'status', {
+        success: true,
+        data: {
+          job: {
+            jobId: '20260815_running00001',
+            state: 'running',
+            stage: 'ocr',
+            output: { documentPath: '/tmp/future/document.md', artifactAvailable: false },
+          },
+        },
+      }, false);
+
+      const output = log.mock.calls.flat().join('\n');
+      expect(output).toContain('Stage: ocr');
+      expect(output).not.toContain('Document:');
+      expect(output).not.toContain('/tmp/future/document.md');
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
+
+describe('myagents CLI Sidecar capability diagnostics', () => {
+  it('turns Global Sidecar reload rejection into an actionable Session-only error', () => {
+    expect(adminHttpErrorResult('reload', 404, 'Not Found')).toMatchObject({
+      success: false,
+      code: 'SESSION_SIDECAR_REQUIRED',
+      error: expect.stringContaining('Session Sidecar'),
+      suggestedCommand: 'myagents reload --help',
+    });
+  });
 });
 
 describe('myagents CLI Task notification updates', () => {
@@ -498,6 +751,66 @@ describe('myagents CLI Space issue contracts', () => {
       title: 'No Goal change',
     });
     expect(titleOnly).not.toHaveProperty('goalUpdate');
+  });
+
+  it.each([
+    {
+      action: 'issue',
+      rest: ['list'],
+      route: 'space/issue-list',
+      body: { spaceSlug: 'official', workspacePath: '/workspace' },
+      flags: {},
+    },
+    {
+      action: 'goal',
+      rest: ['list'],
+      route: 'space/goal-list',
+      body: { spaceSlug: 'official', workspacePath: '/workspace', includeArchived: false },
+      flags: {},
+    },
+    {
+      action: 'assignee',
+      rest: ['list'],
+      route: 'space/assignee-list',
+      body: { spaceSlug: 'official', workspacePath: '/workspace' },
+      flags: {},
+    },
+    {
+      action: 'whoami',
+      rest: [],
+      route: 'space/whoami',
+      body: { spaceSlug: 'official', workspacePath: '/workspace' },
+      flags: {},
+    },
+    {
+      action: 'issue',
+      rest: ['attachment', 'add', 'iss_523'],
+      route: 'space/attachment-add',
+      body: {
+        spaceSlug: 'official',
+        workspacePath: '/workspace',
+        issueId: 'iss_523',
+        filePaths: ['evidence.png'],
+      },
+      flags: { file: ['evidence.png'] },
+    },
+  ])('keeps #523/#524 $route requests on exact leaf contracts', ({
+    action,
+    rest,
+    route,
+    body,
+    flags,
+  }) => {
+    const actualRoute = buildRoute('space', action, rest);
+    const actualBody = buildRequestBody('space', action, rest, {
+      space: 'official',
+      workspacePath: '/workspace',
+      ...flags,
+    });
+
+    expect(actualRoute).toBe(route);
+    expect(actualRoute).not.toMatch(/^space\/(issue|goal|assignee|attachment)$/);
+    expect(actualBody).toMatchObject(body);
   });
 
   it('parses presence flags and explicit human-only booleans without swallowing later flags', () => {

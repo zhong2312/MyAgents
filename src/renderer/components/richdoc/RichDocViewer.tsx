@@ -25,8 +25,9 @@ import {
   type LazyExoticComponent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, FileText, FileWarning, Loader2 } from 'lucide-react';
+import { ExternalLink, FileWarning, Loader2 } from 'lucide-react';
 
+import { FileIcon } from '@/components/file-icon';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import type { RichDocKind } from '../../../shared/fileTypes';
 import { installExternalResourceGuard } from './externalResourceGuard';
@@ -147,7 +148,7 @@ export default function RichDocViewer({ kind, path, workspacePath, localPath = n
   if (isEmpty) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-[var(--paper-elevated)] px-6 text-center">
-        <FileText className="h-10 w-10 text-[var(--ink-subtle)] opacity-40" />
+        <FileIcon name={path} size="display" />
         <p className="text-sm text-[var(--ink-muted)]">{t('richDoc.empty')}</p>
       </div>
     );

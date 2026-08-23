@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { SlashCommand } from '../../shared/slashCommands';
 import {
   CLIENT_ACTION_SLASH_COMMANDS,
+  MANAGED_CODEX_COMPACT_SLASH_COMMAND,
   isClientActionCommand,
   resolveClientActionName,
   withClientActionCommands,
@@ -15,9 +16,9 @@ const cmd = (name: string, source: SlashCommand['source']): SlashCommand => ({
 });
 
 describe('isClientActionCommand', () => {
-  it('is true only for builtin client-action commands', () => {
-    expect(isClientActionCommand(cmd('goal', 'builtin'))).toBe(true);
-    expect(isClientActionCommand(cmd('loop', 'builtin'))).toBe(true);
+  it('is true only for renderer client-action commands', () => {
+    expect(isClientActionCommand(cmd('goal', 'client'))).toBe(true);
+    expect(isClientActionCommand(cmd('compact', 'client'))).toBe(true);
   });
 
   it('is false for a non-builtin source with the same name (no hijack of a user skill)', () => {
@@ -25,6 +26,7 @@ describe('isClientActionCommand', () => {
     expect(isClientActionCommand(cmd('loop', 'skill'))).toBe(false);
     expect(isClientActionCommand(cmd('loop', 'custom'))).toBe(false);
     expect(isClientActionCommand(cmd('loop', 'sdk'))).toBe(false);
+    expect(isClientActionCommand(cmd('goal', 'builtin'))).toBe(false);
   });
 
   it('is false for ordinary builtins like /compact', () => {
@@ -40,6 +42,11 @@ describe('resolveClientActionName', () => {
 
   it('returns null for ordinary commands', () => {
     expect(resolveClientActionName('/compact')).toBeNull();
+  });
+
+  it('resolves runtime-specific actions only when that capability is enabled', () => {
+    const enabled = [...CLIENT_ACTION_SLASH_COMMANDS, MANAGED_CODEX_COMPACT_SLASH_COMMAND];
+    expect(resolveClientActionName('/compact', enabled)).toBe('compact');
   });
 });
 
@@ -57,7 +64,7 @@ describe('withClientActionCommands', () => {
     const result = withClientActionCommands(base, true);
     expect(result.filter((c) => c.name === 'goal')).toHaveLength(1);
     expect(result.filter((c) => c.name === 'loop')).toHaveLength(0);
-    expect(result.find((c) => c.name === 'goal')?.source).toBe('builtin');
+    expect(result.find((c) => c.name === 'goal')?.source).toBe('client');
     expect(result.find((c) => c.name === 'goal')?.aliases).toContain('loop');
   });
 
@@ -81,7 +88,7 @@ describe('withClientActionCommands', () => {
     // cannot shadow the old command name.
     expect(result.filter((c) => c.name === 'goal')).toHaveLength(1);
     expect(result.filter((c) => c.name === 'loop')).toHaveLength(0);
-    expect(result.find((c) => c.name === 'goal')?.source).toBe('builtin');
+    expect(result.find((c) => c.name === 'goal')?.source).toBe('client');
     expect(isClientActionCommand(result.find((c) => c.name === 'goal')!)).toBe(true);
   });
 
@@ -89,5 +96,12 @@ describe('withClientActionCommands', () => {
     for (const c of CLIENT_ACTION_SLASH_COMMANDS) {
       expect(isClientActionCommand(c)).toBe(true);
     }
+  });
+
+  it('injects Managed Codex compact as a client action without duplicating the builtin name', () => {
+    const result = withClientActionCommands(base, true, [MANAGED_CODEX_COMPACT_SLASH_COMMAND]);
+    expect(result.filter((c) => c.name === 'compact')).toHaveLength(1);
+    expect(result.find((c) => c.name === 'compact')?.source).toBe('client');
+    expect(isClientActionCommand(result.find((c) => c.name === 'compact')!)).toBe(true);
   });
 });

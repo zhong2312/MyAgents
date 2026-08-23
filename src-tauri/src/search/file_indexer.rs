@@ -33,7 +33,7 @@ use tantivy::query::QueryParser;
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
 use super::schema::{self, FileFields, SCHEMA_VERSION};
-use super::searcher::{FileMatchLine, FileSearchHit, FileSearchResult};
+use super::searcher::{FileMatchLine, FileSearchHit, FileSearchResult, FolderSearchHit};
 use super::tokenizer;
 use super::util::{byte_to_utf16, ceil_char_boundary, floor_char_boundary};
 
@@ -69,7 +69,13 @@ const MAX_FILE_SIZE: u64 = 1_048_576;
 const DIRECT_SCAN_MAX_FILES: usize = 2_000;
 #[cfg(test)]
 const DIRECT_SCAN_MAX_FILES: usize = 3;
+#[cfg(not(test))]
+const DIRECT_SCAN_MAX_ENTRIES: usize = 8_000;
+#[cfg(test)]
+const DIRECT_SCAN_MAX_ENTRIES: usize = 12;
+const FOLDER_SEARCH_LIMIT: usize = 50;
 const FILE_INDEX_MANIFEST: &str = ".file_index_manifest.json";
+const FILE_INDEX_MANIFEST_VERSION: u32 = 2;
 const SCHEMA_VERSION_FILE: &str = ".schema_version";
 
 /// Per-file staleness fingerprint. Two files with the same `(mtime_ms, size)`
@@ -86,9 +92,16 @@ struct FileState {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FileIndexManifest {
+    manifest_version: u32,
     schema_version: u32,
     workspace: String,
     files: HashMap<String, FileState>,
+    folders: Vec<String>,
+}
+
+struct DiscoveredWorkspace {
+    files: HashMap<String, (PathBuf, FileState)>,
+    folders: Vec<String>,
 }
 
 /// Manages per-workspace Tantivy indices.
@@ -105,6 +118,10 @@ struct WorkspaceFileIndex {
     /// path from workspace root — the same string we store in the doc — so
     /// `delete_term` hits the right entry.
     file_states: HashMap<String, FileState>,
+    /// Searchable workspace-relative directory paths. This lives beside the
+    /// Tantivy file index because directories are navigation objects, not
+    /// content documents.
+    folder_paths: Vec<String>,
 }
 
 impl FileIndexManager {
@@ -172,7 +189,10 @@ impl FileIndexManager {
             }
         };
 
-        if manifest.schema_version != SCHEMA_VERSION || manifest.workspace != workspace {
+        if manifest.manifest_version != FILE_INDEX_MANIFEST_VERSION
+            || manifest.schema_version != SCHEMA_VERSION
+            || manifest.workspace != workspace
+        {
             ulog_warn!(
                 "[search] Workspace index manifest mismatch for {}; rebuilding",
                 workspace
@@ -210,6 +230,7 @@ impl FileIndexManager {
             reader,
             fields,
             file_states: manifest.files,
+            folder_paths: manifest.folders,
         }))
     }
 
@@ -217,15 +238,18 @@ impl FileIndexManager {
         &self,
         workspace: &str,
         file_states: &HashMap<String, FileState>,
+        folder_paths: &[String],
     ) -> Result<(), String> {
         let index_dir = self.index_dir_for_workspace(workspace);
         fs::create_dir_all(&index_dir)
             .map_err(|e| format!("Failed to create file index dir: {}", e))?;
 
         let manifest = FileIndexManifest {
+            manifest_version: FILE_INDEX_MANIFEST_VERSION,
             schema_version: SCHEMA_VERSION,
             workspace: workspace.to_string(),
             files: file_states.clone(),
+            folders: folder_paths.to_vec(),
         };
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)
             .map_err(|e| format!("Failed to serialize file index manifest: {}", e))?;
@@ -300,17 +324,19 @@ impl FileIndexManager {
         }
 
         let start = std::time::Instant::now();
-        let discovered = discover_files(ws_path)?;
+        let discovered = discover_workspace(ws_path)?;
+        let discovered_folders = discovered.folders;
 
         // Scope the mutable borrow so we can call ulog_info after.
         let (total, change_count) = {
             let ws_index = slot_guard.as_mut().unwrap();
+            let folders_changed = ws_index.folder_paths != discovered_folders;
 
             let mut to_reindex: Vec<(String, PathBuf)> = Vec::new();
             let mut new_file_states: HashMap<String, FileState> =
-                HashMap::with_capacity(discovered.len());
+                HashMap::with_capacity(discovered.files.len());
 
-            for (rel_path, (abs_path, state)) in discovered {
+            for (rel_path, (abs_path, state)) in discovered.files {
                 let needs_reindex = match ws_index.file_states.get(&rel_path) {
                     Some(old) => *old != state,
                     None => true,
@@ -333,6 +359,16 @@ impl FileIndexManager {
 
             if change_count == 0 {
                 ws_index.file_states = new_file_states;
+                ws_index.folder_paths = discovered_folders;
+                if folders_changed {
+                    self.persist_manifest(workspace, &ws_index.file_states, &ws_index.folder_paths)
+                        .map_err(|e| {
+                            format!(
+                            "Failed to persist workspace index manifest after folder refresh: {}",
+                            e
+                        )
+                        })?;
+                }
                 return Ok((total, 0));
             }
 
@@ -385,7 +421,8 @@ impl FileIndexManager {
                 .reload()
                 .map_err(|e| format!("reader reload failed: {}", e))?;
             ws_index.file_states = new_file_states;
-            self.persist_manifest(workspace, &ws_index.file_states)
+            ws_index.folder_paths = discovered_folders;
+            self.persist_manifest(workspace, &ws_index.file_states, &ws_index.folder_paths)
                 .map_err(|e| {
                     format!(
                         "Failed to persist workspace index manifest after refresh: {}",
@@ -469,6 +506,7 @@ impl FileIndexManager {
 
         let f = &ws_index.fields;
         let searcher = ws_index.reader.searcher();
+        let folder_hits = search_folder_paths(&ws_index.folder_paths, query, FOLDER_SEARCH_LIMIT);
 
         let mut parser = QueryParser::for_index(&ws_index.index, vec![f.name, f.content]);
         parser.set_field_boost(f.name, 2.0);
@@ -483,7 +521,6 @@ impl FileIndexManager {
 
         let query_lower = query.to_lowercase();
         let mut hits = Vec::new();
-        let mut total_matches = 0;
 
         for (_score, doc_addr) in top_docs {
             let doc_result = searcher.doc::<tantivy::TantivyDocument>(doc_addr);
@@ -500,22 +537,22 @@ impl FileIndexManager {
             let matches = find_matching_lines(&content, &query_lower, max_matches_per_file);
 
             let match_count = matches.len();
-            total_matches += match_count;
 
             // If no line-level matches but the name matches, show it as a filename-only match
             if match_count > 0 || name.to_lowercase().contains(&query_lower) {
                 hits.push(FileSearchHit {
                     path,
                     name,
-                    match_count: match_count.max(1),
+                    match_count,
                     matches,
                 });
             }
         }
 
         Ok(FileSearchResult {
+            total_folders: folder_hits.len(),
             total_files: hits.len(),
-            total_matches,
+            folder_hits,
             hits,
             query_time_ms: start.elapsed().as_secs_f64() * 1000.0,
         })
@@ -552,10 +589,11 @@ impl FileIndexManager {
 
         // Walk the tree metadata-first, then read + index each discovered file.
         let ws_path = Path::new(workspace);
-        let file_states = if ws_path.is_dir() {
-            let discovered = discover_files(ws_path)?;
-            let mut states: HashMap<String, FileState> = HashMap::with_capacity(discovered.len());
-            for (rel_path, (abs_path, state)) in discovered {
+        let (file_states, folder_paths) = if ws_path.is_dir() {
+            let discovered = discover_workspace(ws_path)?;
+            let mut states: HashMap<String, FileState> =
+                HashMap::with_capacity(discovered.files.len());
+            for (rel_path, (abs_path, state)) in discovered.files {
                 let Some(content) = read_indexable_file(&abs_path, &state) else {
                     continue;
                 };
@@ -576,9 +614,9 @@ impl FileIndexManager {
                 ));
                 states.insert(rel_path, state);
             }
-            states
+            (states, discovered.folders)
         } else {
-            HashMap::new()
+            (HashMap::new(), Vec::new())
         };
 
         writer
@@ -600,15 +638,20 @@ impl FileIndexManager {
             reader,
             fields,
             file_states,
+            folder_paths,
         };
 
-        self.persist_manifest(workspace, &workspace_index.file_states)
-            .map_err(|e| {
-                format!(
-                    "Failed to persist workspace index manifest after build: {}",
-                    e
-                )
-            })?;
+        self.persist_manifest(
+            workspace,
+            &workspace_index.file_states,
+            &workspace_index.folder_paths,
+        )
+        .map_err(|e| {
+            format!(
+                "Failed to persist workspace index manifest after build: {}",
+                e
+            )
+        })?;
 
         ulog_info!(
             "[search] Indexed {} files for workspace: {}",
@@ -620,16 +663,22 @@ impl FileIndexManager {
     }
 }
 
-/// Walk a workspace tree metadata-only and return `rel_path → (abs_path, FileState)`
-/// for every file that passes the index filters (skip dirs, binary ext, hidden,
-/// size cap). No file contents are read.
-fn discover_files(root: &Path) -> Result<HashMap<String, (PathBuf, FileState)>, String> {
-    let mut out = HashMap::new();
-    walk_dir(root, root, &mut out);
-    Ok(out)
+/// Walk a workspace tree metadata-only and return the files and directories
+/// that share the workspace-search skip rules. No file contents are read.
+fn discover_workspace(root: &Path) -> Result<DiscoveredWorkspace, String> {
+    let mut files = HashMap::new();
+    let mut folders = Vec::new();
+    walk_dir(root, root, &mut files, &mut folders);
+    folders.sort();
+    Ok(DiscoveredWorkspace { files, folders })
 }
 
-fn walk_dir(root: &Path, dir: &Path, out: &mut HashMap<String, (PathBuf, FileState)>) {
+fn walk_dir(
+    root: &Path,
+    dir: &Path,
+    files: &mut HashMap<String, (PathBuf, FileState)>,
+    folders: &mut Vec<String>,
+) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return, // permission denied / vanished → skip silently
@@ -651,7 +700,8 @@ fn walk_dir(root: &Path, dir: &Path, out: &mut HashMap<String, (PathBuf, FileSta
             if should_skip_dir(&name) {
                 continue;
             }
-            walk_dir(root, &path, out);
+            folders.push(relative_slash_path(root, &path));
+            walk_dir(root, &path, files, folders);
             continue;
         }
 
@@ -677,21 +727,24 @@ fn walk_dir(root: &Path, dir: &Path, out: &mut HashMap<String, (PathBuf, FileSta
 
         let state = file_state_from_metadata(&metadata);
 
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .into_owned();
-        out.insert(rel, (path, state));
+        let rel = relative_slash_path(root, &path);
+        files.insert(rel, (path, state));
     }
 }
 
+fn relative_slash_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 fn should_skip_dir(name: &str) -> bool {
-    SKIP_DIRS.iter().any(|s| name == *s) || name.starts_with('.')
+    SKIP_DIRS.contains(&name) || name.starts_with('.')
 }
 
 fn is_binary_extension(ext: &str) -> bool {
-    BINARY_EXTENSIONS.iter().any(|b| ext == *b)
+    BINARY_EXTENSIONS.contains(&ext)
 }
 
 fn direct_search_workspace_files(
@@ -701,38 +754,41 @@ fn direct_search_workspace_files(
     max_matches_per_file: usize,
     start: std::time::Instant,
 ) -> Result<FileSearchResult, String> {
-    if query.trim().is_empty() || limit == 0 || !root.is_dir() {
+    if query.trim().is_empty() || !root.is_dir() {
         return Ok(FileSearchResult {
+            folder_hits: Vec::new(),
             total_files: 0,
-            total_matches: 0,
+            total_folders: 0,
             hits: Vec::new(),
             query_time_ms: start.elapsed().as_secs_f64() * 1000.0,
         });
     }
 
     let query_lower = query.to_lowercase();
-    let mut hits = Vec::new();
-    let mut total_matches = 0;
-    let mut scanned_files = 0;
-    let stopped_early = direct_walk_search(
+    let mut walk = DirectSearchWalk {
         root,
-        root,
-        &query_lower,
+        query_lower: &query_lower,
         limit,
         max_matches_per_file,
-        &mut hits,
-        &mut total_matches,
-        &mut scanned_files,
-        DIRECT_SCAN_MAX_FILES,
-    );
+        hits: Vec::new(),
+        scanned_files: 0,
+        visited_entries: 0,
+        folder_paths: Vec::new(),
+        max_files: DIRECT_SCAN_MAX_FILES,
+        max_entries: DIRECT_SCAN_MAX_ENTRIES,
+    };
+    let stopped_early = walk.visit(root);
+    let folder_hits = search_folder_paths(&walk.folder_paths, query, FOLDER_SEARCH_LIMIT);
 
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
     ulog_info!(
-        "[search] Direct workspace scan for {:?} in {} -> {} hits, {} files scanned{} ({:.1}ms)",
+        "[search] Direct workspace scan for {:?} in {} -> {} folders, {} files, {} files read, {} entries visited{} ({:.1}ms)",
         query,
         root.display(),
-        hits.len(),
-        scanned_files,
+        folder_hits.len(),
+        walk.hits.len(),
+        walk.scanned_files,
+        walk.visited_entries,
         if stopped_early {
             " (stopped early)"
         } else {
@@ -742,110 +798,164 @@ fn direct_search_workspace_files(
     );
 
     Ok(FileSearchResult {
-        total_files: hits.len(),
-        total_matches,
-        hits,
+        total_folders: folder_hits.len(),
+        total_files: walk.hits.len(),
+        folder_hits,
+        hits: walk.hits,
         query_time_ms: elapsed_ms,
     })
 }
 
-fn direct_walk_search(
-    root: &Path,
-    dir: &Path,
-    query_lower: &str,
+struct DirectSearchWalk<'a> {
+    root: &'a Path,
+    query_lower: &'a str,
     limit: usize,
     max_matches_per_file: usize,
-    hits: &mut Vec<FileSearchHit>,
-    total_matches: &mut usize,
-    scanned_files: &mut usize,
+    hits: Vec<FileSearchHit>,
+    scanned_files: usize,
+    visited_entries: usize,
+    folder_paths: Vec<String>,
     max_files: usize,
-) -> bool {
-    if hits.len() >= limit || *scanned_files >= max_files {
-        return true;
-    }
+    max_entries: usize,
+}
 
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return false,
-    };
-    let mut entries: Vec<_> = entries.flatten().collect();
-    entries.sort_by_key(|entry| entry.file_name());
-
-    for entry in entries {
-        if hits.len() >= limit || *scanned_files >= max_files {
+impl DirectSearchWalk<'_> {
+    fn visit(&mut self, dir: &Path) -> bool {
+        if self.visited_entries >= self.max_entries {
             return true;
         }
 
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(_) => continue,
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => return false,
         };
-        if metadata.file_type().is_symlink() {
-            continue;
-        }
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|entry| entry.file_name());
 
-        if metadata.is_dir() {
-            if !should_skip_dir(&name) {
-                if direct_walk_search(
-                    root,
-                    &path,
-                    query_lower,
-                    limit,
-                    max_matches_per_file,
-                    hits,
-                    total_matches,
-                    scanned_files,
-                    max_files,
-                ) {
-                    return true;
-                }
+        for entry in entries {
+            if self.visited_entries >= self.max_entries {
+                return true;
             }
-            continue;
+            self.visited_entries += 1;
+
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+
+            if metadata.is_dir() {
+                if !should_skip_dir(&name) {
+                    self.folder_paths
+                        .push(relative_slash_path(self.root, &path));
+                    if self.visit(&path) {
+                        return true;
+                    }
+                }
+                continue;
+            }
+
+            if !metadata.is_file() || metadata.len() > MAX_FILE_SIZE || name.starts_with('.') {
+                continue;
+            }
+
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if is_binary_extension(&ext) {
+                continue;
+            }
+
+            if self.scanned_files >= self.max_files || self.hits.len() >= self.limit {
+                continue;
+            }
+            self.scanned_files += 1;
+            let name_matches = name.to_lowercase().contains(self.query_lower);
+            let state = file_state_from_metadata(&metadata);
+            let content = read_indexable_file(&path, &state);
+            let matches = content
+                .as_deref()
+                .map(|body| find_matching_lines(body, self.query_lower, self.max_matches_per_file))
+                .unwrap_or_default();
+
+            if !name_matches && matches.is_empty() {
+                continue;
+            }
+
+            let rel_path = relative_slash_path(self.root, &path);
+            let match_count = matches.len();
+            self.hits.push(FileSearchHit {
+                path: rel_path,
+                name,
+                match_count,
+                matches,
+            });
         }
-
-        if !metadata.is_file() || metadata.len() > MAX_FILE_SIZE || name.starts_with('.') {
-            continue;
-        }
-
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        if is_binary_extension(&ext) {
-            continue;
-        }
-
-        *scanned_files += 1;
-        let name_matches = name.to_lowercase().contains(query_lower);
-        let state = file_state_from_metadata(&metadata);
-        let content = read_indexable_file(&path, &state);
-        let matches = content
-            .as_deref()
-            .map(|body| find_matching_lines(body, query_lower, max_matches_per_file))
-            .unwrap_or_default();
-
-        if !name_matches && matches.is_empty() {
-            continue;
-        }
-
-        let rel_path = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .into_owned();
-        let match_count = matches.len().max(1);
-        *total_matches += matches.len();
-        hits.push(FileSearchHit {
-            path: rel_path,
-            name,
-            match_count,
-            matches,
-        });
+        false
     }
-    false
+}
+
+fn search_folder_paths(paths: &[String], query: &str, limit: usize) -> Vec<FolderSearchHit> {
+    if query.trim().is_empty() || limit == 0 {
+        return Vec::new();
+    }
+
+    let normalized_query = query.trim().replace('\\', "/").to_lowercase();
+    let is_path_query = query.contains('/') || query.contains('\\');
+    let mut candidates: Vec<(u8, usize, String, String)> = paths
+        .iter()
+        .filter_map(|path| {
+            let normalized_path = path.replace('\\', "/");
+            let name = normalized_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&normalized_path);
+            let name_lower = name.to_lowercase();
+            let path_lower = normalized_path.to_lowercase();
+            let matched = if is_path_query {
+                path_lower.contains(&normalized_query)
+            } else {
+                name_lower.contains(&normalized_query)
+            };
+            if !matched {
+                return None;
+            }
+
+            let rank = if name_lower == normalized_query {
+                0
+            } else if name_lower.starts_with(&normalized_query) {
+                1
+            } else if name_lower.contains(&normalized_query) {
+                2
+            } else {
+                3
+            };
+            let depth = normalized_path.split('/').count();
+            Some((rank, depth, path_lower, normalized_path))
+        })
+        .collect();
+
+    candidates.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| left.3.cmp(&right.3))
+    });
+    candidates
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, _, path)| FolderSearchHit {
+            name: path.rsplit('/').next().unwrap_or(&path).to_string(),
+            path,
+        })
+        .collect()
 }
 
 /// Find matching lines in file content.
@@ -1065,6 +1175,180 @@ mod tests {
     }
 
     #[test]
+    fn folder_search_is_sorted_and_independent_from_file_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_dir = temp.path().join("index");
+        let workspace = temp.path().join("workspace");
+        for folder in ["zhihu", "zhihu-notes", "alpha-zhihu", "deep/zhihu"] {
+            fs::create_dir_all(workspace.join(folder)).unwrap();
+        }
+        fs::write(workspace.join("ordinary.txt"), "zhihu content").unwrap();
+
+        let workspace = workspace_path(&workspace);
+        let manager = FileIndexManager::new(base_dir);
+        let result = manager.search("zhihu", &workspace, 1, 5).unwrap();
+
+        assert_eq!(result.total_files, 1);
+        assert_eq!(
+            result
+                .folder_hits
+                .iter()
+                .map(|hit| hit.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["zhihu", "deep/zhihu", "zhihu-notes", "alpha-zhihu"]
+        );
+    }
+
+    #[test]
+    fn folder_path_query_accepts_windows_separators() {
+        let hits = search_folder_paths(
+            &[
+                "src/components/search".to_string(),
+                "src/server".to_string(),
+                "other/components".to_string(),
+            ],
+            "src\\components",
+            FOLDER_SEARCH_LIMIT,
+        );
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, "src/components/search");
+    }
+
+    #[test]
+    fn folder_path_query_matches_across_cold_warm_and_busy_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_dir = temp.path().join("index");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(workspace.join("src/components/search")).unwrap();
+        fs::write(workspace.join("ordinary.txt"), "ordinary content").unwrap();
+
+        let workspace = workspace_path(&workspace);
+        let manager = FileIndexManager::new(base_dir);
+        let cold = manager
+            .search("src\\components", &workspace, 10, 5)
+            .unwrap();
+        manager.refresh_or_create(&workspace).unwrap();
+        let warm = manager
+            .search("src\\components", &workspace, 10, 5)
+            .unwrap();
+        let slot = manager.slot_for(&workspace).unwrap();
+        let _held = slot.lock().unwrap();
+        let busy = manager
+            .search("src\\components", &workspace, 10, 5)
+            .unwrap();
+
+        let paths = |result: &FileSearchResult| {
+            result
+                .folder_hits
+                .iter()
+                .map(|hit| hit.path.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            paths(&cold),
+            vec![
+                "src/components".to_string(),
+                "src/components/search".to_string()
+            ]
+        );
+        assert_eq!(paths(&warm), paths(&cold));
+        assert_eq!(paths(&busy), paths(&cold));
+        assert!(cold.hits.is_empty());
+        assert!(warm.hits.is_empty());
+        assert!(busy.hits.is_empty());
+    }
+
+    #[test]
+    fn folder_matcher_caps_results_without_affecting_file_budget() {
+        let paths = (0..60)
+            .map(|index| format!("match-{index:02}"))
+            .collect::<Vec<_>>();
+
+        let hits = search_folder_paths(&paths, "match", FOLDER_SEARCH_LIMIT);
+
+        assert_eq!(hits.len(), FOLDER_SEARCH_LIMIT);
+        assert_eq!(hits[0].path, "match-00");
+        assert_eq!(hits[49].path, "match-49");
+    }
+
+    #[test]
+    fn folder_results_match_across_cold_warm_and_busy_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_dir = temp.path().join("index");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(workspace.join("match-folder")).unwrap();
+        fs::create_dir_all(workspace.join("nested/match-child")).unwrap();
+        fs::create_dir_all(workspace.join(".match-hidden")).unwrap();
+        fs::create_dir_all(workspace.join("node_modules/match-skipped")).unwrap();
+        fs::write(workspace.join("ordinary.txt"), "ordinary content").unwrap();
+        #[cfg(unix)]
+        {
+            let outside = temp.path().join("match-outside");
+            fs::create_dir(&outside).unwrap();
+            std::os::unix::fs::symlink(&outside, workspace.join("match-link")).unwrap();
+        }
+
+        let workspace = workspace_path(&workspace);
+        let manager = FileIndexManager::new(base_dir);
+        let cold = manager.search("match", &workspace, 10, 5).unwrap();
+        manager.refresh_or_create(&workspace).unwrap();
+        let warm = manager.search("match", &workspace, 10, 5).unwrap();
+        let slot = manager.slot_for(&workspace).unwrap();
+        let _held = slot.lock().unwrap();
+        let busy = manager.search("match", &workspace, 10, 5).unwrap();
+
+        let paths = |result: &FileSearchResult| {
+            result
+                .folder_hits
+                .iter()
+                .map(|hit| hit.path.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            paths(&cold),
+            vec!["match-folder".to_string(), "nested/match-child".to_string()]
+        );
+        assert_eq!(paths(&warm), paths(&cold));
+        assert_eq!(paths(&busy), paths(&cold));
+    }
+
+    #[test]
+    fn filename_only_match_has_zero_content_matches() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_dir = temp.path().join("index");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("zhihu-notes.md"), "ordinary content").unwrap();
+
+        let workspace = workspace_path(&workspace);
+        let manager = FileIndexManager::new(base_dir);
+        let result = manager.search("zhihu", &workspace, 10, 5).unwrap();
+
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].match_count, 0);
+        assert!(result.hits[0].matches.is_empty());
+    }
+
+    #[test]
+    fn direct_folder_discovery_is_bounded_for_directory_only_workspaces() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_dir = temp.path().join("index");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        for idx in 0..DIRECT_SCAN_MAX_ENTRIES {
+            fs::create_dir(workspace.join(format!("a{idx:02}"))).unwrap();
+        }
+        fs::create_dir(workspace.join("z-late-folder")).unwrap();
+
+        let workspace = workspace_path(&workspace);
+        let manager = FileIndexManager::new(base_dir);
+        let result = manager.search("late", &workspace, 10, 5).unwrap();
+
+        assert!(result.folder_hits.is_empty());
+    }
+
+    #[test]
     fn search_uses_direct_scan_when_workspace_index_slot_is_busy() {
         let temp = tempfile::tempdir().unwrap();
         let base_dir = temp.path().join("index");
@@ -1149,6 +1433,81 @@ mod tests {
         assert!(old.hits.is_empty());
         let updated = manager.search("updatedtoken", &workspace, 10, 5).unwrap();
         assert_eq!(updated.hits.len(), 1);
+    }
+
+    #[test]
+    fn folder_only_refresh_updates_memory_and_persisted_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_dir = temp.path().join("index");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("notes.txt"), "ordinary content").unwrap();
+
+        let workspace_string = workspace_path(&workspace);
+        let manager = FileIndexManager::new(base_dir.clone());
+        manager.refresh_or_create(&workspace_string).unwrap();
+        fs::create_dir(workspace.join("new-folder")).unwrap();
+
+        let (_total, changed_files) = manager.refresh_or_create(&workspace_string).unwrap();
+        assert_eq!(changed_files, 0);
+        assert_eq!(
+            manager
+                .search("new-folder", &workspace_string, 10, 5)
+                .unwrap()
+                .folder_hits
+                .len(),
+            1
+        );
+
+        drop(manager);
+        let manager = FileIndexManager::new(base_dir);
+        assert_eq!(
+            manager
+                .search("new-folder", &workspace_string, 10, 5)
+                .unwrap()
+                .folder_hits
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn legacy_manifest_without_folder_collection_is_rebuilt_safely() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_dir = temp.path().join("index");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("notes.txt"), "oldtoken").unwrap();
+
+        let workspace_string = workspace_path(&workspace);
+        let manager = FileIndexManager::new(base_dir.clone());
+        manager.refresh_or_create(&workspace_string).unwrap();
+        drop(manager);
+
+        let manifest_path = base_dir
+            .join(simple_hash(&workspace_string))
+            .join(FILE_INDEX_MANIFEST);
+        let mut legacy: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("manifestVersion");
+        legacy.as_object_mut().unwrap().remove("folders");
+        fs::write(&manifest_path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+        fs::write(workspace.join("notes.txt"), "newtoken with different size").unwrap();
+
+        let manager = FileIndexManager::new(base_dir);
+        assert!(manager
+            .search("oldtoken", &workspace_string, 10, 5)
+            .unwrap()
+            .hits
+            .is_empty());
+        assert_eq!(
+            manager
+                .search("newtoken", &workspace_string, 10, 5)
+                .unwrap()
+                .hits
+                .len(),
+            1
+        );
     }
 
     #[test]

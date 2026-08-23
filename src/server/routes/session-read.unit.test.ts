@@ -73,6 +73,7 @@ describe('handleSessionReadRoute', () => {
     );
 
     expect(await readJson(stateResponse as Response)).toEqual({
+      sessionId: 'sid',
       sessionState: 'idle',
       isBusy: true,
       completionTerminal: {

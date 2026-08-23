@@ -248,7 +248,7 @@ describe('resolveImProviderEnv (#237)', () => {
           type: 'openclaw:wecom-openclaw-plugin',
           enabled: true,
           providerId: 'minimax', // legacy root — should LOSE to overrides below
-          overrides: { providerId: 'zhipu', model: 'glm-5.2' }, // post-bc06386 location — should WIN
+          overrides: { providerId: 'zhipu', model: 'glm-5.3' }, // post-bc06386 location — should WIN
         }],
       }],
       providerApiKeys: { deepseek: 'sk-d', minimax: 'sk-m', zhipu: 'sk-z' },

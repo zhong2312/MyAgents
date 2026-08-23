@@ -4,21 +4,19 @@
 //! `src/server/utils/file-lock.ts`. The lock primitive is atomic
 //! `create_dir`; an `owner` file inside the lockdir holds the 3-tuple
 //! `<runtime>:<pid>:<startMs>` (`rust:<pid>:<startMs>` here, `node:<pid>:<startMs>`
-//! from Node) so other processes can probe both liveness and pid-reuse for
-//! stale-recovery. The 2-tuple `<runtime>:<pid>` shape is still understood for
-//! backwards compatibility with locks written by older binaries. We delegate
-//! the actual blocking work to `tokio::task::spawn_blocking` so the async
-//! runtime worker stays free.
+//! from Node) for compatibility and exact release fencing. The 2-tuple
+//! `<runtime>:<pid>` shape is still understood for backwards compatibility
+//! with locks written by older binaries. We delegate the actual blocking work
+//! to `tokio::task::spawn_blocking` so the async runtime worker stays free.
 //!
 //! Rust stale-recovery rules:
-//! - lockdir age > `stale_ms` AND owner pid is confirmed no longer alive
-//!   (unix: `nix::sys::signal::kill(pid, None)` returns ESRCH) → forcibly remove.
-//! - 3-tuple owner with start_time mismatching the live pid's actual start
-//!   time → pid was recycled by an unrelated process → break.
-//! - A positively live pid is never age-broken; unavailable liveness/start-time
-//!   evidence is treated conservatively and preserves the lock.
-//! - Owner format `renderer:<ts>` has no observable pid; we fall through to
-//!   age-only break.
+//! - A valid process owner confirmed no longer alive is reclaimed immediately
+//!   (unix: `nix::sys::signal::kill(pid, None)` returns ESRCH).
+//! - A valid process owner is never age-broken while its liveness cannot be
+//!   disproved. The v1 wall-clock `startMs` is not strong process-incarnation
+//!   evidence, so a mismatch never authorizes eviction of a live pid.
+//! - Missing, renderer, and malformed owners are reclaimed only after the age
+//!   grace period.
 
 use std::fs;
 use std::io::Write;
@@ -30,6 +28,7 @@ use crate::ulog_warn;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_STALE: Duration = Duration::from_secs(30);
 const DEFAULT_POLL: Duration = Duration::from_millis(50);
+const MAX_JS_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone)]
 pub struct FileLockOptions {
@@ -82,9 +81,9 @@ impl From<FileLockError> for String {
 }
 
 /// Probe whether `pid` is alive. Unix-only via `nix::sys::signal::kill(pid, 0)`.
-/// On Windows we use `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` — succeeds
-/// only for live processes; failure means the pid is gone (or we lack rights,
-/// in which case we conservatively report unknown).
+/// On Windows we open the process with limited query rights and inspect its
+/// exit code; an openable process object may already be terminated while a
+/// different handle keeps the object alive. Access failures remain unknown.
 #[cfg(unix)]
 fn is_pid_alive(pid: i32) -> Option<bool> {
     use nix::sys::signal;
@@ -99,9 +98,11 @@ fn is_pid_alive(pid: i32) -> Option<bool> {
 #[cfg(target_os = "windows")]
 fn is_pid_alive(pid: i32) -> Option<bool> {
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, ERROR_NOT_FOUND,
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, ERROR_NOT_FOUND, STILL_ACTIVE,
     };
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     if pid <= 0 {
         return None;
     }
@@ -113,8 +114,18 @@ fn is_pid_alive(pid: i32) -> Option<bool> {
             _ => None,
         };
     }
+    // A terminated Windows process object can remain openable while another
+    // handle still references it (including a retained std::process::Child).
+    // OpenProcess alone therefore proves only that the object exists, not that
+    // the process is still running.
+    let mut exit_code = 0u32;
+    let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
     unsafe { CloseHandle(handle) };
-    Some(true)
+    if queried == 0 {
+        None
+    } else {
+        Some(exit_code == STILL_ACTIVE as u32)
+    }
 }
 
 #[cfg(not(any(unix, target_os = "windows")))]
@@ -123,16 +134,16 @@ fn is_pid_alive(_pid: i32) -> Option<bool> {
 }
 
 /// Best-effort: return the start time (epoch ms) of `pid`, or None if we
-/// can't determine it on this platform. Used to detect pid-reuse: if the
-/// owner file declared a start_time but the live pid's start_time differs,
-/// the original holder is gone and a different process now owns that pid.
+/// can't determine it on this platform. This value is retained only to write
+/// the compatible v1 owner token; peers do not use it to evict a live pid.
 ///
 /// - macOS:  `ps -p <pid> -o lstart=` (string date), parse as system time.
 /// - Linux:  `/proc/<pid>/stat` field 22 (starttime in clock ticks) +
 ///           `/proc/uptime` to convert to absolute ms (assume HZ=100, the
 ///           same approximation the Node helper uses).
-/// - Windows / other: not supported — return None and the caller falls back
-///   to age-only stale detection.
+/// - Windows: `GetProcessTimes` via a limited-information process handle.
+/// - Other platforms: unsupported; a valid process owner remains protected
+///   when its start time cannot be verified.
 #[cfg(target_os = "macos")]
 fn get_pid_start_time_ms(pid: i32) -> Option<u64> {
     let out = crate::process_cmd::new("ps")
@@ -155,8 +166,7 @@ fn get_pid_start_time_ms(pid: i32) -> Option<u64> {
 /// Linux CLK_TCK lookup, cached for the process lifetime. Read at first
 /// call via `sysconf(_SC_CLK_TCK)` (libc::sysconf), falling back to 100
 /// (universal default) if the lookup fails. Without this, an HZ=250 /
-/// HZ=1000 kernel would skew our derived start-time enough to false-break
-/// a long-running live config-write holder under the 60s age fallback.
+/// HZ=1000 kernel would skew the diagnostic v1 token written by this process.
 #[cfg(target_os = "linux")]
 fn linux_clk_tck() -> f64 {
     use std::sync::OnceLock;
@@ -245,7 +255,8 @@ fn get_pid_start_time_ms(pid: i32) -> Option<u64> {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn get_pid_start_time_ms(_pid: i32) -> Option<u64> {
-    // Other Unix-likes (FreeBSD etc.): not supported. Fall back to age-only.
+    // Other Unix-likes (FreeBSD etc.): not supported. Liveness remains the
+    // conservative authority, so an existing process is not age-broken.
     None
 }
 
@@ -301,19 +312,16 @@ fn parse_lstart_to_epoch_ms(s: &str) -> Option<u64> {
     Some(secs_since_epoch as u64 * 1000)
 }
 
-/// Our own start time, computed once on first call. Used to write the
-/// 3-tuple owner file `rust:<pid>:<startMs>` so peer processes can detect
-/// pid reuse against us.
+/// Our own start time, computed once on first call. Retained in the v1
+/// 3-tuple owner file `rust:<pid>:<startMs>` for compatibility and exact
+/// release fencing; it is not authoritative process-incarnation evidence.
 fn our_start_time_ms() -> u64 {
     use std::sync::OnceLock;
     static OUR_START: OnceLock<u64> = OnceLock::new();
     *OUR_START.get_or_init(|| {
         get_pid_start_time_ms(std::process::id() as i32).unwrap_or_else(|| {
-            // Fall back to "now" — better than 0; means the first writer
-            // in a process gets a start_time stamp roughly equal to its
-            // first lock acquisition. Peer pid-reuse detection still
-            // works (a different recycled pid will have a different
-            // observed start_time).
+            // Fall back to "now" so the compatibility token still has a
+            // stable per-process value for exact release comparison.
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
@@ -366,22 +374,55 @@ fn break_lock_safely(lock_path: &Path) -> bool {
     }
 }
 
-fn has_confirmed_stale_pid_owner(
-    liveness: Option<bool>,
-    declared_start: Option<u64>,
-    observed_start: Option<u64>,
-) -> bool {
-    match liveness {
-        Some(false) => true,
-        Some(true) => matches!(
-            (declared_start, observed_start),
-            (Some(declared), Some(observed)) if declared.abs_diff(observed) > 2_000
-        ),
-        None => false,
-    }
+fn has_confirmed_dead_pid_owner(liveness: Option<bool>) -> bool {
+    liveness == Some(false)
 }
 
-/// Try to break a stale lockdir if its owner pid is dead and age > `stale`.
+/// Parse exactly the shared legacy/current process-owner protocol:
+/// `<runtime>:<pid>` or `<runtime>:<pid>:<startMs>`, where runtime is Node or
+/// Rust. Any missing, non-numeric, or extra field is an unknown owner and must
+/// use the age grace period rather than process-owner recovery.
+fn parse_process_owner(owner: &str) -> Option<(i32, Option<u64>)> {
+    let rest = owner
+        .strip_prefix("node:")
+        .or_else(|| owner.strip_prefix("rust:"))?;
+    let mut fields = rest.split(':');
+    let raw_pid = fields.next()?;
+    if raw_pid.is_empty() || !raw_pid.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let pid_value = raw_pid.parse::<u64>().ok()?;
+    if pid_value == 0 || pid_value > i32::MAX as u64 {
+        return None;
+    }
+    let pid = pid_value as i32;
+    let declared_start = match fields.next() {
+        Some(raw) => {
+            if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            let value = raw.parse::<u64>().ok()?;
+            if value > MAX_JS_SAFE_INTEGER {
+                return None;
+            }
+            Some(value)
+        }
+        None => None,
+    };
+    if fields.next().is_some() {
+        return None;
+    }
+    Some((pid, declared_start))
+}
+
+fn lock_age_from_modified(modified: SystemTime) -> Duration {
+    modified.elapsed().unwrap_or(Duration::ZERO)
+}
+
+/// Try to break a lockdir whose owner is no longer authoritative.
+/// Confirmed-dead pid owners are reclaimed immediately; `stale` is the
+/// grace period for missing, renderer, or malformed owners. A valid process
+/// owner whose liveness cannot be disproved is retained conservatively.
 /// Returns `true` if we removed it (caller should retry mkdir immediately).
 fn try_break_stale_lock(lock_path: &Path, stale: Duration) -> bool {
     let metadata = match fs::metadata(lock_path) {
@@ -389,17 +430,17 @@ fn try_break_stale_lock(lock_path: &Path, stale: Duration) -> bool {
         Err(_) => return true, // gone — retry mkdir
     };
 
-    let age = match metadata.modified().ok().and_then(|t| t.elapsed().ok()) {
-        Some(a) => a,
-        None => return false,
-    };
-    if age <= stale {
-        return false;
-    }
-
+    // Wall-clock rollback can leave a lock mtime in the future. Treat that as
+    // age zero so age-gated owners remain protected while a confirmed-dead PID
+    // can still be reclaimed independently of wall-clock state.
+    let age = metadata
+        .modified()
+        .ok()
+        .map(lock_age_from_modified)
+        .unwrap_or(Duration::ZERO);
     let owner = fs::read_to_string(lock_path.join("owner"))
         .unwrap_or_default()
-        .trim()
+        .trim_ascii()
         .to_string();
 
     // Owner shapes:
@@ -409,44 +450,26 @@ fn try_break_stale_lock(lock_path: &Path, stale: Duration) -> bool {
     //   rust:<pid>:<startMs> (current — Rust now also writes this)
     //   renderer:<ts>        (no observable pid; falls through to age-only break)
     //
-    // For node:/rust: owners we probe pid liveness; if the owner declared a
-    // start_time, we additionally verify the live pid actually has that
-    // start_time. A live pid with a mismatched start_time means the pid was
-    // recycled by an unrelated process — the original holder is gone.
-    if let Some(rest) = owner
-        .strip_prefix("node:")
-        .or_else(|| owner.strip_prefix("rust:"))
-    {
-        let parts: Vec<&str> = rest.split(':').collect();
-        if let Some(pid_str) = parts.first() {
-            if let Ok(pid) = pid_str.parse::<i32>() {
-                let declared_start: Option<u64> = parts.get(1).and_then(|s| s.parse().ok());
-
-                let liveness = is_pid_alive(pid);
-                let observed_start = if liveness == Some(true) && declared_start.is_some() {
-                    get_pid_start_time_ms(pid)
-                } else {
-                    None
-                };
-                if !has_confirmed_stale_pid_owner(liveness, declared_start, observed_start) {
-                    return false;
-                }
-                if liveness == Some(true) {
-                    let declared = declared_start.expect("confirmed reuse requires declared start");
-                    let observed = observed_start.expect("confirmed reuse requires observed start");
-                    ulog_warn!(
-                        "[file-lock] pid {} reused (declaredStart={} liveStart={} skew={}ms); breaking lock {}",
-                        pid,
-                        declared,
-                        observed,
-                        declared.abs_diff(observed),
-                        lock_path.display()
-                    );
-                }
-            }
+    // For node:/rust: owners we probe pid liveness. The v1 start_time remains
+    // part of the exact owner token but cannot safely distinguish PID reuse
+    // from wall-clock adjustment, so a live or inconclusive PID is retained.
+    if let Some((pid, _declared_start)) = parse_process_owner(&owner) {
+        let liveness = is_pid_alive(pid);
+        if !has_confirmed_dead_pid_owner(liveness) {
+            return false;
         }
+        ulog_warn!(
+            "[file-lock] Breaking orphaned lock {} immediately (dead pid={} age={}ms)",
+            lock_path.display(),
+            pid,
+            age.as_millis()
+        );
+        return break_lock_safely(lock_path);
     }
     // For renderer:<ts> or unrecognized owners we fall through and break by age.
+    if age <= stale {
+        return false;
+    }
 
     ulog_warn!(
         "[file-lock] Breaking stale lock {} (age={}ms owner={})",
@@ -518,14 +541,14 @@ where
     // Node `file-lock.ts` and required for cross-process parity.
     let owner_path = lock_path.join("owner");
     match fs::read_to_string(&owner_path) {
-        Ok(s) if s.trim() == our_token => {
+        Ok(s) if s.trim_ascii() == our_token => {
             let _ = fs::remove_dir_all(lock_path);
         }
         Ok(other) => {
             ulog_warn!(
                 "[file-lock] our lock at {} was broken as stale; not deleting current holder's lock (owner={})",
                 lock_path.display(),
-                other.trim()
+                other.trim_ascii()
             );
         }
         Err(_) => {
@@ -563,31 +586,165 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::has_confirmed_stale_pid_owner;
+    use super::{
+        has_confirmed_dead_pid_owner, lock_age_from_modified, parse_process_owner,
+        try_break_stale_lock,
+    };
+    use std::{
+        fs,
+        process::Stdio,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn live_or_unobservable_pid_owner_is_never_age_broken() {
-        assert!(!has_confirmed_stale_pid_owner(Some(true), None, None));
-        assert!(!has_confirmed_stale_pid_owner(
-            Some(true),
-            Some(1_000),
-            None,
-        ));
-        assert!(!has_confirmed_stale_pid_owner(None, Some(1_000), None));
-        assert!(!has_confirmed_stale_pid_owner(
-            Some(true),
-            Some(1_000),
-            Some(2_999),
-        ));
+        assert!(!has_confirmed_dead_pid_owner(Some(true)));
+        assert!(!has_confirmed_dead_pid_owner(None));
     }
 
     #[test]
-    fn only_dead_or_reused_pid_is_confirmed_stale() {
-        assert!(has_confirmed_stale_pid_owner(Some(false), None, None));
-        assert!(has_confirmed_stale_pid_owner(
-            Some(true),
-            Some(1_000),
-            Some(3_001),
+    fn only_dead_pid_is_confirmed_stale() {
+        assert!(has_confirmed_dead_pid_owner(Some(false)));
+    }
+
+    #[test]
+    fn process_owner_parser_requires_exact_legacy_or_current_shape() {
+        assert_eq!(parse_process_owner(""), None);
+        assert_eq!(parse_process_owner("node:42"), Some((42, None)));
+        assert_eq!(parse_process_owner("node:42:0"), Some((42, Some(0))));
+        assert_eq!(parse_process_owner("rust:42:1234"), Some((42, Some(1234))));
+        assert_eq!(parse_process_owner("node:"), None);
+        assert_eq!(parse_process_owner("node:nope"), None);
+        assert_eq!(parse_process_owner("node:-1"), None);
+        assert_eq!(parse_process_owner("rust:42:garbage"), None);
+        assert_eq!(parse_process_owner("rust:42:"), None);
+        assert_eq!(parse_process_owner("rust:42:-1"), None);
+        assert_eq!(parse_process_owner("rust:42:1:extra"), None);
+        assert_eq!(parse_process_owner("node:+42"), None);
+        assert_eq!(parse_process_owner("rust:+42:1"), None);
+        assert_eq!(parse_process_owner("rust:42:+1"), None);
+        assert_eq!(parse_process_owner("rust:0"), None);
+        assert_eq!(parse_process_owner("rust:2147483648"), None);
+        assert_eq!(parse_process_owner("rust:42:9007199254740992"), None);
+        assert_eq!(
+            parse_process_owner("rust:42:9007199254740991"),
+            Some((42, Some(9_007_199_254_740_991)))
+        );
+        assert_eq!(parse_process_owner("renderer:42"), None);
+        assert_eq!(parse_process_owner("other:42"), None);
+        assert_eq!(parse_process_owner("\u{feff}node:42"), None);
+        assert_eq!(parse_process_owner("\u{000b}node:42"), None);
+    }
+
+    #[test]
+    fn future_modified_time_is_age_zero_instead_of_blocking_dead_owner_recovery() {
+        let future = SystemTime::now() + Duration::from_secs(60);
+        assert_eq!(lock_age_from_modified(future), Duration::ZERO);
+    }
+
+    #[test]
+    fn confirmed_dead_pid_owner_bypasses_the_age_grace_period() {
+        let mut command =
+            crate::process_cmd::new(std::env::current_exe().expect("current test executable"));
+        let mut child = command
+            .arg("--list")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn short-lived child");
+        let dead_pid = child.id();
+        child.wait().expect("wait for child exit");
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("wall clock after unix epoch")
+            .as_nanos();
+        let scratch = std::env::temp_dir().join(format!(
+            "myagents-file-lock-dead-owner-{}-{nonce}",
+            std::process::id()
         ));
+        for (label, owner) in [
+            ("legacy-node", format!("node:{dead_pid}")),
+            ("current-node", format!("node:{dead_pid}:0")),
+            ("legacy-rust", format!("rust:{dead_pid}")),
+            ("current-rust", format!("rust:{dead_pid}:0")),
+        ] {
+            let lock_path = scratch.join(format!("{label}.lock"));
+            fs::create_dir_all(&lock_path).expect("create fresh lockdir");
+            fs::write(lock_path.join("owner"), format!("{owner}\n"))
+                .expect("write dead owner token");
+
+            assert!(try_break_stale_lock(&lock_path, Duration::from_secs(60)));
+            assert!(!lock_path.exists());
+        }
+
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn missing_renderer_and_malformed_owners_are_age_gated() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("wall clock after unix epoch")
+            .as_nanos();
+        let scratch = std::env::temp_dir().join(format!(
+            "myagents-file-lock-malformed-owner-{}-{nonce}",
+            std::process::id()
+        ));
+        for (label, owner) in [
+            ("missing", None),
+            ("renderer", Some("renderer:123".to_string())),
+            (
+                "malformed-extra",
+                Some(format!("rust:{}:1:extra", std::process::id())),
+            ),
+            (
+                "malformed-bom",
+                Some(format!("\u{feff}node:{}", std::process::id())),
+            ),
+            (
+                "malformed-vertical-tab",
+                Some(format!("\u{000b}node:{}", std::process::id())),
+            ),
+        ] {
+            let lock_path = scratch.join(format!("{label}.lock"));
+            fs::create_dir_all(&lock_path).expect("create fresh lockdir");
+            if let Some(owner) = owner {
+                fs::write(lock_path.join("owner"), format!("{owner}\n"))
+                    .expect("write owner token");
+            }
+
+            assert!(!try_break_stale_lock(&lock_path, Duration::from_secs(60)));
+            assert!(lock_path.exists());
+            std::thread::sleep(Duration::from_millis(2));
+            assert!(try_break_stale_lock(&lock_path, Duration::ZERO));
+            assert!(!lock_path.exists());
+        }
+
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn live_pid_with_mismatched_v1_start_time_is_retained() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("wall clock after unix epoch")
+            .as_nanos();
+        let scratch = std::env::temp_dir().join(format!(
+            "myagents-file-lock-mismatched-start-owner-{}-{nonce}",
+            std::process::id()
+        ));
+        let lock_path = scratch.join("fresh.lock");
+        fs::create_dir_all(&lock_path).expect("create fresh lockdir");
+        fs::write(
+            lock_path.join("owner"),
+            format!("rust:{}:1\n", std::process::id()),
+        )
+        .expect("write mismatched-start owner token");
+
+        assert!(!try_break_stale_lock(&lock_path, Duration::ZERO));
+        assert!(lock_path.exists());
+
+        let _ = fs::remove_dir_all(scratch);
     }
 }

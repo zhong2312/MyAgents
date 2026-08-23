@@ -974,7 +974,7 @@ async fn acquire_session_dispatch_with_wait(
     unreachable!("dispatch retry iterator always contains its final attempt")
 }
 
-async fn acquire_global_dispatch_with_wait(
+pub(crate) async fn acquire_global_dispatch_with_wait(
     manager: &ManagedSidecarManager,
 ) -> Result<crate::sidecar::manager::SidecarHttpDispatch, String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -1013,7 +1013,12 @@ pub async fn session_sidecar_http_request(
         acquire_session_dispatch_with_wait(sidecar_manager.inner(), &session_id_hint, &owner)
             .await?;
     let request = request.resolve(&dispatch)?;
-    execute_http_request(app, spill_manager.inner().clone(), request, true).await
+    let response = execute_http_request(app, spill_manager.inner().clone(), request, true).await;
+    // The generation lease protects only the Sidecar request and response
+    // body. Tauri/WebKit IPC delivery is a separate transport phase and must
+    // not keep process retirement waiting on the macOS main run loop.
+    drop(dispatch);
+    response
 }
 
 #[tauri::command]
@@ -1025,7 +1030,9 @@ pub async fn global_sidecar_http_request(
 ) -> Result<HttpResponse, String> {
     let dispatch = acquire_global_dispatch_with_wait(sidecar_manager.inner()).await?;
     let request = request.resolve(&dispatch)?;
-    execute_http_request(app, spill_manager.inner().clone(), request, true).await
+    let response = execute_http_request(app, spill_manager.inner().clone(), request, true).await;
+    drop(dispatch);
+    response
 }
 
 #[tauri::command]
@@ -1313,6 +1320,10 @@ async fn execute_http_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sidecar::{
+        create_sidecar_manager, DispatchGate, SidecarInstance, GLOBAL_SIDECAR_ID,
+    };
+    use std::process::Stdio;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex as StdMutex};
     use tauri::Listener;

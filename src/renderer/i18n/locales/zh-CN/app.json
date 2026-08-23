@@ -168,7 +168,10 @@
     "expand": "展开 Agent 状态面板",
     "collapse": "收起 Agent 状态面板",
     "background": "后台",
-    "backgroundTooltip": "[后台]"
+    "backgroundTooltip": "[后台]",
+    "completed": "已完成",
+    "failed": "执行失败",
+    "interrupted": "已停止"
   },
   "workspaceTree": {
     "collapseFolder": "收起文件夹",
@@ -259,6 +262,19 @@
       "retry": "重试",
       "fork": "分支",
       "rewind": "时间回溯"
+    },
+    "turnFileEdits": {
+      "summary": "本轮编辑 {{count}} 个文件",
+      "title": "本轮文件编辑",
+      "edited": "已编辑",
+      "deleted": "已删除",
+      "status": {
+        "modified": "已修改",
+        "added": "已新增",
+        "deleted": "已删除",
+        "renamed": "已重命名",
+        "edited": "已编辑"
+      }
     },
     "systemTags": {
       "heartbeat": "心跳感知",
@@ -396,6 +412,8 @@
       "eyebrow": "Official Space",
       "title": "MyAgents 社区",
       "description": "使用 Google 账号进入官方 Space",
+      "reauthDescription": "{{name}} 的登录已失效，请重新登录以继续使用团队空间。",
+      "forgetAccount": "退出并清除本机账户",
       "waiting": "等待浏览器授权完成",
       "continueWithGoogle": "继续使用 Google",
       "returnHint": "授权完成后会自动回到 MyAgents。"

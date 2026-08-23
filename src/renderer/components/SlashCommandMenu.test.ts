@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import type { SlashCommand } from '../../shared/slashCommands';
-import { filterAndSortCommands, mergeSlashCommands } from './SlashCommandMenu';
+import {
+  filterAndSortCommands,
+  mergeLocalSlashCommands,
+  mergeSdkSlashCommands,
+} from './SlashCommandMenu';
 
 const cmd = (name: string, source: SlashCommand['source']): SlashCommand => ({
   name,
@@ -14,7 +18,7 @@ describe('filterAndSortCommands', () => {
       cmd('apple-notes', 'skill'),
       cmd('compact', 'builtin'),
       cmd('bird', 'custom'),
-      cmd('goal', 'builtin'),
+      cmd('goal', 'client'),
     ];
     const out = filterAndSortCommands(input, '');
     expect(out.map((c) => c.name)).toEqual(['goal', 'compact', 'apple-notes', 'bird']);
@@ -59,11 +63,23 @@ describe('filterAndSortCommands', () => {
   });
 });
 
-describe('mergeSlashCommands', () => {
+describe('slash command source merging', () => {
+  it('preserves project Skill and Command provenance behind product builtins', () => {
+    const product = [cmd('compact', 'builtin')];
+    const local = [cmd('apple-notes', 'skill'), cmd('ship-it', 'custom')];
+    const out = mergeLocalSlashCommands(product, local);
+
+    expect(out.map(({ name, source }) => ({ name, source }))).toEqual([
+      { name: 'compact', source: 'builtin' },
+      { name: 'apple-notes', source: 'skill' },
+      { name: 'ship-it', source: 'custom' },
+    ]);
+  });
+
   it('appends SDK-only plugin commands after workspace commands', () => {
     const workspace = [cmd('compact', 'builtin')];
     const sdk = [cmd('my-plugin:deploy', 'sdk')];
-    const out = mergeSlashCommands(workspace, sdk);
+    const out = mergeSdkSlashCommands(workspace, sdk);
 
     expect(out.map((c) => c.name)).toEqual(['compact', 'my-plugin:deploy']);
     expect(out[1].source).toBe('sdk');
@@ -72,7 +88,7 @@ describe('mergeSlashCommands', () => {
   it('keeps the workspace command on name collisions', () => {
     const workspace = [cmd('compact', 'builtin')];
     const sdk = [{ ...cmd('/compact', 'sdk'), description: 'SDK compact' }];
-    const out = mergeSlashCommands(workspace, sdk);
+    const out = mergeSdkSlashCommands(workspace, sdk);
 
     expect(out).toBe(workspace);
     expect(out).toHaveLength(1);
@@ -80,8 +96,23 @@ describe('mergeSlashCommands', () => {
   });
 
   it('normalizes leading slashes from SDK command names', () => {
-    const out = mergeSlashCommands([], [cmd('/plugin:skill', 'sdk')]);
+    const out = mergeSdkSlashCommands([], [cmd('/plugin:skill', 'sdk')]);
 
     expect(out.map((c) => c.name)).toEqual(['plugin:skill']);
+  });
+
+  it('deduplicates by invocation identity without replacing the display label', () => {
+    const local = [{
+      ...cmd('中文 总结', 'custom'),
+      invocationName: '中文-总结',
+    }];
+    const sdk = [cmd('中文-总结', 'sdk')];
+    const out = mergeSdkSlashCommands(local, sdk);
+
+    expect(out).toBe(local);
+    expect(out).toEqual([expect.objectContaining({
+      name: '中文 总结',
+      invocationName: '中文-总结',
+    })]);
   });
 });

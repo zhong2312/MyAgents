@@ -10,6 +10,7 @@ pub mod config_io;
 mod crash_artifact_retention;
 pub mod cron_task;
 pub mod device_identity;
+pub mod document_processing;
 pub mod floating_ball;
 pub mod floating_ball_pets;
 mod global_shortcut;
@@ -446,11 +447,10 @@ pub fn run() {
             commands::cmd_remove_template_folder,
             // Admin agent sync
             commands::cmd_sync_admin_agent,
-            // CLI sync (independent version gate)
-            commands::cmd_sync_cli,
             // System skills sync (task-alignment / task-implement etc.)
             commands::cmd_sync_system_skills,
             memory_evolution::cmd_configure_memory_evolution_tasks,
+            memory_evolution::cmd_get_memory_evolution_status,
             memory_auto_update::cmd_configure_memory_auto_update_task,
             // Cron task commands
             cron_task::commands::cmd_create_cron_task,
@@ -693,27 +693,27 @@ pub fn run() {
             space_cloud::cmd_space_register_agent,
             space_cloud::cmd_space_update_registered_agent,
             space_cloud::cmd_space_update_registered_agent_avatar,
-            space_cloud::cmd_space_revoke_registered_agent,
-            space_cloud::cmd_space_list_local_agents,
-            space_cloud::cmd_space_poll_dispatches,
-            space_cloud::cmd_space_mark_dispatch_delivered,
-            space_cloud::cmd_space_poll_deliveries,
-            space_cloud::cmd_space_mark_delivery_delivered,
-            space_cloud::cmd_space_wake_connector,
-            space_cloud::cmd_space_process_deliveries_once,
-            space_cloud::cmd_space_process_dispatches_once,
-            space_cloud::cmd_space_install_skill,
-            space_cloud::cmd_space_cleanup_skill_export_packages,
-            space_cloud::cmd_space_export_skill_from_url,
-            space_cloud::cmd_space_inspect_skill_source,
-            space_cloud::cmd_space_list_local_skills,
-            space_cloud::cmd_space_upload_skill,
-            space_cloud::cmd_space_upload_issue_attachments,
-            space_cloud::cmd_space_inspect_attachment_drafts,
-            space_cloud::cmd_space_create_issue_with_attachments,
-            space_cloud::cmd_space_comment_issue_with_attachments,
+            space_cloud::registered_agents::cmd_space_revoke_registered_agent,
+            space_cloud::registered_agents::cmd_space_list_local_agents,
+            space_cloud::delivery::cmd_space_poll_dispatches,
+            space_cloud::delivery::cmd_space_mark_dispatch_delivered,
+            space_cloud::delivery::cmd_space_poll_deliveries,
+            space_cloud::delivery::cmd_space_mark_delivery_delivered,
+            space_cloud::delivery::cmd_space_wake_connector,
+            space_cloud::delivery::cmd_space_process_deliveries_once,
+            space_cloud::delivery::cmd_space_process_dispatches_once,
+            space_cloud::skills::cmd_space_install_skill,
+            space_cloud::skills::cmd_space_cleanup_skill_export_packages,
+            space_cloud::skills::cmd_space_export_skill_from_url,
+            space_cloud::skills::cmd_space_inspect_skill_source,
+            space_cloud::skills::cmd_space_list_local_skills,
+            space_cloud::skills::cmd_space_upload_skill,
+            space_cloud::attachments::cmd_space_upload_issue_attachments,
+            space_cloud::attachments::cmd_space_inspect_attachment_drafts,
+            space_cloud::attachments::cmd_space_create_issue_with_attachments,
+            space_cloud::attachments::cmd_space_comment_issue_with_attachments,
             space_cloud::cmd_space_download_attachment,
-            space_cloud::cmd_space_download_skill_zip,
+            space_cloud::skills::cmd_space_download_skill_zip,
             // PRD 0.2.35 — global "always-on" wake-lock toggle
             wake_lock::cmd_set_force_wake_lock,
         ])
@@ -799,13 +799,25 @@ pub fn run() {
             // calls (extremely early startup) fall back to a synchronous
             // append protected by a mutex.
             logger::init_buffered_writer();
+            // The app bundle owns CLI business code. HOME only contains
+            // deterministic launchers pointing back to this executable. A
+            // failure must not brick the Desktop; Sidecar admission retries
+            // this same reconciler and fails closed before any Agent starts.
+            tauri::async_runtime::spawn_blocking(|| match cli::ensure_launcher() {
+                Ok(true) => ulog_info!("[cli] Reconciled HOME launchers"),
+                Ok(false) => ulog_info!("[cli] HOME launchers already current"),
+                Err(error) => ulog_error!("[cli] Startup launcher preflight failed: {}", error),
+            });
             // Tauri is the only process guaranteed to exist for the whole app
             // lifetime, so it owns shared crash-artifact cleanup. The first
             // sweep handles upgrade backlog without requiring any Sidecar.
             crash_artifact_retention::start_crash_artifact_retention_owner();
             tauri::async_runtime::spawn(grok_auth::reconcile_provider_projection());
             let space_sidecar_state = app.state::<sidecar::ManagedSidecarManager>().inner().clone();
-            space_cloud::start_space_connector(app.handle().clone(), space_sidecar_state);
+            space_cloud::delivery::start_space_connector(
+                app.handle().clone(),
+                space_sidecar_state,
+            );
 
             // Main window: programmatic creation so we can attach
             // `on_navigation` to block external top-frame navigation. The
@@ -1243,6 +1255,50 @@ pub fn run() {
             management_api::set_agent_state(agent_state_for_management);
             management_api::set_sidecar_state(sidecar_state_for_management);
 
+            // The Desktop App owns one global document queue and at most one
+            // isolated Worker. Initialize it before the Management API starts
+            // so every Sidecar observes the same durable job authority.
+            match app.path().resource_dir() {
+                Ok(resource_dir) => {
+                    let resource_dir = sidecar::normalize_external_path(resource_dir);
+                    match app_dirs::myagents_data_dir() {
+                        Some(data_dir) => {
+                            match document_processing::DocumentProcessingManager::initialize(
+                                data_dir,
+                                resource_dir,
+                            ) {
+                                Ok(manager) => {
+                                    if let Err(error) =
+                                        document_processing::set_global(manager.clone())
+                                    {
+                                        ulog_error!(
+                                            "[document] Failed to register manager: {}",
+                                            error
+                                        );
+                                    } else {
+                                        app.manage(manager);
+                                    }
+                                }
+                                Err(error) => {
+                                    ulog_error!(
+                                        "[document] Failed to initialize manager: {}",
+                                        error
+                                    );
+                                }
+                            }
+                        }
+                        None => {
+                            ulog_error!(
+                                "[document] Failed to resolve private application data directory"
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    ulog_error!("[document] Failed to resolve resource directory: {}", error);
+                }
+            }
+
             // Subscribe before automation recovery can create or release a
             // Session Sidecar. The receiver buffers the short gap until its
             // forwarding task starts.
@@ -1487,6 +1543,15 @@ pub fn run() {
                             false
                         }
                     };
+                    if let Some(manager) = document_processing::global() {
+                        if let Err(error) = manager.shutdown() {
+                            ulog_error!(
+                                "[document] shutdown failed reason={} error={}",
+                                shutdown_reason,
+                                error
+                            );
+                        }
+                    }
                     // Record a deliberate-quit marker so the next boot starts
                     // fresh instead of restoring the session (Issue #309), UNLESS
                     // this is an update-restart. Both update paths — plugin

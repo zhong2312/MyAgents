@@ -63,7 +63,12 @@ vi.mock('@/utils/browserMock', () => ({
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 
-import { patchAgentConfig, patchAgentProjectConfig } from './agentConfigService';
+import {
+  patchAgentConfig,
+  patchAgentProjectConfig,
+  setProactiveAgentEnabled,
+  stopAgentChannelsForLifecycle,
+} from './agentConfigService';
 
 function initialConfig(): AppConfig {
   return {
@@ -131,15 +136,73 @@ describe('Agent/Project configuration intent ownership', () => {
     });
   });
 
-  it('reconciles the proactive Memory task when the Agent master switch changes', async () => {
+  it('delegates proactive runtime and managed-task reconciliation to Rust', async () => {
     await patchAgentConfig('agent-1', { enabled: false });
 
-    expect(invokeMock).toHaveBeenCalledWith('cmd_configure_memory_auto_update_task', {
-      request: expect.objectContaining({
-        agentId: 'agent-1',
-        workspacePath: '/tmp/agent',
-      }),
+    expect(invokeMock).toHaveBeenCalledWith('cmd_update_agent_config', {
+      agentId: 'agent-1',
+      patch: { enabled: false },
     });
+  });
+
+  it('derives the master toggle from disk-latest state and resets every child', async () => {
+    const current = state.config.agents![0];
+    state.config = {
+      ...state.config,
+      agents: [{
+        ...current,
+        enabled: false,
+        heartbeat: { enabled: false, intervalMinutes: 48 },
+        memoryEvolution: { enabled: false, lastMoltStatus: 'completed' },
+        channels: [{ id: 'channel-1', type: 'telegram', enabled: false }],
+      }],
+    };
+
+    await setProactiveAgentEnabled('agent-1', true);
+
+    expect(state.config.agents?.[0]).toMatchObject({
+      enabled: true,
+      heartbeat: { enabled: true, intervalMinutes: 48 },
+      memoryAutoUpdate: { enabled: true, intervalHours: 24 },
+      memoryEvolution: { enabled: true, lastMoltStatus: 'completed' },
+      channels: [{ id: 'channel-1', enabled: false }],
+    });
+    expect(invokeMock).toHaveBeenCalledWith('cmd_update_agent_config', {
+      agentId: 'agent-1',
+      patch: expect.objectContaining({ enabled: true }),
+    });
+  });
+
+  it('reports a proactive toggle failure when runtime or managed tasks do not converge', async () => {
+    invokeMock.mockRejectedValueOnce(new Error('managed task reconcile failed'));
+
+    await expect(setProactiveAgentEnabled('agent-1', false))
+      .rejects.toThrow('managed task reconcile failed');
+
+    expect(state.config.agents?.[0]).toMatchObject({
+      enabled: false,
+      heartbeat: { enabled: false },
+      memoryAutoUpdate: { enabled: false },
+      memoryEvolution: { enabled: false },
+    });
+  });
+
+  it('does not report archive Channel shutdown success when any stop fails', async () => {
+    const current = state.config.agents![0];
+    const agent = {
+      ...current,
+      channels: [
+        { id: 'channel-ok', type: 'telegram' as const, enabled: true },
+        { id: 'channel-fails', type: 'telegram' as const, enabled: true },
+      ],
+    };
+    invokeMock
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('IPC unavailable'));
+
+    await expect(stopAgentChannelsForLifecycle(agent))
+      .rejects.toThrow('channel-fails: IPC unavailable');
+    expect(invokeMock).toHaveBeenCalledTimes(2);
   });
 
   it('commits both disk stores before releasing the intent lock and hot-reloading', async () => {

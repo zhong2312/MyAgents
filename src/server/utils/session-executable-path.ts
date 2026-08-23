@@ -27,6 +27,14 @@ export function buildSessionExecutablePath(
   const bundledNodeDir = getBundledNodeDir();
   const essentialPaths: string[] = [];
 
+  // Product-owned launchers and registered tool shims are authoritative over
+  // stale npm/AppData/inherited commands with the same name.
+  if (home) {
+    essentialPaths.push(isWindows
+      ? resolve(home, '.myagents', 'bin')
+      : `${home}/.myagents/bin`);
+  }
+
   for (const dir of getSystemNodeDirs()) {
     if (existsSync(dir)) essentialPaths.push(dir);
   }
@@ -34,12 +42,6 @@ export function buildSessionExecutablePath(
 
   const npmGlobalBinDir = getMyAgentsNpmGlobalBinDir(home);
   if (npmGlobalBinDir) essentialPaths.push(npmGlobalBinDir);
-
-  if (home) {
-    essentialPaths.push(isWindows
-      ? resolve(home, '.myagents', 'bin')
-      : `${home}/.myagents/bin`);
-  }
 
   if (isWindows) {
     if (home) essentialPaths.push(resolve(home, '.bun', 'bin'));
@@ -57,14 +59,22 @@ export function buildSessionExecutablePath(
   }
 
   const existingPath = parentEnv[key] || parentEnv.PATH || '';
-  const entries = existingPath ? existingPath.split(separator) : [];
-  const includesPath = (candidate: string): boolean => isWindows
-    ? entries.some(entry => entry.toLowerCase() === candidate.toLowerCase())
-    : entries.includes(candidate);
-
-  for (const candidate of [...essentialPaths].reverse()) {
-    if (candidate && !includesPath(candidate)) entries.unshift(candidate);
-  }
+  const inheritedEntries = existingPath ? existingPath.split(separator).filter(Boolean) : [];
+  const pathEquals = (left: string, right: string): boolean => isWindows
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+  const authoritativeEntries = essentialPaths.filter((candidate, index) => (
+    candidate.length > 0
+      && essentialPaths.findIndex(entry => pathEquals(entry, candidate)) === index
+  ));
+  // Remove inherited duplicates before prepending. Merely skipping a candidate
+  // that already appeared later in PATH would preserve the stale shadow order.
+  const entries = [
+    ...authoritativeEntries,
+    ...inheritedEntries.filter(entry => (
+      !authoritativeEntries.some(candidate => pathEquals(candidate, entry))
+    )),
+  ];
 
   return {
     key,

@@ -32,6 +32,7 @@ export {
     resolveProvider,
     resolveBuiltinSelection,
     pairBuiltinSelection,
+    isImageUnderstandingSelectionAvailable,
 } from './services/providerService';
 export type { ProviderModelPair } from './services/providerService';
 

@@ -57,6 +57,12 @@ export function getPlatformPaths() {
 | 应用数据 | `APPDATA` | `~/.config` |
 | 路径分隔符 | `;` | `:` |
 
+### 全局 Skill junction 的只读边界
+
+MyAgents 把 `~/.myagents/skills/<name>` 作为唯一物理权威，并以目录 junction 投影到 `<workspace>/.claude/skills/<name>`。junction 下的 `SKILL.md` 与 references 不是副本：通过工作区路径写入会直接修改全局源，并立即影响其它工作区。因此 Tauri workspace mutation command 必须统一调用 `path_safety::reject_managed_global_skill_mutation`，拒绝链接叶子、链接后代、目标尚不存在但最近存在祖先是 managed junction 的路径，以及指向全局 Skill 根的断链/reparse point。普通项目物理 Skill 目录仍可写；read、reveal 与从 junction copy-out 仍允许。
+
+Runtime admission 由 Node `global-skill-inventory.ts` 的单次完整根快照裁决，不依赖 Windows Explorer 的命名行为猜测。`SKILL(N).md` 或孤立 `(N)` 目录只形成 warning；只有缺 canonical entry、带后缀目录复用 base identity/与 base sibling 共存、untrusted global junction/symlink 或扫描竞态等强证据才 blocked。被 blocked 的文件保持原样，只从 Runtime、Launcher 与当前工作区 managed projection 中排除；Required 系统 Skill 也只影响该候选，不阻断 Runtime 或 Session。不要增加 watcher、后台 repair、自动 rename/delete/merge 或字符串路径前缀判断。
+
 ### SDK Shell 输出编码
 
 Claude Agent SDK 的 Bash 工具输出最终会以 UTF-8 字符串进入 MyAgents session JSONL / SSE。Windows 上不少子进程会默认按系统 ANSI/OEM code page（如 CP936/GBK）写 stdout/stderr；一旦 SDK 按 UTF-8 解码成字符串，后续在 renderer 或 SessionStore 已无法可靠恢复原始字节。
@@ -80,6 +86,10 @@ Claude Agent SDK 的 Bash 工具输出最终会以 UTF-8 字符串进入 MyAgent
 3. 系统 PATH
 
 **PATH 注入策略**：SDK 子进程（AI Bash 工具）实际看到的 PATH 优先**系统**，其次 bundled —— 用户自己维护的 Node 往往比我们 bundle 的版本新，npm 也更可靠（见 `buildClaudeSessionEnv`）。详见 `bundled_node.md`。
+
+`myagents` 是例外的产品保留命令：app-owned Session、external runtime fallback 和内嵌终端都把 `%USERPROFILE%\.myagents\bin` 放在 AppData npm、MyAgents npm-global 与 inherited PATH 之前。这里的 `myagents.cmd` 不直接调用 Node，也不包含 CLI 路由；它 quote 当前 `MyAgents.exe` 的规范路径、传入私有 CLI marker、用 `%*` 透明转交 argv，并返回 child `%ERRORLEVEL%`。extensionless `myagents` 同时服务 Git Bash，使用 POSIX `exec`。两者都由 Rust no-follow + 原子替换，旧全量 payload 与 `.cli-version` 不再可信。
+
+Windows CLI mode 继续 `AttachConsole(ATTACH_PARENT_PROCESS)` 继承 cmd / PowerShell 控制台；随后只使用当前安装目录 `resources\nodejs\node.exe` 和 `resources\cli\myagents.cjs`。路径离开 Rust 前必须去掉 `\\?\` verbatim 前缀，安装路径的空格、Unicode 与 `%` 必须由 launcher builder 的平台 quoting 处理。bundle 缺失或 launcher 因 Defender / indexer 短暂占用而无法 replace 时有界退避后 fail closed，不得回退系统 Node、AppData 同名命令或旧 HOME JS。
 
 Task command Detector 不经过 SDK shell：bare `node` / `node.exe` 固定解析到 bundled Node.js v24，其他 bare executable 走 `system_binary::find()`；`executable + args + cwd` 分开传递，不经 `cmd /c` 或字符串重拼。Rust 进入进程边界前对绝对路径使用现有 external-path normalize，不能把 Windows verbatim/长路径前缀直接泄漏给 Node。
 
@@ -176,6 +186,10 @@ let client = proxy_config::build_client_with_proxy(builder)?;
 
 ### 关键清理步骤
 
+正式 Windows x64 构建在 Tauri snapshot 前运行 `scripts/prepare-document-processing.mjs x86_64-pc-windows-msvc`，按 `resource-lock.json` 下载并校验 ONNX Runtime CPU、PDFium、PP-OCRv6 模型/字典，使用锁定 Rust toolchain 构建 `myagents-document-worker.exe`，再生成包含最终文件 hash 的 target manifest。运行时只从该 manifest 的绝对路径加载 DLL；不得搜索 PATH、系统目录或联网补资源。安装包 smoke 必须在无系统 ONNX Runtime/PDFium、断网环境验证加载、最小推理、Job Object 取消、notices 与安装包签名。
+
+文档 source/output 的每个已存在祖先都拒绝 reparse point；source 使用 no-follow regular-file handle，输出发布前再次比较 held directory identity。Worker 由 `process_cmd::spawn_tree()` 在 resume 前加入 kill-on-close Job Object；不能退回裸 `Command` 或 `taskkill`。详细跨平台资源矩阵和错误码见 `document_processing.md`。
+
 **必须清理的目录**：
 1. `dist/` - 前端构建产物
 2. `src-tauri/target/{arch}/{profile}/bundle/` - Tauri 安装包
@@ -222,6 +236,7 @@ Remove-Item src-tauri\target\x86_64-pc-windows-msvc\release\resources -Recurse -
 **构建前**：
 - [ ] 版本号同步（`package.json`, `tauri.conf.json`, `Cargo.toml`）
 - [ ] TypeScript 类型检查通过
+- [ ] `npm run build:cli` 后 `resources/cli/` 只有当前 `myagents.cjs`（以及 tracked `.gitkeep`），没有旧 `myagents.cmd` staging 残留
 - [ ] `.env` 文件包含 `TAURI_SIGNING_PRIVATE_KEY`
 - [ ] Rust 工具链已安装目标 `x86_64-pc-windows-msvc`
 

@@ -62,6 +62,7 @@ instructions.
     expect(text).toContain('goal-objective.txt');
     expect(text).toContain('system\ntemp files are both accepted');
     expect(text).not.toContain('<myagents-user-tools>');
+    expect(text.toLowerCase()).not.toContain('anydoc');
   });
 
   it('injects Goal Mode into private user-facing channel prompts', () => {

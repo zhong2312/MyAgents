@@ -23,6 +23,7 @@ import type { CapabilityInitialSelect } from '../../shared/skillsTypes';
 
 interface CapabilityItem {
     name: string;
+    invocationName?: string;
     description: string;
     scope?: 'user' | 'project';
     model?: string;
@@ -266,15 +267,25 @@ export default memo(function AgentCapabilitiesPanel({
     if (totalCount === 0) {
         return (
             <div data-capabilities-panel className="flex shrink-0 flex-col">
-                <button
-                    onClick={toggleExpand}
-                    aria-expanded={isExpanded}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[var(--ink)] transition-colors"
-                >
-                    {isExpanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
-                    <Bot className="h-3.5 w-3.5 shrink-0 text-violet-500" />
-                    <span className="font-semibold">{t('agentSettings.capabilities.title')}</span>
-                </button>
+                <div className="flex w-full items-center px-3 py-2">
+                    <button
+                        type="button"
+                        onClick={toggleExpand}
+                        aria-expanded={isExpanded}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-sm text-[var(--ink)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                    >
+                        {isExpanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+                        <Bot className="h-3.5 w-3.5 shrink-0 text-violet-500" />
+                        <span className="truncate font-semibold">{t('agentSettings.capabilities.title')}</span>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => onOpenSettings?.()}
+                        className="ml-2 shrink-0 rounded-md px-1.5 py-0.5 text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                    >
+                        {t('agentSettings.capabilities.settings')}
+                    </button>
+                </div>
                 {isExpanded && (
                     <div className="px-4 pb-3 text-center">
                         <p className="text-sm text-[var(--ink-muted)]">
@@ -293,15 +304,25 @@ export default memo(function AgentCapabilitiesPanel({
             style={isExpanded ? { flex: `0 0 ${heightRatio * 100}%` } : undefined}
         >
             {/* Header - always visible */}
-            <button
-                onClick={toggleExpand}
-                aria-expanded={isExpanded}
-                className="flex w-full shrink-0 items-center gap-2 px-3 py-2 text-sm text-[var(--ink)] transition-colors"
-            >
-                {isExpanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
-                <Bot className="h-3.5 w-3.5 shrink-0 text-violet-500" />
-                <span className="font-semibold">{t('agentSettings.capabilities.titleWithCount', { count: totalCount })}</span>
-            </button>
+            <div className="flex w-full shrink-0 items-center px-3 py-2">
+                <button
+                    type="button"
+                    onClick={toggleExpand}
+                    aria-expanded={isExpanded}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-sm text-[var(--ink)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                >
+                    {isExpanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+                    <Bot className="h-3.5 w-3.5 shrink-0 text-violet-500" />
+                    <span className="truncate font-semibold">{t('agentSettings.capabilities.titleWithCount', { count: totalCount })}</span>
+                </button>
+                <button
+                    type="button"
+                    onClick={() => onOpenSettings?.()}
+                    className="ml-2 shrink-0 rounded-md px-1.5 py-0.5 text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                >
+                    {t('agentSettings.capabilities.settings')}
+                </button>
+            </div>
 
             {/* Expanded content - scrollable */}
             {isExpanded && (
@@ -319,7 +340,7 @@ export default memo(function AgentCapabilitiesPanel({
                                 {commandsList.map(item => (
                                     <ItemTooltip key={`cmd-${item.name}`} scope={item.scope} description={item.description}>
                                         <button
-                                            onClick={() => handleCommandClick(item.name)}
+                                            onClick={() => handleCommandClick(item.invocationName ?? item.name)}
                                             onContextMenu={e => handleCommandContextMenu(e, item.scope, item.fileName)}
                                             // handleCommandClick inserts /name then focuses the chat textarea;
                                             // without this the click is dropped on a macOS WebKit trackpad tap

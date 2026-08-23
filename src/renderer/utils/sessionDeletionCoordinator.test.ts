@@ -4,7 +4,9 @@ import type { Tab } from '@/types/tab';
 import { applyTerminalSessionToTabs } from '@/utils/sessionTermination';
 
 import {
+    createSessionResourceTransitionState,
     deleteSessionThroughAppOwner,
+    isSessionOpening,
     tryClaimSessionResourceTransition,
 } from './sessionDeletionCoordinator';
 
@@ -30,10 +32,13 @@ describe('deleteSessionThroughAppOwner', () => {
     }
 
     it('serializes open and delete transitions for the same Session without blocking other Sessions', () => {
-        const transitions = new Map();
+        const transitions = createSessionResourceTransitionState();
         const releaseOpen = tryClaimSessionResourceTransition(transitions, 'target-session', 'opening');
 
         expect(releaseOpen).not.toBeNull();
+        expect(transitions.openingRevision).toBe(1);
+        expect(isSessionOpening(transitions, 'target-session')).toBe(true);
+        expect(isSessionOpening(transitions, 'other-session')).toBe(false);
         expect(tryClaimSessionResourceTransition(transitions, 'target-session', 'deleting')).toBeNull();
 
         const releaseOtherDelete = tryClaimSessionResourceTransition(transitions, 'other-session', 'deleting');
@@ -41,14 +46,18 @@ describe('deleteSessionThroughAppOwner', () => {
         releaseOtherDelete?.();
 
         releaseOpen?.();
+        expect(isSessionOpening(transitions, 'target-session')).toBe(false);
+        expect(transitions.openingRevision).toBe(1);
         const releaseDelete = tryClaimSessionResourceTransition(transitions, 'target-session', 'deleting');
         expect(releaseDelete).not.toBeNull();
+        expect(isSessionOpening(transitions, 'target-session')).toBe(false);
+        expect(transitions.openingRevision).toBe(1);
         releaseDelete?.();
-        expect(transitions.size).toBe(0);
+        expect(transitions.claims.size).toBe(0);
     });
 
     it('allows only the owning Tab to reenter its opening transition', () => {
-        const transitions = new Map();
+        const transitions = createSessionResourceTransitionState();
         const releaseOuter = tryClaimSessionResourceTransition(
             transitions,
             'target-session',
@@ -76,7 +85,7 @@ describe('deleteSessionThroughAppOwner', () => {
         )).toBeNull();
 
         releaseOuter?.();
-        expect(transitions.has('target-session')).toBe(true);
+        expect(transitions.claims.has('target-session')).toBe(true);
         expect(tryClaimSessionResourceTransition(
             transitions,
             'target-session',
@@ -84,10 +93,10 @@ describe('deleteSessionThroughAppOwner', () => {
         )).toBeNull();
 
         releaseNested?.();
-        expect(transitions.has('target-session')).toBe(false);
+        expect(transitions.claims.has('target-session')).toBe(false);
 
         releaseNested?.();
-        expect(transitions.has('target-session')).toBe(false);
+        expect(transitions.claims.has('target-session')).toBe(false);
     });
 
     it('atomically deletes with every matching Tab owner before resetting those Tabs', async () => {

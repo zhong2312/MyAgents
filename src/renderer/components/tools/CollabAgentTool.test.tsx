@@ -114,6 +114,37 @@ describe('CollabAgent labels', () => {
 });
 
 describe('TaskTool renders a CollabAgent card with a nested trace', () => {
+  it('prioritizes explicit terminal lifecycle over stale nested loading and freezes duration', () => {
+    const tool = collabTool({
+      subagentLifecycle: { status: 'failed', startedAt: 100, finishedAt: 2_100 },
+      subagentCalls: [{ id: 'stale', name: 'Thinking', input: {}, isLoading: true }],
+    });
+    expect(isSubagentContainerRunning(tool)).toBe(false);
+    render(<TaskTool tool={tool} />);
+    expect(screen.getByText('错误')).toBeInTheDocument();
+    expect(screen.getByText('2s')).toBeInTheDocument();
+  });
+
+  it('shows a resultless nested call as interrupted after root stop', () => {
+    const { container } = render(<TaskTool tool={collabTool({
+      subagentLifecycle: { status: 'interrupted', startedAt: 100, finishedAt: 2_100 },
+      subagentCalls: [{
+        id: 'stopped-call',
+        name: 'Bash',
+        input: { command: 'sleep 30' },
+        isLoading: false,
+        isError: true,
+        result: 'Interrupted',
+      }],
+    })} />);
+
+    expect(screen.getByText('已停止')).toBeInTheDocument();
+    const toggle = container.querySelector('[aria-controls="task-trace-content"]');
+    expect(toggle).not.toBeNull();
+    fireEvent.click(toggle!);
+    expect(screen.getByText('Interrupted')).toBeInTheDocument();
+  });
+
   it('renders omitted run_in_background Task input as a background task', () => {
     render(<TaskTool tool={taskTool({ result: undefined })} />);
 

@@ -11,6 +11,10 @@ import {
 } from '@/utils/globalSidebarPreference';
 import { useTabStateOptional } from '@/context/TabContext';
 
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(async () => undefined),
+}));
+
 const mocks = vi.hoisted(() => {
   const project = {
     id: 'helper-project',
@@ -22,6 +26,8 @@ const mocks = vi.hoisted(() => {
     id: 'helper-agent',
     name: 'MA Helper',
     workspacePath: project.path,
+    providerId: undefined as string | undefined,
+    model: undefined as string | undefined,
     runtime: 'builtin',
     permissionMode: 'auto',
     reasoningEffort: undefined as string | undefined,
@@ -41,7 +47,10 @@ const mocks = vi.hoisted(() => {
     agent,
     provider,
     multiAgentRuntime: false,
-    resolveBuiltinSelection: vi.fn(() => ({ provider, model: 'mimo-v2.5-pro' })),
+    resolveBuiltinSelection: vi.fn((): { provider: typeof provider; model: string } | undefined => ({
+      provider,
+      model: 'mimo-v2.5-pro',
+    })),
     createSession: vi.fn(async () => ({
       id: 'prepared-managed-session',
       agentDir: project.path,
@@ -72,6 +81,7 @@ const mocks = vi.hoisted(() => {
     releaseTabSession: vi.fn(async () => false),
     getSessionPort: vi.fn(async () => null),
     hasSessionSidecar: vi.fn(async () => true),
+    getSessionGeneration: vi.fn(async () => 1 as number | null),
     startBackgroundCompletion: vi.fn(async () => ({ started: false, sessionId: 'session' })),
     querySessionHasPersistentOwners: vi.fn(async () => false),
     canRestoreSession: vi.fn(async () => true),
@@ -84,6 +94,8 @@ const mocks = vi.hoisted(() => {
     setAppActiveCorrelation: vi.fn(),
     setAppActiveTabId: vi.fn(),
     useRealTabProvider: false,
+    tauriEnvironment: false,
+    listeners: new Map<string, (event: { payload: unknown }) => void | Promise<void>>(),
     sessionSidecarFetch: vi.fn(),
     track: vi.fn(),
     chatProps: [] as Array<Record<string, unknown>>,
@@ -136,7 +148,7 @@ vi.mock('@/api/tauriClient', () => ({
   resetTabServerUrlCache: vi.fn(),
   setActiveCorrelation: vi.fn(),
   hasSessionSidecar: mocks.hasSessionSidecar,
-  getSessionGeneration: vi.fn(async () => 1),
+  getSessionGeneration: mocks.getSessionGeneration,
   stopSseProxy: vi.fn(async () => undefined),
   startBackgroundCompletion: mocks.startBackgroundCompletion,
   startBackgroundCompletionForDeletion: mocks.startBackgroundCompletion,
@@ -250,7 +262,7 @@ vi.mock('@/components/LinkContextMenuProvider', () => ({
 }));
 
 vi.mock('@/components/TabBar', () => ({
-  default: (props: { tabs: Array<{ id: string; title: string; sessionId?: string | null; view?: string; sidecarConfigDisposition?: string }>; activeTabId: string | null; onCloseTab: (tabId: string) => Promise<void>; onNewTab: () => void }) => {
+  default: (props: { tabs: Array<{ id: string; title: string; sessionId?: string | null; view?: string; sidecarConfigDisposition?: string }>; activeTabId: string | null; onSelectTab: (tabId: string) => void; onCloseTab: (tabId: string) => Promise<void>; onNewTab: () => void }) => {
     mocks.tabbarProps.push(props);
     return <div data-testid="tabbar-active">{props.tabs.find(t => t.id === props.activeTabId)?.title ?? 'missing'}</div>;
   },
@@ -265,7 +277,7 @@ vi.mock('@/context/TabProvider', async () => {
       if (mocks.useRealTabProvider) {
         return <RealTabProvider {...props} />;
       }
-      return <div data-testid="tab-provider">{props.children}</div>;
+      return <div data-testid="tab-provider" data-tab-id={props.tabId}>{props.children}</div>;
     },
   };
 });
@@ -347,6 +359,9 @@ vi.mock('@/hooks/useConfig', () => ({
       projects: [mocks.project],
       agents: [mocks.agent],
       multiAgentRuntime: mocks.multiAgentRuntime,
+      managedCodexProviderDevGate: true,
+      managedCodexRuntimeInstall: { status: 'installed', usable: true },
+      managedCodexAuth: { status: 'valid', authMethod: 'chatgpt' },
       defaultPermissionMode: 'auto',
       teamSpaceEnabled: true,
     },
@@ -401,7 +416,7 @@ vi.mock('@/hooks/useSpaceBuildCapability', () => ({
 
 vi.mock('@/utils/browserMock', () => ({
   isBrowserDevMode: () => false,
-  isTauriEnvironment: () => false,
+  isTauriEnvironment: () => mocks.tauriEnvironment,
 }));
 
 vi.mock('@/utils/frontendLogger', () => ({
@@ -424,7 +439,12 @@ vi.mock('@/utils/tabPersistenceDurable', () => ({
 }));
 
 vi.mock('@/utils/tauriListen', () => ({
-  listenWithCleanup: vi.fn(async () => undefined),
+  listenWithCleanup: vi.fn(async (
+    eventName: string,
+    handler: (event: { payload: unknown }) => void | Promise<void>,
+  ) => {
+    mocks.listeners.set(eventName, handler);
+  }),
 }));
 
 vi.mock('@/config/configService', () => ({
@@ -451,6 +471,7 @@ describe('App helper launch', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.clearAllMocks();
     localStorage.clear();
     mocks.chatProps.length = 0;
@@ -464,13 +485,18 @@ describe('App helper launch', () => {
     mocks.durableTabs = null;
     mocks.lastExitWasClean = true;
     mocks.useRealTabProvider = false;
+    mocks.tauriEnvironment = false;
+    mocks.listeners.clear();
     mocks.sessionSidecarFetch.mockReset();
     mocks.agent.runtime = 'builtin';
+    mocks.agent.providerId = undefined;
+    mocks.agent.model = undefined;
     mocks.agent.permissionMode = 'auto';
     mocks.agent.reasoningEffort = undefined;
     mocks.agent.runtimeConfig = undefined;
     mocks.multiAgentRuntime = false;
     mocks.hasSessionSidecar.mockResolvedValue(true);
+    mocks.getSessionGeneration.mockResolvedValue(1);
     mocks.ensureSessionSidecar.mockResolvedValue({ port: 31417, isNew: true });
     mocks.activateSession.mockResolvedValue(undefined);
     mocks.reconcileSessionTabActivation.mockResolvedValue(true);
@@ -553,6 +579,7 @@ describe('App helper launch', () => {
     return props as {
       tabs: Array<{ id: string; title: string; sessionId?: string | null; view?: string }>;
       activeTabId: string | null;
+      onSelectTab: (tabId: string) => void;
       onNewTab: () => void;
     };
   }
@@ -597,6 +624,8 @@ describe('App helper launch', () => {
   });
 
   it('prepares managed Codex from the Agent product permission, not stale runtime permission', async () => {
+    mocks.agent.providerId = CODEX_SUBSCRIPTION_PROVIDER_ID;
+    mocks.agent.model = 'gpt-5.5';
     mocks.agent.runtimeConfig = {
       permissionMode: 'suggest',
       reasoningEffort: 'xhigh',
@@ -643,6 +672,8 @@ describe('App helper launch', () => {
   });
 
   it('keeps the readable legacy codex/managed-provider Agent identity on empty launch', async () => {
+    mocks.agent.providerId = CODEX_SUBSCRIPTION_PROVIDER_ID;
+    mocks.agent.model = 'gpt-5.5';
     mocks.agent.runtime = 'codex';
     mocks.agent.runtimeConfig = { source: 'managed-provider' };
     mocks.resolveBuiltinSelection.mockReturnValue({
@@ -662,6 +693,37 @@ describe('App helper launch', () => {
         expect.objectContaining({
           runtimeSource: 'managed-provider',
           permissionMode: 'auto-edit',
+          prepareForFirstUserMessage: true,
+        }),
+      );
+    });
+  });
+
+  it('prepares managed Codex from the Agent template before its runtime model catalog loads', async () => {
+    mocks.agent.providerId = CODEX_SUBSCRIPTION_PROVIDER_ID;
+    mocks.agent.model = 'gpt-5.6-sol';
+    mocks.resolveBuiltinSelection.mockReturnValue(undefined);
+
+    render(<App />);
+    await act(async () => {
+      latestLauncherProps().onLaunchProject(mocks.project);
+    });
+
+    await waitFor(() => {
+      expect(mocks.createSession).toHaveBeenCalledWith(
+        mocks.project.path,
+        'codex',
+        expect.objectContaining({
+          runtimeSource: 'managed-provider',
+          providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
+          model: 'gpt-5.6-sol',
+          providerExecutionIdentity: expect.objectContaining({
+            kind: 'runtime-backed-provider',
+            providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
+            runtime: 'codex',
+            runtimeSource: 'managed-provider',
+            model: 'gpt-5.6-sol',
+          }),
           prepareForFirstUserMessage: true,
         }),
       );
@@ -1135,6 +1197,71 @@ describe('App helper launch', () => {
     });
   });
 
+  it('restores every Session lifecycle immediately but reveals Chat active-first', async () => {
+    const frames: FrameRequestCallback[] = [];
+    let nextFrameHandle = 1;
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return nextFrameHandle++;
+    }));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const flushQueuedFrame = (timestamp: number) => {
+      const callbacks = frames.splice(0);
+      callbacks.forEach((callback) => callback(timestamp));
+    };
+    mocks.lastExitWasClean = false;
+    mocks.durableTabs = {
+      version: 1,
+      tabs: [
+        {
+          id: 'restore-active',
+          agentDir: mocks.project.path,
+          sessionId: '11111111-2222-4333-8444-555555555551',
+          title: 'Active history',
+        },
+        {
+          id: 'restore-inactive',
+          agentDir: mocks.project.path,
+          sessionId: '11111111-2222-4333-8444-555555555552',
+          title: 'Inactive history',
+        },
+      ],
+      activeTabId: 'restore-active',
+    };
+    render(<App />);
+
+    fireEvent.click(await screen.findByTestId('restore-session'));
+    await waitFor(() => {
+      expect(mocks.ensureSessionSidecar).toHaveBeenCalledTimes(2);
+    });
+
+    const providers = screen.getAllByTestId('tab-provider');
+    expect(providers).toHaveLength(2);
+    expect(screen.getAllByTestId('chat-boot-overlay')).toHaveLength(2);
+    expect(screen.queryByTestId('chat-page')).not.toBeInTheDocument();
+    expect(frames.length).toBeGreaterThan(0);
+
+    act(() => flushQueuedFrame(0));
+    expect(screen.queryByTestId('chat-page')).not.toBeInTheDocument();
+    act(() => flushQueuedFrame(16));
+    await waitFor(() => {
+      expect(screen.getAllByTestId('chat-page')).toHaveLength(1);
+    });
+    expect(
+      providers.find((provider) => provider.dataset.tabId === 'restore-active')
+        ?.querySelector('[data-testid="chat-page"]'),
+    ).not.toBeNull();
+
+    fireEvent.keyDown(window, { key: 'Tab', code: 'Tab', ctrlKey: true });
+    expect(screen.getAllByTestId('chat-page')).toHaveLength(1);
+    expect(screen.getByTestId('tabbar-active')).toHaveTextContent('Inactive history');
+    act(() => flushQueuedFrame(32));
+    act(() => flushQueuedFrame(48));
+    await waitFor(() => {
+      expect(screen.getAllByTestId('chat-page')).toHaveLength(2);
+    });
+  });
+
   it('keeps current work unchanged when an earlier deletion owns the Session transition', async () => {
     const sessionId = '66666666-7777-4888-8999-000000000000';
     let resolveOwnerCheck!: (value: boolean) => void;
@@ -1229,7 +1356,8 @@ describe('App helper launch', () => {
     expect(new Set(mocks.tabProviderProps.map((props) => props.sessionId))).toEqual(
       new Set([firstSessionId, secondSessionId]),
     );
-    expect(screen.getAllByTestId('chat-page')).toHaveLength(2);
+    expect(screen.getAllByTestId('tab-provider')).toHaveLength(2);
+    expect(screen.getAllByTestId('chat-page')).toHaveLength(1);
     expect(screen.getByTestId('tabbar-active')).toHaveTextContent('Second restored history');
     expect(mocks.setAppActiveCorrelation).toHaveBeenCalledWith({
       tabId: 'restored-second',
@@ -1249,7 +1377,65 @@ describe('App helper launch', () => {
     ]));
   });
 
-  it('projects restored history through the real TabProvider without a Tab selection', async () => {
+  it('keeps a restored Tab when a predecessor terminal read spans the whole opening', async () => {
+    const sessionId = '22222222-3333-4444-8555-666666666666';
+    let resolveFirstGeneration!: (generation: number | null) => void;
+    mocks.tauriEnvironment = true;
+    mocks.lastExitWasClean = false;
+    mocks.durableTabs = {
+      version: 1,
+      tabs: [{
+        id: 'restored-during-terminal-read',
+        agentDir: mocks.project.path,
+        sessionId,
+        title: 'Restored during terminal read',
+      }],
+      activeTabId: 'restored-during-terminal-read',
+    };
+    mocks.ensureSessionSidecar.mockResolvedValue({ port: 31417, isNew: false });
+    mocks.hasSessionSidecar.mockResolvedValue(false);
+    mocks.getSessionGeneration
+      .mockImplementationOnce(() => new Promise<number | null>((resolve) => {
+        resolveFirstGeneration = resolve;
+      }))
+      .mockResolvedValue(2);
+
+    render(<App />);
+
+    const restoreButton = await screen.findByTestId('restore-session');
+    await waitFor(() => {
+      expect(mocks.listeners.has('session:sidecar-terminal')).toBe(true);
+    });
+    const terminalHandler = mocks.listeners.get('session:sidecar-terminal');
+    expect(terminalHandler).toBeDefined();
+    const terminalResult = Promise.resolve(terminalHandler!({
+      payload: { sessionId, generation: 1 },
+    }));
+    await waitFor(() => expect(mocks.getSessionGeneration).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(restoreButton);
+    await waitFor(() => {
+      const restored = (mocks.tabbarProps.at(-1)?.tabs as Array<{
+        id: string;
+        sidecarConfigDisposition?: string;
+      }>).find((tab) => tab.id === 'restored-during-terminal-read');
+      expect(restored?.sidecarConfigDisposition).toBe('adopt');
+    });
+
+    await act(async () => {
+      resolveFirstGeneration(null);
+      await terminalResult;
+    });
+
+    expect(mocks.getSessionGeneration).toHaveBeenCalledTimes(2);
+    expect(mocks.tabbarProps.at(-1)?.tabs).toContainEqual(expect.objectContaining({
+      id: 'restored-during-terminal-read',
+      sessionId,
+      sidecarConfigDisposition: 'adopt',
+    }));
+  });
+
+  it('loads every restored history but projects inactive Chat only after selection', async () => {
     const firstSessionId = '33333333-2222-4333-8444-555555555551';
     const secondSessionId = '33333333-2222-4333-8444-555555555552';
     mocks.useRealTabProvider = true;
@@ -1310,8 +1496,8 @@ describe('App helper launch', () => {
     render(<App />);
     fireEvent.click(await screen.findByTestId('restore-session'));
 
-    expect(await screen.findByText('First persisted restore message')).toBeInTheDocument();
     expect(await screen.findByText('Second persisted restore message')).toBeInTheDocument();
+    expect(screen.queryByText('First persisted restore message')).not.toBeInTheDocument();
     expect(mocks.sessionSidecarFetch).toHaveBeenCalledWith(
       firstSessionId,
       { type: 'tab', id: 'history-first' },
@@ -1324,6 +1510,10 @@ describe('App helper launch', () => {
       expect.stringMatching(new RegExp(`^/sessions/${secondSessionId}\\?`)),
       expect.any(Object),
     );
+
+    act(() => latestTabbarProps().onSelectTab('history-first'));
+    expect(await screen.findByText('First persisted restore message')).toBeInTheDocument();
+    expect(screen.getByText('Second persisted restore message')).toBeInTheDocument();
   });
 
   it('isolates one restored owner failure and preserves successful/current Tabs', async () => {
@@ -1781,6 +1971,66 @@ describe('App helper launch', () => {
       adopted = await adoptionPromise;
     });
     expect(adopted).toBe(true);
+  });
+
+  it('does not repeat a Tab-only Rust rekey after proof-bearing surface migration', async () => {
+    render(<App />);
+    await act(async () => {
+      await latestLauncherProps().onLaunchProject(mocks.project);
+    });
+    const providerProps = [...mocks.tabProviderProps]
+      .reverse()
+      .find((props) => typeof props.onSessionIdChange === 'function') as {
+        onSessionIdChange: (
+          newSessionId: string,
+          options?: { sidecarAlreadyMigrated?: boolean },
+        ) => Promise<boolean>;
+      };
+
+    await expect(providerProps.onSessionIdChange('session-a')).resolves.toBe(true);
+    mocks.upgradeSessionId.mockClear();
+
+    await expect(providerProps.onSessionIdChange(
+      'session-b',
+      { sidecarAlreadyMigrated: true },
+    )).resolves.toBe(true);
+
+    expect(mocks.upgradeSessionId).not.toHaveBeenCalled();
+    const currentTabs = mocks.tabbarProps.at(-1)?.tabs as Array<{
+      sessionId?: string | null;
+    }>;
+    expect(currentTabs).toContainEqual(expect.objectContaining({ sessionId: 'session-b' }));
+  });
+
+  it('releases the migrated Tab owner when the initiating Tab closed before adoption', async () => {
+    render(<App />);
+    await act(async () => {
+      await latestLauncherProps().onLaunchProject(mocks.project);
+    });
+    const providerProps = [...mocks.tabProviderProps]
+      .reverse()
+      .find((props) => typeof props.onSessionIdChange === 'function') as {
+        tabId: string;
+        onSessionIdChange: (
+          newSessionId: string,
+          options?: { sidecarAlreadyMigrated?: boolean },
+        ) => Promise<boolean>;
+      };
+    await expect(providerProps.onSessionIdChange('session-a')).resolves.toBe(true);
+
+    await act(async () => {
+      await (mocks.tabbarProps.at(-1)?.onCloseTab as (tabId: string) => Promise<void>)(
+        providerProps.tabId,
+      );
+    });
+    mocks.releaseTabSession.mockClear();
+
+    await expect(providerProps.onSessionIdChange(
+      'session-b',
+      { sidecarAlreadyMigrated: true },
+    )).resolves.toBe(false);
+
+    expect(mocks.releaseTabSession).toHaveBeenCalledWith('session-b', providerProps.tabId);
   });
 
   it('serializes identity adoption per Tab and advances from the committed predecessor', async () => {

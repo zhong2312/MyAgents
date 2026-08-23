@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "MyAgents",
-  "version": "0.4.5",
+  "version": "0.4.9",
   "identifier": "com.myagents.app",
   "build": {
     "frontendDist": "../dist",
@@ -54,7 +54,8 @@
       "../bundled-skills": "bundled-skills",
       "../bundled-agents": "bundled-agents",
       "../src-tauri/resources/cli": "cli",
-      "../mino": "mino",
+      "../src-tauri/resources/document-processing": "document-processing",
+      "../bundled-workspaces": "bundled-workspaces",
       "../LICENSE": "legal/LICENSE",
       "../LICENSING.md": "legal/LICENSING.md",
       "../COMMERCIAL-LICENSING.md": "legal/COMMERCIAL-LICENSING.md",

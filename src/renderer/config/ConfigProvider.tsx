@@ -441,7 +441,6 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             const { invoke } = await import('@tauri-apps/api/core');
             const results = await Promise.allSettled([
                 invoke('cmd_sync_admin_agent'),
-                invoke('cmd_sync_cli'),
                 // System skills (task-alignment / task-implement) —
                 // independent version gate (SYSTEM_SKILLS_VERSION in
                 // commands.rs). Force-overwrites user copies so the
@@ -454,7 +453,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 }
             }
         } catch (e) {
-            console.warn('[ConfigProvider] Agent/CLI/system-skills sync failed:', e);
+            console.warn('[ConfigProvider] Agent/system-skills sync failed:', e);
         }
 
         try {

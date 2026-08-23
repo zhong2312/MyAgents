@@ -10,6 +10,7 @@ html[data-theme-id='synthetic-test-theme'] {
   --ink-faint: #baa5c0;
   --paper: #fff0ff;
   --global-sidebar-bg: #f8dff9;
+  --global-sidebar-bg-a0: rgb(248 223 249 / 0);
   --paper-elevated: #fff8ff;
   --message-user-bg: #f8ddff;
   --paper-inset: #efd0f5;
@@ -130,6 +131,7 @@ html[data-theme-id='synthetic-test-theme'][data-color-scheme='dark'] {
   --ink-subtle: #916d96;
   --paper: #120012;
   --global-sidebar-bg: #0f000f;
+  --global-sidebar-bg-a0: rgb(15 0 15 / 0);
   --paper-elevated: #240024;
   --paper-inset: #090009;
   --accent: #dd00dd;

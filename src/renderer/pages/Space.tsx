@@ -49,6 +49,7 @@ import {
 import {
   getIssueListState,
   SPACE_VISIBLE_REFRESH_TTL_MS,
+  withSpaceStoreMutationMetric,
 } from "@/pages/space/spaceStore";
 import { useSpaceData } from "@/pages/space/useSpaceData";
 import { IssuesWorkspace } from "@/pages/space/issues/IssuesWorkspace";
@@ -70,7 +71,6 @@ import {
   nowForSpaceMetric,
   recordSpaceMetric,
   trackSpaceAuth,
-  withSpaceMutationMetric,
 } from "@/pages/space/spaceMetrics";
 import {
   PAPER_GRID_STYLE,
@@ -1178,7 +1178,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
       setSpaceDialogBusy(true);
       try {
         if (input.mode === "join") {
-          const result = await withSpaceMutationMetric("member.join", () =>
+          const result = await withSpaceStoreMutationMetric("member.join", () =>
             spaceJoinSpace({ slug: input.slug }),
           );
           if (result.status === "joined") {
@@ -1195,15 +1195,17 @@ export default function Space({ isActive }: { isActive: boolean }) {
               : t("space.toasts.spaceJoined"),
           );
         } else {
-          const result = await withSpaceMutationMetric("settings.create", () =>
-            spaceCreateSpace({
-              name: input.name,
-              slug: input.slug,
-            }),
+          const result = await withSpaceStoreMutationMetric(
+            "settings.create",
+            () =>
+              spaceCreateSpace({
+                name: input.name,
+                slug: input.slug,
+              }),
           );
           if (input.avatarFilePath) {
             try {
-              await withSpaceMutationMetric("settings.update", () =>
+              await withSpaceStoreMutationMetric("settings.update", () =>
                 spaceUpdateSpace({
                   spaceId: result.space.id || result.space.slug,
                   avatarFilePath: input.avatarFilePath,
@@ -1264,6 +1266,22 @@ export default function Space({ isActive }: { isActive: boolean }) {
         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
         {t("space.common.loadingTeam")}
       </div>
+    );
+  }
+
+  if (spaceData.boot === "reauthRequired") {
+    return (
+      <SpaceLogin
+        authBusy={authBusy}
+        authFlow={authFlow}
+        onLogin={startLogin}
+        reauthRequired
+        accountName={
+          spaceData.reauthAccount?.user.name ??
+          spaceData.reauthAccount?.user.email
+        }
+        onForgetAccount={() => void logout()}
+      />
     );
   }
 

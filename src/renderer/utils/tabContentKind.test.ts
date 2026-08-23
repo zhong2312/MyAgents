@@ -20,8 +20,8 @@ describe('tabContentKind', () => {
         expect(tabContentKind(tab({ sidecarConfigDisposition: 'pending' }), false)).toBe('chat');
     });
 
-    it('deferred mount wins over everything', () => {
-        expect(tabContentKind(tab({ sidecarConfigDisposition: 'pending' }), true)).toBe('deferred');
+    it('deferred Chat keeps its lifecycle branch while non-Chat uses a placeholder', () => {
+        expect(tabContentKind(tab({ sidecarConfigDisposition: 'pending' }), true)).toBe('deferred-chat');
         expect(tabContentKind(tab({ view: 'launcher' }), true)).toBe('deferred');
     });
 

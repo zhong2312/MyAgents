@@ -1,6 +1,6 @@
 /**
- * RuntimeDiagnosticsBanner — surface BLOCKING Codex (and future Claude Code /
- * Gemini) runtime issues in the chat header (issue #194).
+ * RuntimeDiagnosticsBanner — surface blocking Runtime failures in the chat
+ * header (issue #194).
  *
  * Design rules (v2 — post user feedback):
  *
@@ -12,11 +12,13 @@
  *    bug v1 of this banner had: users saw yellow warning for every transient
  *    Codex backend hiccup.
  *
- *    Blocking set today:
+ *    Actionable set today:
  *      • `auth.requiresLogin === true` — without a credential, every turn
  *        will 401 immediately. User must `codex login` (or equivalent).
- *      • All four diagnostic RPCs returned errors — suggests Codex itself
- *        is broken, not a single subsystem.
+ *      • A producer-owned diagnostic issue has `severity: 'error'`.
+ *      • Extension snapshot application failed. Unsupported optional
+ *        components stay in logs; direct configuration actions may still use
+ *        their producer-owned `requiresUserAction` flag for a one-shot toast.
  *
  * 2. **Always visible close button.** v1 made the X conditional on a
  *    `onDismiss` prop the caller forgot to pass — so the banner had no way
@@ -36,6 +38,7 @@ import { useTranslation } from 'react-i18next';
 import type {
   RuntimeDiagnostics,
   RuntimeDiagnosticsCallStatus,
+  RuntimeExtensionComponentStatus,
 } from '../../shared/types/runtime';
 
 interface RuntimeDiagnosticsBannerProps {
@@ -48,80 +51,55 @@ interface BlockingAssessment {
   isBlocking: boolean;
   /** Headline shown next to the disclosure caret. Single line, ≤ 60 chars. */
   headline: string;
-  /** All actionable problems (blocking + adjacent context). Shown in expanded view. */
-  allProblems: string[];
-}
-
-function statusError(s: RuntimeDiagnosticsCallStatus | undefined): string | null {
-  if (s && typeof s === 'object' && 'error' in s) return String(s.error);
-  return null;
+  /** Only the problems that caused this banner. Shown in expanded view. */
+  blockingProblems: string[];
+  /** Failed extension leaves only; successful and optional leaves are diagnostic noise here. */
+  failedExtensionComponents: RuntimeExtensionComponentStatus[];
 }
 
 type ChatTranslator = (key: string, options?: Record<string, unknown>) => string;
 
 function assessBlocking(d: RuntimeDiagnostics, t: ChatTranslator): BlockingAssessment {
-  const allProblems: string[] = [];
-
-  const authErr = statusError(d.status.auth);
-  const appsErr = statusError(d.status.apps);
-  const mcpErr = statusError(d.status.mcpServers);
-  const featErr = statusError(d.status.features);
-
-  // ── Collect ALL problems for expanded-view context ──
-  if (d.auth?.requiresLogin) allProblems.push(t('shell.runtimeDiagnostics.problems.needsCodexLogin'));
-  if (authErr) allProblems.push(t('shell.runtimeDiagnostics.problems.authQueryFailed', { error: authErr.slice(0, 80) }));
-  if (appsErr) allProblems.push(t('shell.runtimeDiagnostics.problems.appListFailed', { error: appsErr.slice(0, 80) }));
-  if (mcpErr) allProblems.push(t('shell.runtimeDiagnostics.problems.mcpStatusFailed', { error: mcpErr.slice(0, 80) }));
-  if (featErr) allProblems.push(t('shell.runtimeDiagnostics.problems.featureFlagFailed', { error: featErr.slice(0, 80) }));
-  if (d.apps) {
-    const inaccessible = d.apps.filter(a => a.isEnabled && !a.isAccessible);
-    if (inaccessible.length > 0) {
-      const names = inaccessible.map(a => a.id).slice(0, 3).join(', ');
-      const more = inaccessible.length > 3 ? '…' : '';
-      allProblems.push(t('shell.runtimeDiagnostics.problems.appsInaccessible', {
-        count: inaccessible.length,
-        names: `${names}${more}`,
-      }));
-    }
-  }
-  if (d.mcpServers) {
-    const failed = d.mcpServers.filter(s => s.state === 'failed');
-    if (failed.length > 0) {
-      allProblems.push(t('shell.runtimeDiagnostics.problems.mcpServersFailed', {
-        names: failed.map(s => s.name).slice(0, 3).join(', '),
-      }));
-    }
-  }
-  if (d.issues) {
-    for (const issue of d.issues) {
-      allProblems.push(`${issue.title}：${issue.message.slice(0, 100)}`);
-    }
-  }
+  const failedExtensionComponents = d.extensions?.state === 'failed'
+    ? d.extensions.components.filter(component => component.state === 'failed')
+    : [];
 
   // ── Decide blocking ──
-  const blockingIssue = d.issues?.find(issue => issue.severity === 'error');
-  if (blockingIssue) {
+  const blockingIssues = d.issues?.filter(issue => issue.severity === 'error') ?? [];
+  if (blockingIssues.length > 0) {
     return {
       isBlocking: true,
-      headline: blockingIssue.title.slice(0, 60),
-      allProblems,
+      headline: blockingIssues[0].title.slice(0, 60),
+      blockingProblems: blockingIssues.map(
+        issue => `${issue.title}：${issue.message.slice(0, 100)}`,
+      ),
+      failedExtensionComponents,
+    };
+  }
+  if (d.extensions?.state === 'failed') {
+    return {
+      isBlocking: true,
+      headline: t('shell.runtimeDiagnostics.headlines.extensionsFailed'),
+      blockingProblems: [],
+      failedExtensionComponents,
     };
   }
   // Rule A: explicitly needs login → cannot proceed
   if (d.auth?.requiresLogin) {
-    return { isBlocking: true, headline: t('shell.runtimeDiagnostics.headlines.needsCodexLogin'), allProblems };
-  }
-  // Rule B: every diagnostic RPC errored → runtime is fundamentally broken
-  const allFour = [authErr, appsErr, mcpErr, featErr].filter(Boolean).length;
-  if (allFour >= 4) {
     return {
       isBlocking: true,
-      headline: t('shell.runtimeDiagnostics.headlines.allDiagnosticsFailed'),
-      allProblems,
+      headline: t('shell.runtimeDiagnostics.headlines.needsCodexLogin'),
+      blockingProblems: [t('shell.runtimeDiagnostics.problems.needsCodexLogin')],
+      failedExtensionComponents,
     };
   }
   // Everything else is non-blocking → no banner. Logs panel still has it.
-  return { isBlocking: false, headline: '', allProblems };
+  return {
+    isBlocking: false,
+    headline: '',
+    blockingProblems: [],
+    failedExtensionComponents: [],
+  };
 }
 
 function renderStatusLabel(s: RuntimeDiagnosticsCallStatus | undefined, t: ChatTranslator): string {
@@ -164,7 +142,7 @@ export default function RuntimeDiagnosticsBanner({
   );
 
   if (!diagnostics || !assessment) return null;
-  // The whole point of v2: silently swallow non-blocking diagnostics.
+  // Silently swallow non-actionable diagnostics.
   // Sidecar emits them as chat:log entries which surface in the Logs panel.
   if (!assessment.isBlocking) return null;
   if (dismissed) return null;
@@ -184,12 +162,39 @@ export default function RuntimeDiagnosticsBanner({
           </button>
           {expanded && (
             <div className="mt-2 space-y-3">
-              {assessment.allProblems.length > 0 && (
+              {assessment.blockingProblems.length > 0 && (
                 <div>
                   <div className="font-semibold mb-1">{t('shell.runtimeDiagnostics.sections.problems')}</div>
                   <ul className="list-disc pl-4 space-y-0.5">
-                    {assessment.allProblems.map((p, i) => <li key={i}>{p}</li>)}
+                    {assessment.blockingProblems.map((p, i) => <li key={i}>{p}</li>)}
                   </ul>
+                </div>
+              )}
+
+              {diagnostics.extensions?.state === 'failed' && (
+                <div>
+                  <div>
+                    <div className="font-semibold">
+                      {t('shell.runtimeDiagnostics.sections.extensions')} [{diagnostics.extensions.state}]
+                    </div>
+                    <div className="text-[var(--ink-muted)] font-mono text-xs leading-tight">
+                      desired: {diagnostics.extensions.desiredRevision.slice(0, 12) || '(none)'} • effective: {diagnostics.extensions.effectiveRevision?.slice(0, 12) ?? '(none)'}
+                    </div>
+                    {assessment.failedExtensionComponents.length > 0 && (
+                      <ul className="list-disc pl-4 mt-1 space-y-0.5 text-[var(--ink-muted)]">
+                        {assessment.failedExtensionComponents.map((item, index) => (
+                          <li key={`${item.component}:${item.id ?? ''}:${item.code}:${index}`}>
+                            {t('shell.runtimeDiagnostics.problems.extensionComponent', {
+                              component: item.component,
+                              id: item.id ? `/${item.id}` : '',
+                              state: item.state,
+                              reason: item.message ?? item.code,
+                            })}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                 </div>
               )}
 

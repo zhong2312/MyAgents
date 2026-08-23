@@ -1,5 +1,6 @@
 import {
   appendSessionMessages,
+  commitBuiltinConversationRewind,
   loadSessionTranscript,
   mutateSessionTranscript,
   updateSessionMetadata,
@@ -328,7 +329,33 @@ export async function truncateTranscriptPersistenceForRewind(
   sessionId: string,
   targetMessageId: string,
   targetMessageCount: number,
+  replacement?: {
+    sourceSdkSessionId: string | null;
+    replacementSdkSessionId: string;
+  },
 ): Promise<void> {
+  if (replacement) {
+    const cursor = await ensureTranscriptCursor(sessionId);
+    const result = await commitBuiltinConversationRewind({
+      sessionId,
+      cursor,
+      targetMessageId,
+      targetMessageCount,
+      ...replacement,
+    });
+    if (!result.success) {
+      if (result.error.includes('stale-cursor')) {
+        invalidateTranscriptCursor();
+        await ensureTranscriptCursor(sessionId, true);
+      }
+      throw new Error(
+        `[agent-session] failed builtin rewind for ${sessionId}: ${result.reason}: ${result.error}`,
+      );
+    }
+    setTranscriptCursor(result.cursor);
+    return;
+  }
+
   await commitTranscriptMutation(sessionId, {
     kind: 'builtin-rewind',
     targetMessageId,

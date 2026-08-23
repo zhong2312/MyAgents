@@ -55,6 +55,37 @@ describe("SpaceChrome i18n", () => {
     expect(screen.queryByText("继续使用 Google")).not.toBeInTheDocument();
   });
 
+  it("renders reauthentication as an account recovery action", () => {
+    const onLogin = vi.fn();
+    const onForgetAccount = vi.fn();
+    render(
+      <SpaceLogin
+        authBusy={false}
+        authFlow={null}
+        onLogin={onLogin}
+        reauthRequired
+        accountName="User"
+        onForgetAccount={onForgetAccount}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "The sign-in for User is no longer valid. Sign in again to continue.",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Continue with Google" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Sign out and forget this account",
+      }),
+    );
+    expect(onLogin).toHaveBeenCalledOnce();
+    expect(onForgetAccount).toHaveBeenCalledOnce();
+  });
+
   it("renders sidebar account menu in English without translating data", () => {
     render(<SpaceSidebar session={session} mode="issues" {...sidebarProps} />);
 

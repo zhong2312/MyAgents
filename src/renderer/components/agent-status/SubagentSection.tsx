@@ -9,6 +9,7 @@
 
 import { memo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { CheckCircle2, OctagonX, StopCircle } from 'lucide-react';
 
 import { SubagentRunningIcon } from './icons';
 import type { SubagentStatus } from './types';
@@ -27,7 +28,7 @@ interface SubagentRowProps {
 
 function SubagentRow({ subagent, onJumpToTool }: SubagentRowProps) {
   const { t } = useTranslation('app');
-  const elapsed = useElapsedSeconds(subagent.startedAt);
+  const elapsed = useElapsedSeconds(subagent.startedAt, subagent.finishedAt);
 
   const onClick = useCallback(() => {
     if (!subagent.id) return;
@@ -51,7 +52,15 @@ function SubagentRow({ subagent, onJumpToTool }: SubagentRowProps) {
       title={tooltip}
       className="group flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-[var(--paper-inset)]/60"
     >
-      <SubagentRunningIcon />
+      {subagent.status === 'running' ? (
+        <SubagentRunningIcon />
+      ) : subagent.status === 'failed' ? (
+        <OctagonX aria-label={t('agentStatus.failed')} className="size-3.5 shrink-0 text-[var(--error)]" />
+      ) : subagent.status === 'interrupted' ? (
+        <StopCircle aria-label={t('agentStatus.interrupted')} className="size-3.5 shrink-0 text-[var(--warning)]" />
+      ) : (
+        <CheckCircle2 aria-label={t('agentStatus.completed')} className="size-3.5 shrink-0 text-[var(--success)]" />
+      )}
       <div className="flex min-w-0 flex-1 items-baseline gap-1.5 text-xs">
         <span className="shrink-0 font-medium text-[var(--ink)]">
           {subagent.agentType}

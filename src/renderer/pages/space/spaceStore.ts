@@ -13,6 +13,8 @@ import {
   spaceDeleteSkill,
   spaceDeleteRegisteredAgentSubscription,
   spaceDownloadIssueAttachment,
+  spaceErrorCode,
+  spaceErrorSessionBindingId,
   spaceGetIssue,
   spaceGetOfficial,
   spaceGetAvatarPresets,
@@ -47,6 +49,7 @@ import {
   type LocalRegisteredAgent,
   type SpaceAvatarPreset,
   type SpaceAttachment,
+  type SpaceAccount,
   type SpaceDownloadAttachmentResult,
   type SpaceEvent,
   type SpaceGoal,
@@ -74,7 +77,7 @@ import {
   setSpaceAnalyticsContext,
   trackSpaceOpen,
   trackSpaceSwitch,
-  withSpaceMutationMetric,
+  withSpaceMutationMetric as recordSpaceMutationMetric,
 } from "./spaceMetrics";
 
 export const SPACE_VISIBLE_REFRESH_TTL_MS = 30_000;
@@ -83,7 +86,13 @@ export const SPACE_MAX_ISSUE_DETAIL_CACHES = 100;
 export const SPACE_MAX_SKILL_DETAIL_CACHES = 100;
 export const SPACE_MAX_SKILL_FILE_CACHES = 50;
 
-type BootState = "idle" | "loading" | "ready" | "signedOut" | "error";
+type BootState =
+  | "idle"
+  | "loading"
+  | "ready"
+  | "signedOut"
+  | "reauthRequired"
+  | "error";
 
 export interface SpaceIssueListState {
   items: SpaceIssue[];
@@ -167,6 +176,7 @@ interface StoreState {
   boot: BootState;
   serviceBaseUrl: string | null;
   session: SpaceSession | null;
+  reauthAccount: SpaceAccount | null;
   spaceId: string | null;
   goals: SpaceGoal[];
   goalsLastFetchedAt: number;
@@ -361,6 +371,7 @@ const initialState = (): StoreState => ({
   boot: "idle",
   serviceBaseUrl: null,
   session: null,
+  reauthAccount: null,
   spaceId: null,
   goals: [],
   goalsLastFetchedAt: 0,
@@ -433,6 +444,45 @@ function setState(patch: Partial<StoreState>): void {
   state = { ...state, ...patch };
   emit();
 }
+
+function applyReauthRequired(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  if (spaceErrorCode(error) !== "SPACE_REAUTH_REQUIRED") return false;
+  const failureBinding = spaceErrorSessionBindingId(error);
+  const activeBinding = state.session?.sessionBindingId?.trim() || null;
+  if (!failureBinding || failureBinding !== activeBinding) return false;
+  const account = state.session
+    ? (({ sessionBindingId: _binding, expiresAt: _expiresAt, ...rest }) =>
+        rest)(state.session)
+    : state.reauthAccount;
+  const serviceBaseUrl =
+    account?.baseUrl?.trim() || state.serviceBaseUrl || null;
+  invalidatePendingRequests();
+  setSpaceAnalyticsContext(null);
+  state = {
+    ...initialState(),
+    boot: "reauthRequired",
+    serviceBaseUrl,
+    reauthAccount: account,
+    bootLastFetchedAt: Date.now(),
+  };
+  emit();
+  return true;
+}
+
+export async function withSpaceStoreMutationMetric<T>(
+  operation: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await recordSpaceMutationMetric(operation, task);
+  } catch (error) {
+    applyReauthRequired(error);
+    throw error;
+  }
+}
+
+const withSpaceMutationMetric = withSpaceStoreMutationMetric;
 
 function applyServiceBaseUrl(
   serviceBaseUrl: string | null,
@@ -599,11 +649,16 @@ function runRequest(
     const existing = inFlightRequests.get(key);
     if (existing) return existing;
   }
-  const promise = task().finally(() => {
-    if (inFlightRequests.get(key) === promise) {
-      inFlightRequests.delete(key);
-    }
-  });
+  const promise = task()
+    .catch((error) => {
+      applyReauthRequired(error);
+      throw error;
+    })
+    .finally(() => {
+      if (inFlightRequests.get(key) === promise) {
+        inFlightRequests.delete(key);
+      }
+    });
   inFlightRequests.set(key, promise);
   return promise;
 }
@@ -1133,7 +1188,9 @@ export const actions: SpaceActions = {
   ensureBootstrapped: async (options: RefreshOptions = {}) => {
     if (
       !options.force &&
-      (state.boot === "ready" || state.boot === "signedOut") &&
+      (state.boot === "ready" ||
+        state.boot === "signedOut" ||
+        state.boot === "reauthRequired") &&
       (!options.maxAgeMs || isFresh(state.bootLastFetchedAt, options.maxAgeMs))
     ) {
       return;
@@ -1148,10 +1205,14 @@ export const actions: SpaceActions = {
         const capability = await spaceGetCapability();
         if (!isLatest("boot", requestSeq)) return;
         applyServiceBaseUrl(capability.baseUrl?.trim() || null, requestSeq);
-        const session = await spaceGetSession();
+        const sessionView = await spaceGetSession();
         if (!isLatest("boot", requestSeq)) return;
-        applyServiceBaseUrl(session?.baseUrl?.trim() || null, requestSeq);
-        if (!session) {
+        const account =
+          sessionView?.state === "authenticated"
+            ? sessionView.session
+            : sessionView?.account;
+        applyServiceBaseUrl(account?.baseUrl?.trim() || null, requestSeq);
+        if (!sessionView) {
           setSpaceAnalyticsContext(null);
           setState({
             ...initialState(),
@@ -1161,6 +1222,21 @@ export const actions: SpaceActions = {
           });
           return;
         }
+        if (sessionView.state === "reauth_required") {
+          setSpaceAnalyticsContext(null);
+          setState({
+            ...initialState(),
+            serviceBaseUrl:
+              sessionView.account.baseUrl.trim() ||
+              capability.baseUrl?.trim() ||
+              null,
+            boot: "reauthRequired",
+            reauthAccount: sessionView.account,
+            bootLastFetchedAt: Date.now(),
+          });
+          return;
+        }
+        const session = sessionView.session;
         const preferredSpaceId =
           session.lastActiveSpaceId || spaceRouteSegment(session.space);
         const official = await spaceGetOfficial(preferredSpaceId).catch(
@@ -1221,9 +1297,12 @@ export const actions: SpaceActions = {
         });
       } catch (error) {
         if (!isLatest("boot", requestSeq)) return;
+        if (applyReauthRequired(error)) return;
         if (
           options.silent &&
-          (state.boot === "ready" || state.boot === "signedOut")
+          (state.boot === "ready" ||
+            state.boot === "signedOut" ||
+            state.boot === "reauthRequired")
         ) {
           setState({ bootError: errMessage(error) });
           recordSpaceMetric("space_boot_end", {
@@ -2039,7 +2118,10 @@ export const actions: SpaceActions = {
       return result.attachments;
     }),
 
-  downloadIssueAttachment: (input) => spaceDownloadIssueAttachment(input),
+  downloadIssueAttachment: (input) =>
+    withSpaceMutationMetric("issue.attachment.download", () =>
+      spaceDownloadIssueAttachment(input),
+    ),
 
   commentIssue: (issueId, body, filePaths = []) =>
     withSpaceMutationMetric("issue.comment", async () => {

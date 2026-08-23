@@ -77,6 +77,27 @@ describe("Sidecar production composition", () => {
     ).toBeNull();
   });
 
+  it('routes one-shot Grok verification through the Global provider owner', async () => {
+    const grokVerification = request('/api/grok/verify', 'POST');
+    expect(classifySidecarRequest(grokVerification)).toBe('global');
+
+    const globalHandler = vi.fn(async () => new Response('verified', { status: 202 }));
+    const globalResponse = await composeSidecarRequestHandler(
+      resolveSidecarComposition('global', false),
+      globalHandler,
+    )(grokVerification);
+    expect(globalResponse.status).toBe(202);
+    expect(globalHandler).toHaveBeenCalledOnce();
+
+    const sessionHandler = vi.fn(async () => new Response('wrong owner'));
+    const sessionResponse = await composeSidecarRequestHandler(
+      resolveSidecarComposition('session', false),
+      sessionHandler,
+    )(request('/api/grok/verify', 'POST'));
+    expect(sessionResponse.status).toBe(404);
+    expect(sessionHandler).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["global", "POST", "/chat/send"],
     ["global", "POST", "/cron/execute-sync"],

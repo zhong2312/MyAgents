@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
-import { snapshotForOwnedSession, snapshotForImSession } from './session-snapshot';
+import { snapshotForForkedSession, snapshotForOwnedSession, snapshotForImSession } from './session-snapshot';
+import type { SessionMetadata } from '../types/session';
 import type { AgentConfig } from '../../shared/types/agent';
 
 // #324 regression (cross-review Critical): owned desktop/cron sessions must
@@ -252,6 +253,23 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
     })).toEqual({
       runtime: 'codex',
       runtimeSource: 'managed-provider',
+    });
+  });
+});
+
+describe('snapshotForForkedSession', () => {
+  it('preserves the Managed Codex Host catalog identity on a Product Session fork', () => {
+    const source = {
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+      configSnapshotAt: '2026-08-08T00:00:00.000Z',
+      managedCodexExtensionProtocolVersion: '0.146.0',
+      managedCodexHostCatalogFingerprint: 'catalog-fingerprint',
+    } as SessionMetadata;
+
+    expect(snapshotForForkedSession(source)).toMatchObject({
+      managedCodexExtensionProtocolVersion: '0.146.0',
+      managedCodexHostCatalogFingerprint: 'catalog-fingerprint',
     });
   });
 });

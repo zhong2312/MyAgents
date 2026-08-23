@@ -38,10 +38,20 @@ pub struct SessionSearchHit {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileSearchResult {
+    pub folder_hits: Vec<FolderSearchHit>,
     pub hits: Vec<FileSearchHit>,
+    pub total_folders: usize,
     pub total_files: usize,
-    pub total_matches: usize,
     pub query_time_ms: f64,
+}
+
+/// A single folder search hit.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderSearchHit {
+    /// Workspace-relative path using `/` separators on every platform.
+    pub path: String,
+    pub name: String,
 }
 
 /// A single file search hit (with matching lines).

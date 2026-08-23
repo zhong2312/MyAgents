@@ -11,15 +11,15 @@
 //
 // Switching to the JS API removes shell-quoting entirely and gives us
 // one source of truth for everything that defines a Node bundle: entry,
-// banner, format, externals, sourcemap. Per-target post-build steps
-// (e.g. CLI launcher copy, server-side hardcoded-path validation) live
+// banner, format, externals, sourcemap. Per-target staging and validation
+// steps (e.g. CLI inventory cleanup, server hardcoded-path validation) live
 // here too — used to be duplicated across build_macos.sh / build_linux.sh
 // / build_windows.ps1, now centralised so a missed update can't ship a
 // half-fixed bundle.
 
 import { build } from 'esbuild';
-import { copyFile, readFile, mkdir } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile, mkdir, readdir, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 
 // Read package.json version once and inject as a compile-time constant.
 // This is the ONLY way `myagents version` can show the real shipped
@@ -102,23 +102,14 @@ const TARGETS = {
   },
   cli: {
     entryPoints: ['src/cli/myagents.ts'],
-    outfile: 'src-tauri/resources/cli/myagents.js',
+    // The extension is part of the runtime contract. The CLI bundle is
+    // CommonJS, and `.cjs` keeps that classification deterministic even when
+    // a development `.app` lives below a repository `package.json` whose
+    // `type` is `module`.
+    outfile: 'src-tauri/resources/cli/myagents.cjs',
     format: 'cjs',
     sourcemap: false,
     banner: { js: CLI_SHEBANG_BANNER },
-    /** Post-build: drop the Windows launcher next to the bundle. Rust's
-     *  `cmd_sync_cli` reads `resources/cli/myagents.js` AND `myagents.cmd`,
-     *  so both have to be present in every release artifact regardless of
-     *  the host OS doing the build. Doing the copy here means a single
-     *  `npm run build:cli` invocation produces a complete CLI deliverable —
-     *  no follow-up shell step in mac/linux/windows builders.
-     */
-    postBuild: async () => {
-      const src = 'src/cli/myagents.cmd';
-      const dst = 'src-tauri/resources/cli/myagents.cmd';
-      await copyFile(src, dst);
-      console.log(`  ↳ copied ${src} → ${dst}`);
-    },
   },
 };
 
@@ -133,7 +124,19 @@ if (!cfg) {
 // Ensure the outfile's directory exists. esbuild creates the file but
 // requires the parent dir; on a clean checkout (or after `cargo clean`
 // nuked target/), `src-tauri/resources/cli/` may not exist yet.
-await mkdir(dirname(cfg.outfile), { recursive: true });
+const outputDir = dirname(cfg.outfile);
+await mkdir(outputDir, { recursive: true });
+
+// The package must contain exactly one CLI business payload. Remove artifacts
+// emitted by older build logic (notably myagents.cmd) before rebuilding while
+// preserving the tracked placeholder used by clean checkouts.
+if (targetName === 'cli') {
+  for (const entry of await readdir(outputDir)) {
+    if (entry !== '.gitkeep') {
+      await rm(join(outputDir, entry), { recursive: true, force: true });
+    }
+  }
+}
 
 await build({
   bundle: true,

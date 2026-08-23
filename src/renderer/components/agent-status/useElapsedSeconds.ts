@@ -8,11 +8,11 @@ import { useEffect, useState } from 'react';
 
 import { formatElapsed } from './format';
 
-export function useElapsedSeconds(startedAt: number | null): string | null {
+export function useElapsedSeconds(startedAt: number | null, finishedAt?: number): string | null {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    if (startedAt === null) return;
+    if (startedAt === null || finishedAt !== undefined) return;
     // 立即对齐一次（用 rAF 包装，避免 react-hooks/set-state-in-effect lint），
     // 然后每秒 tick。setInterval 在 callback 里 setState 不会触发 lint。
     const raf = requestAnimationFrame(() => setNow(Date.now()));
@@ -21,8 +21,8 @@ export function useElapsedSeconds(startedAt: number | null): string | null {
       cancelAnimationFrame(raf);
       clearInterval(id);
     };
-  }, [startedAt]);
+  }, [startedAt, finishedAt]);
 
   if (startedAt === null) return null;
-  return formatElapsed(now - startedAt);
+  return formatElapsed(Math.max(0, (finishedAt ?? now) - startedAt));
 }

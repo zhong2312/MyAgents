@@ -15,6 +15,8 @@ import type {
   TurnTerminalObserver,
 } from '../../session-core/turn-queue';
 import type { TurnChannelDelivery } from '../../session-core/channel-delivery';
+import type { RequiredSystemSkill } from '../../../shared/systemSkills';
+import type { SubagentLifecycle } from '../../../shared/types/subagent-lifecycle';
 
 export interface PersistToolResultMeta {
   exitCode?: number | null;
@@ -40,6 +42,7 @@ export interface PersistContentBlock {
     streamIndex: number;
     attachments?: ToolAttachment[];
     display?: ToolDisplayPayload;
+    subagentLifecycle?: SubagentLifecycle;
     subagentCalls?: Array<{
       id: string;
       name: string;
@@ -166,6 +169,7 @@ export interface ExternalAssistantSnapshotState {
   pendingToolInputs: ReadonlyMap<string, { name: string; inputJson: string }>;
   childToolToParent: ReadonlyMap<string, string>;
   pendingSubagentCallsByParent: ReadonlyMap<string, readonly PersistSubagentCall[]>;
+  pendingSubagentLifecyclesByParent?: ReadonlyMap<string, SubagentLifecycle>;
   currentAssistantText: string;
 }
 
@@ -193,6 +197,8 @@ export interface ExternalSendContext {
   turnOwner?: TurnOwner;
   onTerminal?: TurnTerminalObserver;
   beforeDispatch?: DispatchGuard;
+  /** Dependent automation contract, checked against Runtime-native read-back before dispatch. */
+  requiredSystemSkill?: RequiredSystemSkill;
   channelDelivery: TurnChannelDelivery;
 }
 

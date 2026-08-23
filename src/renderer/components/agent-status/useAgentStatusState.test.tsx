@@ -89,14 +89,14 @@ describe('useAgentStatusState — TodoWrite ↔ Task selection', () => {
 });
 
 describe('useAgentStatusState — Codex CollabAgent activity', () => {
-  it('keeps a completed spawnAgent card visible while nested calls are still running', () => {
+  it('uses the explicit child lifecycle even when nested loading is stale', () => {
     const messages: Message[] = [
       toolMsg('m1', {
         name: 'CollabAgent',
         parsedInput: { tool: 'spawnAgent', prompt: 'review analytics', model: 'gpt-5.5' } as unknown as ToolUseSimple['parsedInput'],
         result: 'Tool: spawnAgent\nStatus: completed',
         isLoading: false,
-        taskStartTime: 123,
+        subagentLifecycle: { status: 'running', startedAt: 123 },
         taskStats: { toolCount: 84, inputTokens: 0, outputTokens: 0 },
         subagentCalls: [
           { id: 'child-1', name: 'Bash', input: { command: 'rg analytics' }, result: '...', isLoading: false },
@@ -114,7 +114,66 @@ describe('useAgentStatusState — Codex CollabAgent activity', () => {
       mode: 'sync',
       startedAt: 123,
       toolCount: 84,
+      status: 'running',
     });
+  });
+
+  it('keeps terminal siblings in the current lifecycle group while another child runs', () => {
+    const messages: Message[] = [{
+      id: 'm1',
+      role: 'assistant',
+      timestamp: new Date(0),
+      content: [
+        {
+          type: 'tool_use',
+          tool: {
+            id: 'card-a', name: 'CollabAgent', input: {}, streamIndex: 0,
+            parsedInput: { tool: 'spawnAgent' },
+            subagentLifecycle: { status: 'completed', startedAt: 100, finishedAt: 200 },
+          },
+        },
+        {
+          type: 'tool_use',
+          tool: {
+            id: 'card-b', name: 'CollabAgent', input: {}, streamIndex: 1,
+            parsedInput: { tool: 'spawnAgent' },
+            subagentLifecycle: { status: 'running', startedAt: 120 },
+          },
+        },
+      ],
+    }];
+
+    const { result } = renderHook(() => useAgentStatusState(messages));
+    expect(result.current.subagents.map(subagent => subagent.status)).toEqual(['completed', 'running']);
+    expect(result.current.summary).toMatchObject({ subagentRunning: 1, subagentTotal: 2 });
+  });
+
+  it('does not revive a legacy cold-history card from stale nested loading', () => {
+    const messages: Message[] = [toolMsg('old', {
+      name: 'CollabAgent',
+      result: 'Tool: spawnAgent\nStatus: completed',
+      subagentCalls: [{ id: 'stale', name: 'Thinking', input: {}, isLoading: true }],
+    })];
+    const { result } = renderHook(() => useAgentStatusState(messages));
+    expect(result.current.subagents).toEqual([]);
+    expect(result.current.summary.subagentRunning).toBe(0);
+  });
+
+  it('does not mix a prior terminal lifecycle group into a new plan-only turn', () => {
+    const messages: Message[] = [toolMsg('old-turn', {
+      name: 'CollabAgent',
+      parsedInput: { tool: 'spawnAgent', prompt: 'old review' } as unknown as ToolUseSimple['parsedInput'],
+      subagentLifecycle: { status: 'completed', startedAt: 100, finishedAt: 200 },
+    })];
+    const { result } = renderHook(() => useAgentStatusState(
+      messages,
+      [{ key: 'new-plan', content: 'New turn', activeForm: 'New turn', status: 'in_progress' }],
+      null,
+      null,
+    ));
+
+    expect(result.current.subagents).toEqual([]);
+    expect(result.current.todos).toEqual([expect.objectContaining({ key: 'new-plan' })]);
   });
 });
 

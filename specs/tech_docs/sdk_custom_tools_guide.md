@@ -6,6 +6,13 @@
 
 Claude Agent SDK 提供了 `createSdkMcpServer` 和 `tool` 函数，允许开发者创建内置的 MCP（Model Context Protocol）服务器，为 AI Agent 提供自定义工具能力。与外部 MCP 服务器不同，这些工具直接在应用进程内运行，无需启动额外的子进程。
 
+这些 SDK wrapper 只属于 builtin Runtime。`runtime:'codex' + runtimeSource:'managed-provider'`
+不会把 `createSdkMcpServer()` wrapper 当成跨 Runtime 协议，而是由
+`managed-codex/extensions/host-dispatcher.ts` 通过标准 MCP `Client + InMemoryTransport`
+连接 wrapper 内的同一 `McpServer` business handler，并把结果归一成 runtime-neutral
+text/image/audio，再由 Codex adapter 映射到 `thread/start.dynamicTools` / 反向
+`item/tool/call` wire。业务 handler 可复用，SDK wrapper 本身仍只属于 builtin 集成面。
+
 ## 当前工具清单
 
 当前注册表包含用户可启用的 `gemini-image`、`edge-tts`，以及仅由受控
@@ -262,6 +269,16 @@ AI 调用 send_media(file_path, caption?)
 ---
 
 ## 核心 API
+
+### Runtime 暴露边界
+
+| Runtime | 进程内 MCP 暴露方式 | 权限与生命周期 |
+|---|---|---|
+| builtin Claude Agent SDK | `createSdkMcpServer` / `tool` → `Options.mcpServers` | SDK `canUseTool`、hooks 与 Query generation |
+| Managed Codex | 标准 MCP in-memory client → Host dispatcher → dynamic tool | 既有 external permission UI；call/turn/process generation 的 AbortSignal、timeout 与 exactly-once 结算 |
+| system-cli external Runtime | 不注入 MyAgents in-process MCP | 由用户自己的 Runtime 配置持有 |
+
+Managed Codex Host catalog 在 native thread 出生时冻结；同 fingerprint 才允许 resume，目录变化要求新建 Product Session。Dispatcher 的 `dispose()` 必须随 process stop/reset/crash 释放连接，旧 generation 的晚到 call 不得执行。新增工具仍先在现有 builtin registry 或 IM Bridge owner 中实现业务 handler，不得在 Codex adapter 复制一份实现。
 
 ### 1. createSdkMcpServer
 

@@ -5,7 +5,8 @@
 import type { Tab } from '@/types/tab';
 
 export type TabContentKind =
-    | 'deferred' // one-frame placeholder for a freshly created heavy tab
+    | 'deferred' // one-frame placeholder for a freshly created heavy non-Chat tab
+    | 'deferred-chat' // live TabProvider + lightweight boot surface; Chat mounts later
     | 'launcher'
     | 'settings'
     | 'capabilities'
@@ -16,12 +17,13 @@ export type TabContentKind =
 
 /**
  * Decide which content branch a tab renders. Order matters:
- *  - deferred-mount placeholder wins (keeps the open action off the hot path)
+ *  - deferred Chat keeps its lifecycle provider but postpones the heavy view
+ *  - deferred non-Chat views use a cheap placeholder
  *  - non-chat views are dispatched by `view`
  *  - every chat tab mounts the normal TabProvider path
  */
 export function tabContentKind(tab: Tab, isDeferredMount: boolean): TabContentKind {
-    if (isDeferredMount) return 'deferred';
+    if (isDeferredMount) return tab.view === 'chat' ? 'deferred-chat' : 'deferred';
     if (tab.view === 'launcher') return 'launcher';
     if (tab.view === 'settings') return 'settings';
     if (tab.view === 'capabilities') return 'capabilities';

@@ -96,49 +96,22 @@ struct SidecarGrokVerifyResponse {
 
 #[tauri::command]
 pub async fn cmd_grok_verify_account(
-    app_handle: tauri::AppHandle,
     sidecars: tauri::State<'_, crate::sidecar::ManagedSidecarManager>,
 ) -> Result<GrokVerificationResult, GrokAuthError> {
     let auth = manager()?;
     let (model, verification_lineage) = auth.prepare_verification_model().await?;
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let owner =
-        crate::sidecar::SidecarOwner::BackgroundCompletion(format!("grok-verify:{session_id}"));
-    let workspace = crate::app_dirs::myagents_data_dir()
-        .ok_or_else(|| {
-            GrokAuthError::new(
-                GrokAuthErrorCode::Internal,
-                "Cannot determine MyAgents data directory",
-            )
-        })?
-        .join("verification-workspace");
     let sidecar_manager = sidecars.inner().clone();
-    let ensure_app = app_handle.clone();
-    let ensure_manager = sidecar_manager.clone();
-    let ensure_session = session_id.clone();
-    let ensure_owner = owner.clone();
-    let workspace = tauri::async_runtime::spawn_blocking(move || {
-        std::fs::create_dir_all(&workspace)
-            .map_err(|error| format!("Cannot create verification workspace: {error}"))?;
-        Ok::<_, String>(workspace)
-    })
-    .await
-    .map_err(|_| GrokAuthError::new(GrokAuthErrorCode::Internal, "启动 Grok 验证 Sidecar 失败"))?
-    .map_err(|_| GrokAuthError::new(GrokAuthErrorCode::Internal, "无法创建 Grok 验证目录"))?;
-    let ensure = crate::sidecar::ensure_session_sidecar_with_lifecycle(
-        ensure_app,
-        ensure_manager,
-        ensure_session,
-        workspace,
-        ensure_owner,
-    )
-    .await
-    .map_err(|_| GrokAuthError::new(GrokAuthErrorCode::Internal, "Grok 验证运行时暂不可用"))?;
+    let dispatch = crate::sse_proxy::acquire_global_dispatch_with_wait(&sidecar_manager)
+        .await
+        .map_err(|_| GrokAuthError::new(GrokAuthErrorCode::Internal, "Grok 验证运行时暂不可用"))?;
+    let verify_url = dispatch
+        .url_for_path("/api/grok/verify")
+        .map_err(|_| GrokAuthError::new(GrokAuthErrorCode::Internal, "Grok 验证运行时暂不可用"))?;
 
     let verify_result = async {
         let client = crate::local_http::json_client(Duration::from_secs(60));
         let response = client
-            .post(format!("http://127.0.0.1:{}/api/grok/verify", ensure.port))
+            .post(verify_url)
             .json(&serde_json::json!({
                 "model": model.clone(),
                 "verificationLineage": verification_lineage.clone(),
@@ -159,14 +132,7 @@ pub async fn cmd_grok_verify_account(
             })
     }
     .await;
-
-    let release_manager = sidecar_manager.clone();
-    let release_session = session_id.clone();
-    let release_owner = owner.clone();
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        crate::sidecar::release_session_sidecar(&release_manager, &release_session, &release_owner)
-    })
-    .await;
+    drop(dispatch);
 
     match verify_result {
         Ok(result) => Ok(auth

@@ -23,6 +23,7 @@ html[data-theme-id='codex'][data-color-scheme='light'] {
   --ink-faint: #c2c4c8;
   --paper: #ffffff;
   --global-sidebar-bg: #f8f8f9;
+  --global-sidebar-bg-a0: rgb(248 248 249 / 0);
   --paper-elevated: #ffffff;
   --message-user-bg: #fbfcfd;
   --paper-inset: #eaecef;
@@ -133,6 +134,7 @@ html[data-theme-id='codex'][data-color-scheme='dark'] {
   --ink-faint: #404040;
   --paper: #111111;
   --global-sidebar-bg: #0f0f0f;
+  --global-sidebar-bg-a0: rgb(15 15 15 / 0);
   --paper-elevated: #1a1a1a;
   --message-user-bg: #202020;
   --paper-inset: #090909;

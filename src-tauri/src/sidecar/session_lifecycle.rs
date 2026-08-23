@@ -1,3 +1,4 @@
+use super::manager::{RuntimeDriftTransition, SessionOwnerRelease};
 use super::*;
 
 pub(crate) type SessionLifecycleGuard = crate::keyed_lifecycle::KeyedLifecycleGuard;
@@ -11,6 +12,65 @@ pub(crate) async fn acquire_session_lifecycle(session_ids: &[&str]) -> SessionLi
         .get_or_init(crate::keyed_lifecycle::KeyedLifecycleRegistry::new)
         .acquire(session_ids)
         .await
+}
+
+/// Close one active generation under the manager lock, wait without that
+/// lock, then move the exact process into manager-owned recovery state.
+fn replace_session_sidecar_after_drain<'a>(
+    manager: &'a ManagedSidecarManager,
+    mut manager_guard: std::sync::MutexGuard<'a, SidecarManager>,
+    session_id: &str,
+) -> Result<std::sync::MutexGuard<'a, SidecarManager>, String> {
+    let drain = manager_guard.prepare_session_sidecar_replacement(session_id);
+    drop(manager_guard);
+    if let Some(drain) = drain {
+        drain.wait();
+        manager_guard = manager.lock().map_err(|error| error.to_string())?;
+        manager_guard.finish_session_sidecar_replacement(&drain);
+        Ok(manager_guard)
+    } else {
+        manager.lock().map_err(|error| error.to_string())
+    }
+}
+
+/// A concurrent last-owner release may leave a closed, ownerless entry visible
+/// while its admitted request finishes. Ensure callers can help complete that
+/// exact retirement before retrying, without inventing a second state owner.
+fn finish_unowned_session_after_drain(
+    manager: &ManagedSidecarManager,
+    session_id: &str,
+    drain: DispatchDrain,
+) -> Result<(), String> {
+    drain.wait();
+    let retirement = {
+        let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
+        manager_guard.prepare_unowned_session_retirement(session_id)
+    };
+    if let Some(retirement) = retirement {
+        retirement.wait();
+        let retired = {
+            let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
+            manager_guard.finish_unowned_session_retirement(&retirement)
+        };
+        drop(retired);
+    }
+    Ok(())
+}
+
+pub(crate) fn finish_runtime_drift_transition(
+    manager: &ManagedSidecarManager,
+    transition: RuntimeDriftTransition,
+) -> Result<RuntimeDriftResult, String> {
+    let RuntimeDriftTransition { result, drain } = transition;
+    if let Some(drain) = drain {
+        drain.wait();
+        let retired = {
+            let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
+            manager_guard.finish_runtime_drift_retirement(&drain)
+        };
+        drop(retired);
+    }
+    Ok(result)
 }
 
 pub(crate) async fn has_persisted_session_owner(session_id: &str) -> Result<bool, String> {
@@ -381,6 +441,12 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
             session_id, MAX_ENSURE_ATTEMPTS
         ));
     }
+    if attempt == 0 {
+        // Session Sidecars use this lifecycle path rather than the tab/global
+        // instance path. Apply the same CLI admission contract before any
+        // existing Session is reused or a new process is born.
+        crate::cli::ensure_launcher()?;
+    }
     ulog_info!(
         "[sidecar] ensure_session_sidecar called for session: {}, owner: {:?} (attempt {})",
         session_id,
@@ -456,6 +522,8 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
     // owners always honor the user's latest runtime choice, including the
     // external → builtin switch direction.
 
+    let mut replace_existing = false;
+    let mut clear_generation_after_replace = false;
     let existing_sidecar_info: Option<ExistingSidecarReuse> = {
         let generation = manager_guard.current_generation(session_id);
         if let Some(sidecar) = manager_guard.sidecars.get_mut(session_id) {
@@ -465,7 +533,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                     "[sidecar] Session {} has dead Sidecar process, removing",
                     session_id
                 );
-                manager_guard.begin_session_sidecar_replacement(session_id);
+                replace_existing = true;
                 None
             } else if sidecar.is_reusable() {
                 if validate_sidecar_runtime_invariant(
@@ -477,8 +545,8 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 )
                 .is_err()
                 {
-                    manager_guard.begin_session_sidecar_replacement(session_id);
-                    manager_guard.clear_generation(session_id);
+                    replace_existing = true;
+                    clear_generation_after_replace = true;
                     None
                 } else {
                     // Healthy — needs HTTP verification outside the lock
@@ -489,7 +557,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                         runtime_source: sidecar.runtime_source.clone(),
                     })
                 }
-            } else {
+            } else if sidecar.is_starting() {
                 // Starting — another thread is doing wait_for_health/readiness.
                 // Add the owner now, then wait for /health/ready outside the lock.
                 ulog_info!(
@@ -507,8 +575,8 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 )
                 .is_err()
                 {
-                    manager_guard.begin_session_sidecar_replacement(session_id);
-                    manager_guard.clear_generation(session_id);
+                    replace_existing = true;
+                    clear_generation_after_replace = true;
                     None
                 } else {
                     let owner_added = sidecar.add_owner(owner.clone());
@@ -520,11 +588,21 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                         owner_added,
                     })
                 }
+            } else {
+                Some(ExistingSidecarReuse::Draining(DispatchGate::close(
+                    &sidecar.dispatch_gate,
+                )))
             }
         } else {
             None
         }
     };
+    if replace_existing {
+        manager_guard = replace_session_sidecar_after_drain(manager, manager_guard, session_id)?;
+        if clear_generation_after_replace {
+            manager_guard.clear_generation(session_id);
+        }
+    }
 
     // If we found a running sidecar, verify HTTP health (with lock released).
     // CRITICAL: The lock is dropped during the 2s HTTP check. Another thread (health monitor)
@@ -552,6 +630,21 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 runtime_source,
                 owner_added,
             } => (port, generation, runtime, runtime_source, true, owner_added),
+            ExistingSidecarReuse::Draining(drain) => {
+                drop(manager_guard);
+                finish_unowned_session_after_drain(manager, session_id, drain)?;
+                return ensure_session_sidecar_attempt(
+                    app_handle,
+                    manager,
+                    session_id,
+                    workspace_path,
+                    owner,
+                    runtime_override,
+                    runtime_source_override,
+                    attempt + 1,
+                    expected_recovery_epoch,
+                );
+            }
         };
         let runtime_source_label =
             normalize_runtime_source_name(&runtime_for_trace, runtime_source_for_trace.as_deref())
@@ -603,6 +696,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 "[sidecar] Session {} generation changed ({} → {}) during HTTP check on port {}, checking replacement",
                 session_id, pre_gen, post_gen, port
             );
+            let mut remove_replacement_for_runtime_drift = false;
             if let Some(sidecar) = manager_guard.sidecars.get_mut(session_id) {
                 if !sidecar.is_dead() {
                     ulog_info!(
@@ -620,8 +714,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                     )
                     .is_err()
                     {
-                        manager_guard.begin_session_sidecar_replacement(session_id);
-                        manager_guard.clear_generation(session_id);
+                        remove_replacement_for_runtime_drift = true;
                     } else {
                         drop(manager_guard);
                         return ensure_session_sidecar_attempt(
@@ -637,6 +730,11 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                         );
                     }
                 }
+            }
+            if remove_replacement_for_runtime_drift {
+                manager_guard =
+                    replace_session_sidecar_after_drain(manager, manager_guard, session_id)?;
+                manager_guard.clear_generation(session_id);
             }
             // Replacement sidecar process also dead — fall through to create
         } else if http_healthy {
@@ -724,7 +822,8 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 }
             }
             if remove_for_runtime_drift {
-                manager_guard.begin_session_sidecar_replacement(session_id);
+                manager_guard =
+                    replace_session_sidecar_after_drain(manager, manager_guard, session_id)?;
                 manager_guard.clear_generation(session_id);
             }
             // Sidecar gone but generation unchanged (removed without replacement)
@@ -759,8 +858,10 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                     false
                 };
                 if should_stop {
-                    manager_guard.remove_sidecar(session_id);
+                    let retired = manager_guard.remove_sidecar(session_id);
                     manager_guard.clear_generation(session_id);
+                    drop(manager_guard);
+                    drop(retired);
                 }
                 return Err(format!(
                     "Session {} sidecar on port {} is still starting",
@@ -772,7 +873,8 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 "[sidecar] Session {} Sidecar process alive but HTTP unresponsive on port {}, removing",
                 session_id, port
             );
-            manager_guard.begin_session_sidecar_replacement(session_id);
+            manager_guard =
+                replace_session_sidecar_after_drain(manager, manager_guard, session_id)?;
         }
 
         let result = create_new_session_sidecar(
@@ -832,13 +934,13 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
 
 /// Helper function to create a new session sidecar
 /// Extracted to avoid code duplication and handle the mutex guard properly
-fn create_new_session_sidecar<R: Runtime>(
+fn create_new_session_sidecar<'a, R: Runtime>(
     app_handle: &AppHandle<R>,
-    manager: &ManagedSidecarManager,
+    manager: &'a ManagedSidecarManager,
     session_id: &str,
     workspace_path: &std::path::Path,
     owner: SidecarOwner,
-    mut manager_guard: std::sync::MutexGuard<'_, SidecarManager>,
+    mut manager_guard: std::sync::MutexGuard<'a, SidecarManager>,
     runtime_override: Option<&str>,
     runtime_source_override: Option<&str>,
     resolved_identity: &RuntimeIdentity,
@@ -849,6 +951,7 @@ fn create_new_session_sidecar<R: Runtime>(
 
     // Guard against double-creation: if another thread already created a sidecar for this
     // session (e.g., health monitor raced with frontend), reuse it instead of spawning another.
+    let mut replace_dead_existing = false;
     if let Some(existing) = manager_guard.sidecars.get_mut(session_id) {
         if !existing.is_dead() {
             ulog_info!(
@@ -869,7 +972,10 @@ fn create_new_session_sidecar<R: Runtime>(
             );
         }
         // Exists but process dead — remove before creating fresh
-        manager_guard.begin_session_sidecar_replacement(session_id);
+        replace_dead_existing = true;
+    }
+    if replace_dead_existing {
+        manager_guard = replace_session_sidecar_after_drain(manager, manager_guard, session_id)?;
     }
 
     // Need to start a new Sidecar
@@ -879,8 +985,32 @@ fn create_new_session_sidecar<R: Runtime>(
     let script_path =
         find_server_script(app_handle).ok_or_else(|| "Server script not found".to_string())?;
 
-    // Allocate port
-    let port = manager_guard.allocate_port()?;
+    // Port probing has no lifecycle authority and may perform many socket
+    // binds. The per-Session lifecycle guard held by the caller serializes
+    // this Session while the shared manager lock is released.
+    let port_allocator = manager_guard.port_allocator();
+    drop(manager_guard);
+    let port = allocate_sidecar_port(&port_allocator)?;
+    let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
+    if expected_recovery_epoch.is_some_and(|epoch| {
+        !manager_guard.recovery_attempt_is_authorized(session_id, epoch, &owner)
+    }) {
+        return Err(RECOVERY_ATTEMPT_STALE.to_string());
+    }
+    if manager_guard.sidecars.contains_key(session_id) {
+        drop(manager_guard);
+        return ensure_session_sidecar_attempt(
+            app_handle,
+            manager,
+            session_id,
+            workspace_path,
+            owner,
+            runtime_override.map(str::to_string),
+            runtime_source_override.map(str::to_string),
+            attempt + 1,
+            expected_recovery_epoch,
+        );
+    }
 
     ulog_info!(
         "[sidecar] Starting SessionSidecar for session {} on port {}, owner: {:?}",
@@ -1117,9 +1247,11 @@ fn create_new_session_sidecar<R: Runtime>(
                     .get(session_id)
                     .map(|s| s.port == port)
                     .unwrap_or(false);
-                if port_matches {
-                    manager_guard.remove_sidecar(session_id);
-                }
+                let retired = port_matches
+                    .then(|| manager_guard.remove_sidecar(session_id))
+                    .flatten();
+                drop(manager_guard);
+                drop(retired);
                 return Err(e);
             }
             // Mark as healthy — verify port to avoid mutating a replacement sidecar
@@ -1172,7 +1304,7 @@ fn create_new_session_sidecar<R: Runtime>(
                 .get(session_id)
                 .map(|s| s.port == port)
                 .unwrap_or(false);
-            if port_matches {
+            let retired = if port_matches {
                 // Check exit status and mark crashed bun for fallback
                 #[cfg(target_os = "windows")]
                 if let Some(sidecar) = manager_guard.sidecars.get_mut(session_id) {
@@ -1181,13 +1313,16 @@ fn create_new_session_sidecar<R: Runtime>(
                     }
                 }
                 // Remove the failed sidecar (ours, not a replacement)
-                manager_guard.remove_sidecar(session_id);
+                manager_guard.remove_sidecar(session_id)
             } else {
                 ulog_warn!(
                     "[sidecar] Session {} sidecar replaced during wait_for_health (port {}), skipping removal",
                     session_id, port
                 );
-            }
+                None
+            };
+            drop(manager_guard);
+            drop(retired);
             Err(e)
         }
     }
@@ -1197,14 +1332,48 @@ fn create_new_session_sidecar<R: Runtime>(
 /// If this was the last owner, the Sidecar is stopped.
 ///
 /// Returns true if the Sidecar was stopped (no more owners).
+pub(crate) fn finish_session_owner_release(
+    manager: &ManagedSidecarManager,
+    release: SessionOwnerRelease,
+) -> Result<(bool, bool), String> {
+    let SessionOwnerRelease {
+        removed,
+        stopped,
+        drain,
+    } = release;
+    if let Some(drain) = drain {
+        // The exact generation remains manager-authoritative with admission
+        // closed while this waits. No global manager mutex is held here.
+        drain.wait();
+        let retired = {
+            // Owner removal already committed before the drain. Recovering a
+            // poisoned lock here is required to finish that same transition;
+            // returning an error would strand a half-retired Sidecar that no
+            // caller can safely roll back.
+            let mut manager_guard = manager
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            manager_guard.finish_unowned_session_retirement(&drain)
+        };
+        // SessionSidecar::drop terminates the already-drained process. Keep it
+        // outside the manager guard even though the second wait is immediate.
+        drop(retired);
+    }
+    Ok((removed, stopped))
+}
+
 pub fn release_session_sidecar(
     manager: &ManagedSidecarManager,
     session_id: &str,
     owner: &SidecarOwner,
 ) -> Result<bool, String> {
-    let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
-
-    let (removed, stopped) = manager_guard.remove_session_owner(session_id, owner);
+    let release = {
+        let mut manager_guard = manager
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        manager_guard.remove_session_owner(session_id, owner)
+    };
+    let (removed, stopped) = finish_session_owner_release(manager, release)?;
 
     if removed {
         if stopped {
@@ -1298,7 +1467,7 @@ pub async fn cmd_ensure_session_sidecar(
 /// Release an owner from a Session's Sidecar
 #[tauri::command]
 #[allow(non_snake_case)]
-pub fn cmd_release_session_sidecar(
+pub async fn cmd_release_session_sidecar(
     state: tauri::State<'_, ManagedSidecarManager>,
     sessionId: String,
     ownerType: String,
@@ -1312,7 +1481,12 @@ pub fn cmd_release_session_sidecar(
         _ => return Err(format!("Invalid owner type: {}", ownerType)),
     };
 
-    release_session_sidecar(&state, &sessionId, &owner)
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        release_session_sidecar(&manager, &sessionId, &owner)
+    })
+    .await
+    .map_err(|error| format!("Session owner release task failed: {error:?}"))?
 }
 
 /// Get the ready port for a Session's Sidecar.
@@ -1489,7 +1663,7 @@ pub async fn cmd_delete_session_if_unowned(
         if manager.session_has_unreleasable_owners(&sessionId, &releasable_tab_ids) {
             return Ok(SessionDeleteCommandResult::refused("in-use"));
         }
-        let (port, delete_authority) = {
+        let delete_authority = {
             let Some(instance) = manager.get_instance_mut(GLOBAL_SIDECAR_ID) else {
                 return Ok(SessionDeleteCommandResult::refused("authority-unavailable"));
             };
@@ -1499,24 +1673,33 @@ pub async fn cmd_delete_session_if_unowned(
             let Some(delete_authority) = instance.session_delete_authority.clone() else {
                 return Ok(SessionDeleteCommandResult::refused("authority-unavailable"));
             };
-            (instance.port, delete_authority)
+            delete_authority
         };
+        let delete_dispatch = match manager.acquire_global_dispatch() {
+            Ok(dispatch) => dispatch,
+            Err(_) => return Ok(SessionDeleteCommandResult::refused("authority-unavailable")),
+        };
+        drop(manager);
         let client = crate::local_http::blocking_builder()
             .timeout(Duration::from_secs(15))
             .build()
             .map_err(|error| format!("Failed to create local HTTP client: {error}"))?;
+        let delete_url = delete_dispatch.url_for_path(&format!("/sessions/{sessionId}"))?;
         let response = client
-            .delete(format!("http://127.0.0.1:{port}/sessions/{sessionId}"))
+            .delete(delete_url)
             .header(SESSION_DELETE_AUTHORITY_HEADER, delete_authority)
             .send()
             .map_err(|error| format!("Failed to delete session: {error}"))?;
         let status = response.status();
+        let body = response
+            .text()
+            .unwrap_or_else(|_| "<unreadable response>".to_string());
+        // The lease ends at response-body materialization, before any later
+        // owner release or Tauri/WebKit IPC delivery.
+        drop(delete_dispatch);
         let result = if status.is_success() {
             SessionDeleteCommandResult::deleted()
         } else {
-            let body = response
-                .text()
-                .unwrap_or_else(|_| "<unreadable response>".to_string());
             match status.as_u16() {
                 403 => return Ok(SessionDeleteCommandResult::refused("protected-session")),
                 404 => SessionDeleteCommandResult::refused("not-found"),
@@ -1532,8 +1715,15 @@ pub async fn cmd_delete_session_if_unowned(
         // Success and not-found are both terminal/idempotent outcomes. Release
         // only the App-authorized Tab owners after storage has reached that
         // terminal state; every refusal above leaves them untouched.
-        for tab_id in &releasable_tab_ids {
-            manager.release_tab_session(&sessionId, tab_id, false);
+        let releases = {
+            let mut manager = sidecars.lock().map_err(|error| error.to_string())?;
+            releasable_tab_ids
+                .iter()
+                .map(|tab_id| manager.release_tab_session(&sessionId, tab_id, false))
+                .collect::<Vec<_>>()
+        };
+        for release in releases {
+            finish_session_owner_release(&sidecars, release)?;
         }
         Ok(result)
     })
@@ -1553,8 +1743,17 @@ pub async fn cmd_release_tab_session(
 ) -> Result<bool, String> {
     let _lifecycle = acquire_session_lifecycle(&[&sessionId]).await;
     let has_persisted_owner = has_persisted_session_owner(&sessionId).await?;
-    let mut manager = state.lock().map_err(|error| error.to_string())?;
-    Ok(manager.release_tab_session(&sessionId, &tabId, has_persisted_owner))
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let release = {
+            let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
+            manager_guard.release_tab_session(&sessionId, &tabId, has_persisted_owner)
+        };
+        let (removed, stopped) = finish_session_owner_release(&manager, release)?;
+        Ok(removed && stopped)
+    })
+    .await
+    .map_err(|error| format!("Tab Session release task failed: {error:?}"))?
 }
 
 #[cfg(test)]

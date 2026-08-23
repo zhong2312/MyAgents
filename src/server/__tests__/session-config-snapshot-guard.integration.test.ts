@@ -32,11 +32,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // other SessionStore exports real so agent-session's import graph is intact.
 vi.mock('../SessionStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../SessionStore')>();
-  return { ...actual, getSessionMetadata: vi.fn() };
+  return { ...actual, getSessionMetadata: vi.fn(), updateSessionMetadata: vi.fn() };
 });
 
-import { getSessionMetadata } from '../SessionStore';
+import { getSessionMetadata, updateSessionMetadata } from '../SessionStore';
 import {
+  getSessionId,
   setSessionModel,
   getSessionModel,
   setSessionProviderEnv,
@@ -56,12 +57,15 @@ import { setQuerySession, setSessionProcessing } from '../builtin-session/lifecy
 import { resetProductSessionBinding } from '../session-engine/product-session-binding';
 
 const getMeta = vi.mocked(getSessionMetadata);
+const updateMeta = vi.mocked(updateSessionMetadata);
 
 beforeEach(() => {
   // This fixture exercises Session-sidecar setters directly, outside the real
   // bootstrap that normally establishes the product Session binding. Importing
   // shared server modules no longer mints that identity on Global's behalf.
   resetProductSessionBinding({ sessionId: 'snapshot-guard-session' });
+  resetConfigForTest();
+  updateMeta.mockResolvedValue(null);
 });
 
 function markSnapshotted(snapshotted: boolean): void {
@@ -73,41 +77,82 @@ function markSnapshotted(snapshotted: boolean): void {
 
 afterEach(() => {
   getMeta.mockReset();
+  updateMeta.mockReset();
+  resetConfigForTest();
 });
 
 describe('#327 — snapshot authority for IM config sync (setSessionModel)', () => {
-  it('ignores an IM-config-sync model override on a snapshotted session', () => {
+  it('ignores an IM-config-sync model override on a snapshotted session', async () => {
     markSnapshotted(true);
     const before = getSessionModel();
-    setSessionModel('astron-code-latest', { imConfigSync: true });
+    await setSessionModel('astron-code-latest', { imConfigSync: true });
     expect(getSessionModel()).toBe(before);
     expect(getSessionModel()).not.toBe('astron-code-latest');
   });
 
-  it('applies a desktop (non-imConfigSync) model push even on a snapshotted session', () => {
+  it('applies a desktop (non-imConfigSync) model push even on a snapshotted session', async () => {
     markSnapshotted(true);
     // Desktop picker is authoritative — it updates the snapshot itself, so its
     // push (no imConfigSync flag) MUST still reach the live session.
-    setSessionModel('desktop-authoritative-model', { imConfigSync: false });
+    await setSessionModel('desktop-authoritative-model', { imConfigSync: false });
     expect(getSessionModel()).toBe('desktop-authoritative-model');
   });
 
-  it('applies an IM-config-sync model override on a NON-snapshotted (pure IM) session', () => {
+  it('applies an IM-config-sync model override on a NON-snapshotted (pure IM) session', async () => {
     markSnapshotted(false);
-    setSessionModel('pure-im-live-follow-model', { imConfigSync: true });
+    await setSessionModel('pure-im-live-follow-model', { imConfigSync: true });
     expect(getSessionModel()).toBe('pure-im-live-follow-model');
   });
 });
 
 describe('#327 — snapshot authority for IM config sync (setSessionProviderEnv)', () => {
-  it('ignores a channel provider override on a snapshotted session (no live mutation)', () => {
+  it('ignores a channel provider override on a snapshotted session (no live mutation)', async () => {
     markSnapshotted(true);
     const before = getSessionProviderEnv();
-    setSessionProviderEnv({ baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com', apiKey: 'k' });
+    await setSessionProviderEnv({ baseUrl: 'https://maas-coding-api.cn-huabei-1.xf-yun.com', apiKey: 'k' });
     // The whole point: currentProviderEnv must be UNCHANGED — previously it was
     // mutated to Xunfei before the (restart-only) snapshot check.
     expect(getSessionProviderEnv()).toBe(before);
     expect(getSessionProviderEnv()?.baseUrl ?? '').not.toContain('xf-yun.com');
+  });
+
+  it('crosses provider history by replacing only the SDK identity (#541)', async () => {
+    const productSessionId = 'snapshot-guard-session';
+    const sourceSdkSessionId = '11111111-1111-4111-8111-111111111111';
+    const metadata = {
+      id: productSessionId,
+      runtime: 'builtin' as const,
+      sdkSessionId: sourceSdkSessionId,
+      unifiedSession: false,
+      agentDir: '/tmp/workspace',
+      title: 'Stable session',
+      createdAt: '2026-08-14T00:00:00.000Z',
+      lastActiveAt: '2026-08-14T00:00:00.000Z',
+    };
+    getMeta.mockReturnValue(metadata);
+    updateMeta.mockImplementation(async (id, updates, precondition) => {
+      expect(id).toBe(productSessionId);
+      expect(precondition?.(metadata)).toBe(true);
+      return { ...metadata, ...updates };
+    });
+
+    await setSessionProviderEnv({
+      baseUrl: 'https://third-party.example.com',
+      apiKey: 'test-only',
+    });
+
+    expect(getSessionId()).toBe(productSessionId);
+    expect(updateMeta).toHaveBeenCalledWith(
+      productSessionId,
+      expect.objectContaining({
+        sdkSessionId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+        unifiedSession: false,
+        forkFrom: undefined,
+      }),
+      expect.any(Function),
+    );
+    const updates = updateMeta.mock.calls[0]?.[1];
+    expect(updates?.sdkSessionId).not.toBe(sourceSdkSessionId);
   });
 });
 
