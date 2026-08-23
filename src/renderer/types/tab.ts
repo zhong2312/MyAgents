@@ -15,6 +15,7 @@ import type {
 export interface WorkbenchAgentSurfaceBootstrap {
     readonly title: string;
     readonly initialMessage: string;
+    readonly autoSendInitialMessage?: boolean;
     readonly systemPrompt?: string;
     readonly promptId?: string;
     readonly historyGroupPath?: readonly string[];
@@ -89,6 +90,8 @@ export interface InitialMessageCron {
  *      Chat input box so the user can retry without losing their draft. */
 export interface InitialMessage {
     text: string;
+    /** Explicitly disable launcher auto-send for open-only workbench surfaces. */
+    autoSendInitialMessage?: boolean;
     /** Internal workbench instructions; sent through the runtime system/developer channel. */
     systemPrompt?: string;
     images?: ImageAttachment[];

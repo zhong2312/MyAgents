@@ -4482,6 +4482,9 @@ export default function App() {
       const surfaceBootstrap = {
         title: request.title,
         initialMessage: request.initialMessage,
+        ...(request.autoSendInitialMessage === false
+          ? { autoSendInitialMessage: false }
+          : {}),
         ...(request.systemPrompt ? { systemPrompt: request.systemPrompt } : {}),
         ...(request.promptId ? { promptId: request.promptId } : {}),
         ...(historyGroupPath ? { historyGroupPath } : {}),
@@ -4690,6 +4693,8 @@ export default function App() {
       let initialMessage: InitialMessage | undefined;
       if (!resumeSession) {
         initialMessage = { text: request.initialMessage };
+        if (request.autoSendInitialMessage === false)
+          initialMessage.autoSendInitialMessage = false;
         if (request.systemPrompt)
           initialMessage.systemPrompt = request.systemPrompt;
         if (request.toolset) initialMessage.workbenchToolset = request.toolset;
@@ -5567,6 +5572,9 @@ export default function App() {
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: surface.bootstrap.title,
         initialMessage: surface.bootstrap.initialMessage,
+        ...(surface.bootstrap.autoSendInitialMessage === false
+          ? { autoSendInitialMessage: false }
+          : {}),
         ...(surface.bootstrap.systemPrompt
           ? { systemPrompt: surface.bootstrap.systemPrompt }
           : {}),

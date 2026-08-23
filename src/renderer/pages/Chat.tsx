@@ -1225,7 +1225,9 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, wor
   sessionIdRef.current = sessionId;
 
   // Refs for one-time project settings sync (see effect after provider change effect)
-  const hadInitialMessage = useRef(!!initialMessage);
+  const hadInitialMessage = useRef(
+    !!initialMessage && initialMessage.autoSendInitialMessage !== false,
+  );
   // For a launcher-handoff tab (has initialMessage), autoSend owns the INITIAL
   // MCP push — it pushes the user's per-session launcher selection, which may
   // differ from the workspace default. The mount MCP effect skips its initial
@@ -1747,6 +1749,13 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, wor
 
   useEffect(() => {
     if (!initialMessage) return;
+    if (initialMessage.autoSendInitialMessage === false) {
+      if (!initialMessageConsumedRef.current) {
+        initialMessageConsumedRef.current = true;
+        onInitialMessageConsumedRef.current?.();
+      }
+      return;
+    }
     // Wait for SSE connection (sidecar reachable) instead of non-pending sessionId.
     // The sessionId upgrades from pending only after the first message is processed,
     // but the first message IS the auto-send — so checking isPendingSessionId would deadlock.

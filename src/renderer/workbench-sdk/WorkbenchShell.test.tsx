@@ -167,6 +167,34 @@ describe("WorkbenchShell", () => {
     );
   });
 
+  it("opens the AI assistant without auto-sending an initial message", async () => {
+    const onOpenAgentSession = vi.fn(async () => undefined);
+    const registry = createWorkbenchRegistry([
+      defineWorkbench(manifest, async () => ({ default: () => null })),
+    ]);
+    render(
+      <WorkbenchShell
+        target={{ workbenchId: manifest.id, route: "overview" }}
+        workspacePath="C:\Work\Novel"
+        isActive
+        onNavigate={vi.fn()}
+        onOpenAgentSession={onOpenAgentSession}
+        registry={registry}
+      />,
+    );
+
+    const button = await screen.findByRole("button", { name: "打开 AI 助手" });
+    expect(button).toHaveTextContent("AI");
+    fireEvent.click(button);
+    expect(onOpenAgentSession).toHaveBeenCalledWith(
+      "C:\\Work\\Novel",
+      expect.objectContaining({
+        autoSendInitialMessage: false,
+        initialMessage: "",
+      }),
+    );
+  });
+
   it("routes one-shot AI cancellation through the MyAgents host", async () => {
     const onCancelAiRun = vi.fn(async () => undefined);
     const registry = createWorkbenchRegistry([

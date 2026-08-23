@@ -33,7 +33,6 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Route,
-  Sparkles,
   Settings,
   Users,
   Waypoints,
@@ -404,10 +403,11 @@ export default function WorkbenchShell({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `${workbenchName} · AI 助手`,
         promptId: `${workbenchId}.assistant`,
+        autoSendInitialMessage: false,
         systemPrompt: `你是“${workbenchName}”项目的通用 AI 助手。
 
 先确认作者当前要推进的目标，再结合工作台可用能力给出简洁、可执行的建议。不得擅自修改项目事实；需要写入时，先说明变更范围并等待作者确认。`,
-        initialMessage: `你正在协助作者处理“${workspaceName}”项目中的创作任务。先确认作者当前要推进的目标，再给出简洁、可执行的建议。`,
+        initialMessage: "",
         presentation: "dialog",
         conversationKey: `${workbenchId}.assistant`,
         historyGroupPath: [workbenchName, "AI 助手"],
@@ -421,7 +421,6 @@ export default function WorkbenchShell({
     manifest?.name,
     onOpenAgentSession,
     openAgentSession,
-    workspaceName,
   ]);
 
   if (!target) {
@@ -561,7 +560,7 @@ export default function WorkbenchShell({
                 {isOpeningProjectAssistant ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <Sparkles className="h-4 w-4" />
+                  <span className="text-xs font-semibold leading-none">AI</span>
                 )}
               </button>
             )}
