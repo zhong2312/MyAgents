@@ -53,10 +53,15 @@ import { isSubagentContainerTool } from '@/components/tools/toolBadgeConfig';
 import type { AgentStatusTodoSnapshot, Message, MessageAttachment, ContentBlock, ToolUseSimple, ToolInput, TaskStats, SubagentToolCall } from '@/types/chat';
 import type { ToolUse } from '@/types/stream';
 import type { SystemInitInfo } from '../../shared/types/system';
+import {
+    finalizeResidualSubagentCall,
+    type SubagentLifecycle,
+} from '../../shared/types/subagent-lifecycle';
 import type { ContextUsage } from '../../shared/types/context-usage';
 import type { TerminalReason } from '../../shared/terminalReason';
 import type { SlashCommand } from '../../shared/slashCommands';
 import type { LogEntry } from '@/types/log';
+import { applySubagentLifecycleToContent } from '@/components/tools/subagentActivity';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import { stripLeadingSystemReminder } from '../../shared/systemReminder';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
@@ -384,6 +389,56 @@ function applySubagentCallsUpdate(
         }
     };
     return { ...msg, content: updated };
+}
+
+export function applySubagentLifecycleUpdate(
+    msg: Message,
+    parentToolUseId: string,
+    lifecycle: SubagentLifecycle,
+): Message | null {
+    if (msg.role !== 'assistant' || typeof msg.content === 'string') return null;
+    const content = applySubagentLifecycleToContent(msg.content, parentToolUseId, lifecycle);
+    if (!content) return null;
+    if (content === msg.content) return msg;
+    return { ...msg, content };
+}
+
+export function finalizeMessageSubagentProjection(
+    message: Message,
+    rootStatus: 'completed' | 'stopped' | 'failed',
+    observedAt = Date.now(),
+): Message {
+    if (message.role !== 'assistant' || typeof message.content === 'string') return message;
+    let changed = false;
+    const fallbackStatus = rootStatus === 'stopped' ? 'interrupted' : 'failed';
+    const content = message.content.map(block => {
+        if (block.type !== 'tool_use' || !block.tool?.subagentLifecycle) return block;
+        const tool = block.tool;
+        let lifecycle: SubagentLifecycle = block.tool.subagentLifecycle;
+        if (lifecycle.status === 'running') {
+            lifecycle = {
+                status: fallbackStatus,
+                startedAt: lifecycle.startedAt,
+                finishedAt: Math.max(lifecycle.startedAt, observedAt),
+            };
+            changed = true;
+        }
+        const subagentCalls = tool.subagentCalls?.map(call => {
+            const finalized = finalizeResidualSubagentCall(call, fallbackStatus);
+            if (finalized !== call) changed = true;
+            return finalized;
+        });
+        if (lifecycle === tool.subagentLifecycle && subagentCalls === tool.subagentCalls) return block;
+        return {
+            ...block,
+            tool: {
+                ...tool,
+                subagentLifecycle: lifecycle,
+                subagentCalls,
+            },
+        };
+    });
+    return changed ? { ...message, content } : message;
 }
 
 function replaceFinalSubagentToolInput(
@@ -1273,8 +1328,8 @@ export default function TabProvider({
      * Local-only session swap for the IM-handover "新对话保留绑定" flow.
      *
      * The Rust handover (`cmd_session_new_with_surface_migration`) has already
-     * minted `newSessionId` on the running sidecar via `/api/im/session/new`
-     * AND rotated `peer_sessions[*].session_id` to it. Calling resetSession()
+     * migrated the exact Tab + Agent owners and minted `newSessionId` through
+     * the surface-migration endpoint. Calling resetSession()
      * here would post `/chat/reset` and mint a SECOND id — leaving the binding
      * pointing at the migrate-minted id while the tab adopts the second mint
      * (the v0.2.14 "tag disappears after 新对话" bug).
@@ -1855,6 +1910,8 @@ export default function TabProvider({
                 }
             }
 
+            finalMsg = finalizeMessageSubagentProjection(finalMsg, status);
+
             finalMsg = applyAssistantCompletionPatch(finalMsg, completionPatch);
 
             // Side effect inside updater — technically impure, but safe because:
@@ -2086,6 +2143,10 @@ export default function TabProvider({
                 seenIdsRef.current.add(msg.id);
 
                 if (isExplicitLiveEcho && msg.role === 'user') {
+                    // This is the authoritative admission signal for an IM turn.
+                    // A terminal error belongs to the previous turn and must not
+                    // remain beside the newly-admitted message/model selection.
+                    setAgentError(null);
                     projectAcceptedFirstUserTitle({
                         content: msg.content,
                         messageId: msg.id,
@@ -3383,6 +3444,28 @@ export default function TabProvider({
                 break;
             }
 
+            case 'chat:subagent-status': {
+                const payload = data as {
+                    parentToolUseId: string;
+                    lifecycle: SubagentLifecycle;
+                };
+                setStreamingMessage(prev => (
+                    prev ? applySubagentLifecycleUpdate(
+                        prev,
+                        payload.parentToolUseId,
+                        payload.lifecycle,
+                    ) ?? prev : prev
+                ));
+                setHistoryMessages(prev => prev.map(message => (
+                    applySubagentLifecycleUpdate(
+                        message,
+                        payload.parentToolUseId,
+                        payload.lifecycle,
+                    ) ?? message
+                )));
+                break;
+            }
+
             case 'chat:subagent-tool-attachment-update': {
                 // Cross-review (#0.2.29) — async fulfillment of a nested sub-agent
                 // tool's placeholder attachment (mirrors chat:tool-attachment-update
@@ -4157,6 +4240,11 @@ export default function TabProvider({
             const { sessionId: restartedSid, port } = event.payload;
             if (restartedSid === currentSessionIdRef.current) {
                 console.log(`[TabProvider ${tabId}] Session Sidecar restarted on port ${port}; invalidating tab URL cache`);
+                // The subscription survives a Rust-owned Sidecar replacement,
+                // but the live transport does not. Reflect that process epoch
+                // boundary until the first envelope from the replacement marks
+                // the connection live again; Tab config hydration keys off it.
+                setIsConnected(false);
                 resetTabServerUrlCache(tabId);
                 const restore = persistedRestoreLifecycleRef.current;
                 if (isPendingSessionId(restartedSid)) return;
@@ -4221,10 +4309,10 @@ export default function TabProvider({
         // Reset new session flag BEFORE sending - allow message replay to show user's message
         isNewSessionRef.current = false;
 
-        // Clear prior turn's terminal_reason banner — a new user send semantically
-        // invalidates the previous turn's outcome. Without this, banner stays visible
-        // while the new stream renders (and chat:message-complete no longer wipes it
-        // since that caused the external-runtime bug).
+        // A successfully claimed send starts a new turn. Clear both terminal
+        // projections here rather than on message-complete, where an error event
+        // can race the completion envelope and be hidden.
+        setAgentError(null);
         setLastTerminalReason(null);
         setSystemNotice(null);
 

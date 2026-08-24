@@ -5,6 +5,10 @@ describe('live revision event classification', () => {
   it('includes state-backed live events but excludes cold replay and transient banners', () => {
     expect(participatesInLiveRestore('chat:message-chunk', 'delta')).toBe(true);
     expect(participatesInLiveRestore('chat:message-stopped', null)).toBe(true);
+    expect(participatesInLiveRestore('chat:subagent-status', {
+      parentToolUseId: 'spawn-card',
+      lifecycle: { status: 'completed', startedAt: 1, finishedAt: 2 },
+    })).toBe(true);
     expect(participatesInLiveRestore('chat:message-replay', { replayKind: 'live-user-echo' })).toBe(true);
     expect(participatesInLiveRestore('chat:message-replay', { replayKind: 'cold-history' })).toBe(false);
     expect(participatesInLiveRestore('chat:message-error', 'temporary failure')).toBe(false);

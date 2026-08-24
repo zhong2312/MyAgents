@@ -9,13 +9,15 @@
  * we use decorations: false on Windows for custom title bar styling.
  */
 
-import { Minus, Square, X, RefreshCw, RotateCcw, Copy } from 'lucide-react';
+import { Minus, Square, X, RefreshCw, RotateCcw, Copy, Settings } from 'lucide-react';
 import { type CSSProperties, type ReactNode, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isTauri } from '@/api/tauriClient';
 
 interface CustomTitleBarProps {
     children: ReactNode;  // TabBar component
+    /** Opens the app-level MyAgents settings tab. */
+    onOpenSettings?: () => void;
     /** Whether an update is ready to install */
     updateReady?: boolean;
     /** Version of the update ready to install */
@@ -62,6 +64,7 @@ function TitlebarDragSpacer({ className = '', style }: { className?: string; sty
 
 export default function CustomTitleBar({
     children,
+    onOpenSettings,
     updateReady,
     updateVersion,
     updateInstalling,
@@ -75,6 +78,7 @@ export default function CustomTitleBar({
 }: CustomTitleBarProps) {
     const { t } = useTranslation('app');
     const [isMaximized, setIsMaximized] = useState(false);
+    const settingsShortcut = navigator.platform.toLowerCase().includes('mac') ? '⌘U' : 'Ctrl+U';
 
     // Listen for fullscreen changes
     useEffect(() => {
@@ -241,6 +245,22 @@ export default function CustomTitleBar({
                         >
                             <RefreshCw className={`h-3.5 w-3.5 ${updateInstalling ? 'animate-spin' : ''}`} />
                             <span>{updateInstalling ? t('titlebar.installing') : t('titlebar.restartUpdate')}</span>
+                        </button>
+                        <TitlebarDragSpacer className="w-1" />
+                    </>
+                )}
+                {onOpenSettings && (
+                    <>
+                        <button
+                            type="button"
+                            onClick={onOpenSettings}
+                            className="flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                            title={t('titlebar.settingsTitle', { shortcut: settingsShortcut })}
+                            aria-label={t('titlebar.settings')}
+                            data-no-drag
+                        >
+                            <Settings className="h-4 w-4" />
+                            <span className="text-sm font-medium">{t('titlebar.settings')}</span>
                         </button>
                         <TitlebarDragSpacer className="w-1" />
                     </>

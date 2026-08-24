@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { createNovelProjectInitialization } from "./projectInitialization";
-import { WORLD_SIMULATION_SCHEMA_VERSION } from "./worldSimulationV2Schema";
 
 describe("createNovelProjectInitialization", () => {
   it("builds a versioned Markdown and JSON project layout", () => {
@@ -47,8 +46,6 @@ describe("createNovelProjectInitialization", () => {
         "timeline/views/records",
         "timeline/branches/records",
         "timeline/events/records",
-        "simulation",
-        "simulation/runs",
         "research/notes",
         "research/trash",
         "knowledge",
@@ -76,8 +73,6 @@ describe("createNovelProjectInitialization", () => {
         "world/setting-library/settings.json",
         "world/locations/index.json",
         "timeline/index.json",
-        "simulation/scenarios.json",
-        "simulation/runs/index.json",
         "research/index.json",
         "research/trash/index.json",
         "knowledge/entities/index.json",
@@ -110,12 +105,7 @@ describe("createNovelProjectInitialization", () => {
           "prompts/installations/storyforge.prompt-library/content/",
         ),
       ),
-    ).toHaveLength(89);
-    expect(
-      paths.filter((path) =>
-        path.startsWith("prompts/installations/myagents.novel.base/content/"),
-      ),
-    ).toHaveLength(1);
+    ).toHaveLength(90);
     const soulIndex = JSON.parse(
       initialization.files.find(
         (file) => file.path === "characters/souls/index.json",
@@ -149,21 +139,6 @@ describe("createNovelProjectInitialization", () => {
     )) {
       expect(() => JSON.parse(file.content), file.path).not.toThrow();
     }
-    expect(
-      JSON.parse(
-        initialization.files.find(
-          (file) => file.path === "simulation/scenarios.json",
-        )?.content ?? "{}",
-      ).schemaVersion,
-    ).toBe(WORLD_SIMULATION_SCHEMA_VERSION);
-    expect(
-      JSON.parse(
-        initialization.files.find(
-          (file) => file.path === "simulation/runs/index.json",
-        )?.content ?? "{}",
-      ).schemaVersion,
-    ).toBe(WORLD_SIMULATION_SCHEMA_VERSION);
-
     const metadata = initialization.files.find(
       (file) => file.path === "novel.json",
     );

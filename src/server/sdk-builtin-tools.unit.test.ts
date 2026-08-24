@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { SDK_BUILTIN_TOOLS, SDK_EXCLUDED_BUILTIN_TOOLS } from './sdk-builtin-tools';
 
 describe('Claude Agent SDK builtin catalog', () => {
-  it('keeps the product-owned 27-tool catalog exact and duplicate-free', () => {
+  it('keeps the product-owned 26-tool catalog exact and duplicate-free', () => {
     expect(SDK_BUILTIN_TOOLS).toEqual([
       'Read',
       'Write',
@@ -20,7 +20,6 @@ describe('Claude Agent SDK builtin catalog', () => {
       'ExitPlanMode',
       'Skill',
       'Task',
-      'TaskOutput',
       'TaskStop',
       'SendMessage',
       'TaskCreate',
@@ -34,7 +33,8 @@ describe('Claude Agent SDK builtin catalog', () => {
       'EnterWorktree',
       'ExitWorktree',
     ]);
-    expect(new Set(SDK_BUILTIN_TOOLS).size).toBe(27);
+    expect(new Set(SDK_BUILTIN_TOOLS).size).toBe(26);
+    expect(SDK_BUILTIN_TOOLS).not.toContain('TaskOutput');
   });
 
   it('does not expose any product-excluded builtin', () => {

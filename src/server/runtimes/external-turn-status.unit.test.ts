@@ -4,6 +4,7 @@ import {
   classifyExternalTurnFailureCleanup,
   isExternalModelFallbackRestartNeeded,
   isSuccessfulExternalTurnCompletion,
+  summarizeExternalRuntimeMessageForLog,
 } from './external-session';
 
 describe('external turn completion status', () => {
@@ -33,5 +34,16 @@ describe('external turn completion status', () => {
     expect(classifyExternalTurnFailureCleanup({ status: 'interrupted' }, false)).toBe('stopped');
     expect(classifyExternalTurnFailureCleanup({ status: 'cancelled' }, false)).toBe('stopped');
     expect(classifyExternalTurnFailureCleanup({ status: 'failed' }, false)).toBe('error');
+  });
+
+  it('projects terminal provider errors into irreversible log metadata', () => {
+    const marker = 'EXTERNAL_TERMINAL_PRIVATE_MARKER';
+    const summary = summarizeExternalRuntimeMessageForLog(
+      `${marker} at /Users/private/provider-body`,
+    );
+
+    expect(summary).toMatch(/^\{"present":true,"chars":\d+,"hash":"[a-f0-9]{12}"\}$/);
+    expect(summary).not.toContain(marker);
+    expect(summary).not.toContain('/Users/private');
   });
 });

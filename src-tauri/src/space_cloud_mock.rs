@@ -7,7 +7,7 @@ use std::sync::{Mutex, OnceLock};
 use serde_json::{json, Value};
 
 use crate::space_cloud::{
-    LocalRegisteredAgent, LocalRegisteredAgentPublic, SpaceApiRequestInput,
+    LocalRegisteredAgent, LocalRegisteredAgentPublic, SpaceAccountPublic, SpaceApiRequestInput,
     SpaceDownloadAttachmentResult, SpaceGoalSubscriptionSummary, SpaceIssueSubscriptionRunMode,
     SpaceProcessDeliveryResult, SpaceRegisterAgentInput, SpaceSession, SpaceSessionPublic,
     SpaceSkillSourceMetaInput, SpaceUpdateProfileInput, SpaceUpdateRegisteredAgentAvatarInput,
@@ -149,18 +149,20 @@ pub fn is_enabled() -> bool {
 
 pub fn session() -> SpaceSession {
     let user = state().lock().expect("mock state poisoned").user.clone();
-    SpaceSession {
-        base_url: MOCK_BASE_URL.to_string(),
-        session_token: "mock-session-token".to_string(),
-        expires_at: None,
-        user,
-        account_plan: mock_account_plan(),
-        space: mock_space(),
-        membership: mock_membership(),
-        spaces: vec![mock_space_list_item()],
-        last_active_space_id: Some(MOCK_SPACE_ID.to_string()),
-        updated_at: "2026-06-24T09:00:00.000Z".to_string(),
-    }
+    SpaceSession::authenticated(
+        SpaceAccountPublic {
+            base_url: MOCK_BASE_URL.to_string(),
+            user,
+            account_plan: mock_account_plan(),
+            space: mock_space(),
+            membership: mock_membership(),
+            spaces: vec![mock_space_list_item()],
+            last_active_space_id: Some(MOCK_SPACE_ID.to_string()),
+            updated_at: "2026-06-24T09:00:00.000Z".to_string(),
+        },
+        "mock-session-token".to_string(),
+        None,
+    )
 }
 
 pub fn reset() {
@@ -794,18 +796,20 @@ pub fn update_profile(input: SpaceUpdateProfileInput) -> Result<SpaceSessionPubl
         .to_string();
     let user_avatar = state.user.get("avatarUrl").cloned().unwrap_or(Value::Null);
     patch_mock_user_summaries(&mut state, &user_id, &user_name, &user_avatar);
-    Ok(SpaceSession {
-        base_url: MOCK_BASE_URL.to_string(),
-        session_token: "mock-session-token".to_string(),
-        expires_at: None,
-        user: state.user.clone(),
-        account_plan: mock_account_plan(),
-        space: mock_space(),
-        membership: mock_membership(),
-        spaces: vec![mock_space_list_item()],
-        last_active_space_id: Some(MOCK_SPACE_ID.to_string()),
-        updated_at: chrono::Utc::now().to_rfc3339(),
-    }
+    Ok(SpaceSession::authenticated(
+        SpaceAccountPublic {
+            base_url: MOCK_BASE_URL.to_string(),
+            user: state.user.clone(),
+            account_plan: mock_account_plan(),
+            space: mock_space(),
+            membership: mock_membership(),
+            spaces: vec![mock_space_list_item()],
+            last_active_space_id: Some(MOCK_SPACE_ID.to_string()),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+        },
+        "mock-session-token".to_string(),
+        None,
+    )
     .into())
 }
 

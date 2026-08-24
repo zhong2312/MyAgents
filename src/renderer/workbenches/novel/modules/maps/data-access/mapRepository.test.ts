@@ -274,6 +274,74 @@ describe("createNovelMapRepository", () => {
     ).rejects.toThrow("File changed externally");
   });
 
+  it("保存时拒绝悬空的拓扑地图关联", async () => {
+    const storage = new NovelMemoryStorage({});
+    const repository = createNovelMapRepository(storage);
+    const created = await repository.createMap({
+      id: "map-topology",
+      name: "诸界拓扑",
+      projectionType: "multiverse",
+    });
+    const candidate: MapDocument = {
+      ...created.map,
+      features: [
+        {
+          id: "node-missing-map",
+          kind: "node",
+          name: "失效世界",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [{ x: 100, y: 100 }],
+          timeFrom: null,
+          timeTo: null,
+          props: { linkedMapId: "map-does-not-exist" },
+          description: "",
+        },
+      ],
+    };
+
+    await expect(repository.saveMap(created, candidate)).rejects.toThrow(
+      "关联了不存在的地图：map-does-not-exist",
+    );
+  });
+
+  it("删除地图前阻止仍被其他拓扑节点引用的目标", async () => {
+    const storage = new NovelMemoryStorage({});
+    const repository = createNovelMapRepository(storage);
+    await repository.createMap({
+      id: "map-target",
+      name: "目标世界",
+      projectionType: "continent",
+    });
+    const source = await repository.createMap({
+      id: "map-source",
+      name: "拓扑总图",
+      projectionType: "multiverse",
+    });
+    await repository.saveMap(source, {
+      ...source.map,
+      features: [
+        {
+          id: "node-target",
+          kind: "node",
+          name: "目标世界节点",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [{ x: 100, y: 100 }],
+          timeFrom: null,
+          timeTo: null,
+          props: { linkedMapId: "map-target" },
+          description: "",
+        },
+      ],
+    });
+
+    await expect(repository.deleteMap("map-target")).rejects.toThrow(
+      "拓扑节点“目标世界节点”仍然关联此地图",
+    );
+    expect((await repository.loadIndex()).index.maps).toHaveLength(2);
+  });
+
   it("旧地图缺少 scene 时仍可加载，并在首次绘制后持久化场景", async () => {
     const storage = new NovelMemoryStorage({});
     const repository = createNovelMapRepository(storage);

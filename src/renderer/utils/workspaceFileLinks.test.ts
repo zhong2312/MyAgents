@@ -199,4 +199,69 @@ describe('resolveFileActionTarget', () => {
   it('returns null for relative paths when no workspace is known', () => {
     expect(resolveFileActionTarget('src/App.tsx', null)).toBeNull();
   });
+
+  it('supports file URLs, encoded spaces and line suffixes through the shared resolver', () => {
+    expect(resolveFileActionTarget(
+      'file:///Users/zhihu/Documents/project/MyAgents/docs/My%20Note.md:7',
+      WORKSPACE,
+    )).toEqual({
+      scope: 'workspace',
+      path: 'docs/My Note.md',
+      initialLineNumber: 7,
+    });
+    expect(resolveFileActionTarget(
+      'file:///Users/zhihu/Documents/project/MyAgents/docs/Issue%231.md',
+      WORKSPACE,
+    )).toEqual({
+      scope: 'workspace',
+      path: 'docs/Issue#1.md',
+    });
+  });
+
+  it('preserves structured native filenames unless inline line parsing is requested', () => {
+    expect(resolveFileActionTarget('/tmp/report:12', WORKSPACE)).toEqual({
+      scope: 'local',
+      path: '/tmp/report:12',
+    });
+    expect(resolveFileActionTarget('/tmp/report#L12', WORKSPACE)).toEqual({
+      scope: 'local',
+      path: '/tmp/report#L12',
+    });
+    expect(resolveFileActionTarget('/tmp/report:12', WORKSPACE, { parseLineReference: true })).toEqual({
+      scope: 'local',
+      path: '/tmp/report',
+      initialLineNumber: 12,
+    });
+  });
+
+  it('recognizes Windows UNC paths as local targets', () => {
+    expect(resolveFileActionTarget('\\\\server\\share\\docs\\Guide.md', 'C:\\work')).toEqual({
+      scope: 'local',
+      path: '\\\\server\\share\\docs\\Guide.md',
+    });
+    expect(resolveFileActionTarget('file://server/share/docs/Guide.md', 'C:\\work')).toEqual({
+      scope: 'local',
+      path: '\\\\server\\share\\docs\\Guide.md',
+    });
+  });
+
+  it('normalizes Windows drive paths and drive file URLs across separator forms', () => {
+    const windowsWorkspace = 'C:\\Users\\me\\work';
+    expect(resolveFileActionTarget('C:\\Users\\me\\work\\docs\\Guide.md', windowsWorkspace)).toEqual({
+      scope: 'workspace',
+      path: 'docs/Guide.md',
+    });
+    expect(resolveFileActionTarget('C:/Users/me/work/docs/Guide.md', windowsWorkspace)).toEqual({
+      scope: 'workspace',
+      path: 'docs/Guide.md',
+    });
+    expect(resolveFileActionTarget('file:///C:/Users/me/work/docs/Guide.md', windowsWorkspace)).toEqual({
+      scope: 'workspace',
+      path: 'docs/Guide.md',
+    });
+    expect(resolveFileActionTarget('\\\\?\\C:\\Users\\me\\docs\\Guide.md', windowsWorkspace)).toEqual({
+      scope: 'local',
+      path: '\\\\?\\C:\\Users\\me\\docs\\Guide.md',
+    });
+  });
 });

@@ -23,6 +23,10 @@ import {
   computeCodexItemEventRoute,
   dispatchCodexItemEvent,
   flushResolvableCodexSubAgentEvents,
+  collectCodexSubAgentLifecycleEvents,
+  buildCodexReasoningDeltaEvents,
+  takeCodexReasoningStopEvents,
+  mapCodexChildTurnTerminalStatus,
 } from '../runtimes/codex';
 import type { UnifiedEvent } from '../runtimes/types';
 
@@ -255,6 +259,9 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
       codexV2InteractionDeliveryByCallId: new Map<string, 'queue-only' | 'trigger-turn'>(),
       exactUsageByTurn: new Map(),
       subAgentActivitySeenBeforeTurnStart: new Set<string>(),
+      subAgentLifecycleByThread: new Map(),
+      emittedSubAgentLifecycleByCard: new Map(),
+      openedReasoningTracesByItem: new Map(),
       subAgentInterruptsInFlight: new Map<string, Promise<void>>(),
       pendingMainTurnCompletion: null as UnifiedEvent[] | null,
       interruptPendingSubAgentTurns: false,
@@ -490,10 +497,12 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
       threadId: 'child',
       turn: { id: 'child-turn', status: 'completed' },
     }, () => {});
-    expect(Array.isArray(terminal) ? terminal.map((event) => event.kind) : []).toEqual([
-      'turn_complete',
-      'agent_plan_update',
-    ]);
+    expect(Array.isArray(terminal) ? terminal : []).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'subagent_lifecycle', status: 'running' }),
+      expect.objectContaining({ kind: 'subagent_lifecycle', status: 'completed' }),
+      expect.objectContaining({ kind: 'turn_complete', status: 'completed' }),
+      expect.objectContaining({ kind: 'agent_plan_update' }),
+    ]));
     expect(correlation.subThreadToCard.size).toBe(0);
     expect(correlation.pendingMainTurnCompletion).toBeNull();
   });
@@ -629,7 +638,7 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
     rejectInterrupt(new Error('already completed'));
     await interrupt;
 
-    expect(Array.isArray(terminal) ? terminal[0] : terminal).toMatchObject({
+    expect((Array.isArray(terminal) ? terminal : [terminal]).find(event => event?.kind === 'turn_complete')).toMatchObject({
       kind: 'turn_complete',
       status: 'completed',
     });
@@ -744,7 +753,7 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
     const terminal = parseNotification(correlation, 'thread/closed', {
       threadId: 'child',
     }, () => {});
-    expect(Array.isArray(terminal) ? terminal[0] : terminal).toMatchObject({
+    expect((Array.isArray(terminal) ? terminal : [terminal]).find(event => event?.kind === 'turn_complete')).toMatchObject({
       kind: 'turn_complete',
       status: 'completed',
     });
@@ -880,7 +889,7 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
       turn: { id: 'root-turn', status: 'completed' },
     }, () => {});
 
-    expect(Array.isArray(terminal) ? terminal[0] : terminal).toMatchObject({
+    expect((Array.isArray(terminal) ? terminal : [terminal]).find(event => event?.kind === 'turn_complete')).toMatchObject({
       kind: 'turn_complete',
       status: 'completed',
     });
@@ -1064,10 +1073,81 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
       turn: { id: 'followup-turn', status: 'completed' },
     }, () => {});
 
-    expect(Array.isArray(terminal) ? terminal[0] : terminal).toMatchObject({
+    expect((Array.isArray(terminal) ? terminal : [terminal]).find(event => event?.kind === 'turn_complete')).toMatchObject({
       kind: 'turn_complete',
       status: 'completed',
     });
+  });
+
+  it('rebinds a same-root completed child to the trigger-turn follow-up card', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.subThreadToCard.set('child', 'spawn-card');
+    correlation.subThreadToParent.set('child', 'main');
+    correlation.subAgentLifecycleByThread.set('child', {
+      startedAt: 100,
+      terminalStatus: 'completed',
+      finishedAt: 200,
+    });
+    correlation.emittedSubAgentLifecycleByCard.set('spawn-card', 'completed');
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    parseNotification(correlation, 'rawResponseItem/completed', {
+      threadId: 'main',
+      item: {
+        type: 'function_call',
+        name: 'followup_task',
+        call_id: 'followup-card',
+      },
+    }, () => {});
+    const activity = parseNotification(correlation, 'item/completed', {
+      threadId: 'main',
+      item: {
+        type: 'subAgentActivity',
+        id: 'followup-card',
+        kind: 'interacted',
+        agentThreadId: 'child',
+        agentPath: '/root/reviewer',
+      },
+    }, () => {});
+
+    expect(correlation.subThreadToCard.get('child')).toBe('followup-card');
+    expect(Array.isArray(activity) ? activity[0] : activity).toMatchObject({
+      kind: 'tool_use_start',
+      toolUseId: 'followup-card',
+    });
+    expect(Array.isArray(activity) ? activity[0] : activity).not.toHaveProperty('subAgent');
+    expect(collectCodexSubAgentLifecycleEvents(correlation)).toEqual([]);
+
+    parseNotification(correlation, 'turn/started', {
+      threadId: 'child',
+      turn: { id: 'followup-turn' },
+    }, () => {});
+    expect(collectCodexSubAgentLifecycleEvents(correlation)).toEqual([{
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'followup-card',
+      status: 'running',
+      observedAt: expect.any(Number),
+    }]);
+
+    parseNotification(correlation, 'turn/completed', {
+      threadId: 'child',
+      turn: { id: 'followup-turn', status: 'completed' },
+    }, () => {});
+    expect(collectCodexSubAgentLifecycleEvents(correlation)).toEqual([{
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'followup-card',
+      status: 'completed',
+      observedAt: expect.any(Number),
+    }]);
+    expect(correlation.emittedSubAgentLifecycleByCard.get('spawn-card')).toBe('completed');
   });
 
   it('restarts when an active child reaches the root terminal without its activity', () => {
@@ -1255,7 +1335,7 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
       threadId: 'legacy-child',
       turn: { id: 'legacy-child-turn', status: 'completed' },
     }, () => {});
-    expect(Array.isArray(terminal) ? terminal[0] : terminal).toMatchObject({
+    expect((Array.isArray(terminal) ? terminal : [terminal]).find(event => event?.kind === 'turn_complete')).toMatchObject({
       kind: 'turn_complete',
       status: 'completed',
     });
@@ -1713,5 +1793,117 @@ describe('isChildThreadGatedMethod', () => {
     expect(isChildThreadGatedMethod('item/started')).toBe(false);
     expect(isChildThreadGatedMethod('item/completed')).toBe(false);
     expect(isChildThreadGatedMethod('item/commandExecution/outputDelta')).toBe(false);
+  });
+});
+
+describe('Codex child lifecycle projection', () => {
+  function state() {
+    return {
+      threadId: 'main',
+      subThreadToCard: new Map([['child', 'spawn-card']]),
+      subThreadToParent: new Map([['child', 'main']]),
+      subThreadMeta: new Map<string, { nickname?: string; role?: string }>(),
+      activeSubAgentTurns: new Map<string, string | null>([['child', 'child-turn']]),
+      subAgentLifecycleByThread: new Map<string, {
+        startedAt: number;
+        terminalStatus?: 'completed' | 'failed' | 'interrupted';
+        finishedAt?: number;
+      }>([['child', { startedAt: 100 }]]),
+      emittedSubAgentLifecycleByCard: new Map(),
+    };
+  }
+
+  it('emits one running event and freezes the real owner terminal time', () => {
+    const projection = state();
+    expect(collectCodexSubAgentLifecycleEvents(projection)).toEqual([{
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'spawn-card',
+      status: 'running',
+      observedAt: 100,
+    }]);
+
+    projection.activeSubAgentTurns.clear();
+    projection.subAgentLifecycleByThread.set('child', {
+      startedAt: 100,
+      terminalStatus: 'completed',
+      finishedAt: 240,
+    });
+    expect(collectCodexSubAgentLifecycleEvents(projection)).toEqual([{
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'spawn-card',
+      status: 'completed',
+      observedAt: 240,
+    }]);
+    expect(collectCodexSubAgentLifecycleEvents(projection)).toEqual([]);
+  });
+
+  it('does not turn a spawn reservation into execution evidence before child lifecycle arrives', () => {
+    const projection = state();
+    projection.subAgentLifecycleByThread.clear();
+
+    expect(collectCodexSubAgentLifecycleEvents(projection)).toEqual([]);
+  });
+
+  it('holds the owner terminal until a descendant settles', () => {
+    const projection = state();
+    projection.subThreadToCard.set('grandchild', 'nested-card');
+    projection.subThreadToParent.set('grandchild', 'child');
+    projection.activeSubAgentTurns.set('grandchild', 'grandchild-turn');
+    projection.subAgentLifecycleByThread.set('child', {
+      startedAt: 100,
+      terminalStatus: 'completed',
+      finishedAt: 200,
+    });
+    projection.subAgentLifecycleByThread.set('grandchild', { startedAt: 120 });
+
+    expect(collectCodexSubAgentLifecycleEvents(projection).map(event => (
+      event.kind === 'subagent_lifecycle' ? event.status : null
+    ))).toEqual(['running']);
+    projection.activeSubAgentTurns.delete('child');
+    expect(collectCodexSubAgentLifecycleEvents(projection)).toEqual([]);
+    projection.activeSubAgentTurns.delete('grandchild');
+    projection.subAgentLifecycleByThread.set('grandchild', {
+      startedAt: 120,
+      terminalStatus: 'failed',
+      finishedAt: 220,
+    });
+    expect(collectCodexSubAgentLifecycleEvents(projection)).toEqual([{
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'spawn-card',
+      status: 'completed',
+      observedAt: 200,
+    }]);
+  });
+
+  it('maps native child outcomes without treating an abnormal close as success', () => {
+    expect(mapCodexChildTurnTerminalStatus({ status: 'completed' })).toBe('completed');
+    expect(mapCodexChildTurnTerminalStatus({ status: 'cancelled' })).toBe('interrupted');
+    expect(mapCodexChildTurnTerminalStatus({ status: 'failed' })).toBe('failed');
+    expect(mapCodexChildTurnTerminalStatus({})).toBe('failed');
+  });
+});
+
+describe('Codex reasoning trace identity', () => {
+  it('opens each summary/content trace lazily and closes those exact ids once', () => {
+    const state = { openedReasoningTracesByItem: new Map<string, Map<string, number>>() };
+    const params = { threadId: 'child', itemId: 'reasoning-1' };
+    expect(buildCodexReasoningDeltaEvents(state, params, {
+      index: 0,
+      suffix: 'summary:0',
+      text: 'summary',
+    })).toEqual([
+      { kind: 'thinking_start', index: 0, traceId: 'child::reasoning-1::summary:0' },
+      { kind: 'thinking_delta', index: 0, text: 'summary', traceId: 'child::reasoning-1::summary:0' },
+    ]);
+    expect(buildCodexReasoningDeltaEvents(state, params, {
+      index: 1,
+      suffix: 'content:1',
+      text: 'detail',
+    })).toHaveLength(2);
+    expect(takeCodexReasoningStopEvents(state, params, 'reasoning-1')).toEqual([
+      { kind: 'thinking_stop', index: 0, traceId: 'child::reasoning-1::summary:0' },
+      { kind: 'thinking_stop', index: 1, traceId: 'child::reasoning-1::content:1' },
+    ]);
+    expect(takeCodexReasoningStopEvents(state, params, 'reasoning-1')).toEqual([]);
   });
 });

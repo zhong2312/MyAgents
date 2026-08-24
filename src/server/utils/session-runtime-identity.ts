@@ -1,6 +1,11 @@
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import type { SessionMetadata } from '../types/session';
 
+/** Resolve the effective Claude SDK identity without treating it as resume proof. */
+export function resolveBuiltinSdkSessionId(meta: SessionMetadata): string | undefined {
+  return meta.sdkSessionId ?? (meta.unifiedSession ? meta.id : undefined);
+}
+
 /**
  * `managed-provider` is not a generic source: it is the ownership marker for
  * MyAgents-managed Codex. Older Agent-level runtime comparison could freeze an

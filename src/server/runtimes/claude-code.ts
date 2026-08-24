@@ -469,15 +469,15 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     const handle = new ClaudeCodeProcess(proc);
 
     // Send initial message via stdin (must happen before reading stdout to avoid deadlock)
-    if (options.initialMessage) {
-      const content = buildMessageContent(options.initialMessage, options.initialImages);
+    if (options.initialTurn) {
+      const content = buildMessageContent(options.initialTurn.message, options.initialTurn.images);
       const userMsg = {
         type: 'user',
         message: { role: 'user', content },
         parent_tool_use_id: null,
       };
       await handle.writeLine(JSON.stringify(userMsg));
-      console.log(`[claude-code] Initial message sent via stdin (${options.initialMessage.length} chars, ${options.initialImages?.length ?? 0} images)`);
+      console.log(`[claude-code] Initial message sent via stdin (${options.initialTurn.message.length} chars, ${options.initialTurn.images?.length ?? 0} images)`);
     }
 
     if (!proc.stdout || !proc.stderr) {

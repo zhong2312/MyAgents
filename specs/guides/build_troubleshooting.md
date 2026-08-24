@@ -324,6 +324,39 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
 ## Resources 缓存问题
 
+### 问题：macOS Intel 构建提示缺少 ONNX Runtime 源码构建工具
+
+ONNX Runtime 1.28 没有提供 macOS x64 预编译包，因此 `x86_64-apple-darwin` 的冷构建需要 Git、Python 3.8+、CMake 3.28+ 与 Apple Clang。`build_macos.sh` 会在 TypeScript/App 构建和 ONNX Runtime 源码下载前检查；直接运行 prepare 命令也会在 cache miss 后、文档资源网络动作前执行同一检查。固定 Rust toolchain 仍会先由现有 owner 准备，因为它既是 App 构建依赖，也是 prepared fingerprint 的输入。
+
+常见修复：
+
+```bash
+xcode-select --install
+brew install cmake python
+cmake --version
+python3 --version
+```
+
+构建脚本不会自动安装系统包。已经完整验证的 prepared cache 可以继续离线复用，不要求本机保留源码构建工具；失败前已经下载的 source cache 也会保留，安装缺失工具后直接重跑即可。
+
+### 问题：每次构建都重新下载或签名文档转换资源
+
+文档 Worker、OCR 模型、ONNX Runtime 与 PDFium 由统一入口准备：
+
+```bash
+npm run prepare:document-processing
+```
+
+原始下载和完整 prepared bundle 会持久缓存在 `src-tauri/resources/document-processing-cache/`，不受 `npm run clean` 删除 `src-tauri/target` 的影响。只要 App 版本、target、锁文件、相关 Rust 源码/toolchain 与签名配置都没有变化，重复 setup/dev/release build 应直接报告 `already ready`，不会再次下载、展开、编译或签名。提升 App 版本会产生新的 prepared fingerprint，但仍会复用已校验的内容寻址下载；首次升级还会自动迁移旧的 `src-tauri/target/document-processing-cache` 中校验有效的原始文件。
+
+验证机器是否具备完整离线缓存：
+
+```bash
+npm run prepare:document-processing -- --offline
+```
+
+离线模式出现 `Offline prepared document bundle cache miss` 说明当前 target/fingerprint 的完整整包从未成功准备；联网重新运行一次即可。缓存文件损坏时不会被静默复用；联网模式会重新准备，离线模式会明确失败。不要手动把 cache 目录复制进 `document-processing/v1`，后者只是 prepare owner 原子发布给 Tauri 的当前投影。
+
 ### 问题：配置更新后构建仍使用旧配置
 
 **原因**：

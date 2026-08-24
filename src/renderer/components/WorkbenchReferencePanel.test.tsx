@@ -13,7 +13,7 @@ vi.mock("@/components/directory-panel/WorkspaceSessionHistory", () => ({
   }: {
     agentDir: string;
     currentSessionId?: string | null;
-    onSelectSession?: (sessionId: string) => void;
+    onSelectSession?: (sessionId: string, title: string) => void;
     defaultExpanded?: boolean;
   }) => (
     <button
@@ -22,7 +22,7 @@ vi.mock("@/components/directory-panel/WorkspaceSessionHistory", () => ({
       data-agent-dir={agentDir}
       data-current-session-id={currentSessionId}
       data-default-expanded={defaultExpanded}
-      onClick={() => onSelectSession?.("session-history-1")}
+      onClick={() => onSelectSession?.("session-history-1", "历史会话")}
     >
       小说历史会话
     </button>
@@ -276,7 +276,7 @@ describe("WorkbenchReferencePanel", () => {
     );
     expect(history).toHaveAttribute("data-default-expanded", "false");
     history.click();
-    expect(onSelectSession).toHaveBeenCalledWith("session-history-1");
+    expect(onSelectSession).toHaveBeenCalledWith("session-history-1", "历史会话");
   });
 
   it("opens the complete prompt in a dialog and closes with Escape", () => {

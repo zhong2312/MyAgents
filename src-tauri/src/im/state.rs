@@ -346,17 +346,14 @@ pub(super) async fn ensure_sidecar_port_for_command<R: Runtime>(
     manager: &ManagedSidecarManager,
     health: &Arc<HealthManager>,
 ) -> Result<u16, String> {
-    let drift_result = {
-        let mut router_guard = router.lock().await;
-        router_guard
-            .check_and_reset_on_runtime_identity_drift(
-                session_key,
-                desired_runtime,
-                desired_runtime_source,
-                manager,
-            )
-            .await?
-    };
+    let drift_result = SessionRouter::check_and_reset_on_runtime_identity_drift(
+        router,
+        session_key,
+        desired_runtime,
+        desired_runtime_source,
+        manager,
+    )
+    .await?;
     if drift_result.is_some() {
         let _ =
             health::persist_router_active_sessions(health, router, "command-runtime-drift").await;
@@ -1064,6 +1061,9 @@ pub struct ImBotInstance {
     pub(super) shutdown_tx: watch::Sender<bool>,
     pub(crate) health: Arc<HealthManager>,
     pub(crate) router: Arc<Mutex<SessionRouter>>,
+    /// Existing per-peer enqueue fence, also reused by explicit binding
+    /// mutations so desktop migration cannot race `/new` or a normal IM turn.
+    pub(crate) peer_locks: PeerLocks,
     pub(crate) im_consumers: ImConsumers,
     /// Covers enqueue setup, heartbeat turns, cron hand-off, and terminal
     /// finalization across a proxy-triggered transport restart boundary.
@@ -1126,6 +1126,15 @@ pub struct ImBotInstance {
     // ===== Agent link (v0.1.41) =====
     /// Set after the bot is moved into an AgentInstance; the processing loop sees updates via Arc.
     pub(crate) agent_link: SharedAgentLink,
+}
+
+impl ImBotInstance {
+    /// Read-only lifecycle authority for projections outside the IM module.
+    /// Callers snapshot the Instant under the registry lock, then calculate
+    /// elapsed time without holding that lock across awaits.
+    pub(crate) fn started_at(&self) -> Instant {
+        self.started_at
+    }
 }
 
 // ===== Agent Architecture (v0.1.41) =====

@@ -1,9 +1,16 @@
 import { lstat, mkdir, readFile, readdir, stat, writeFile } from "fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "path";
 
+import {
+  atomicModifyProjects,
+  loadProjects,
+  type ProjectSlim,
+} from "../utils/admin-config";
+
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_BINARY_BYTES = 50 * 1024 * 1024;
 const MAX_BINARY_WRITE_BYTES = 12 * 1024 * 1024;
+const MAX_PROJECTS = 5_000;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -14,6 +21,20 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isProjectList(value: unknown): value is ProjectSlim[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_PROJECTS &&
+    value.every(
+      (project) =>
+        isRecord(project) &&
+        typeof project.id === "string" &&
+        typeof project.name === "string" &&
+        typeof project.path === "string",
+    )
+  );
 }
 
 function normalizeRelativePath(value: unknown, allowRoot = false): string {
@@ -109,10 +130,13 @@ export async function handleWorkbenchDevStorageRoute(
   request: Request,
   workspaceRoot: string,
 ): Promise<Response | null> {
-  if (
-    pathname !== "/api/workbench-dev-storage/request" ||
-    request.method !== "POST"
-  ) {
+  const isWorkspaceRequest =
+    pathname === "/api/workbench-dev-storage/request" &&
+    request.method === "POST";
+  const isProjectsRequest =
+    pathname === "/api/workbench-dev-storage/projects" &&
+    (request.method === "GET" || request.method === "PUT");
+  if (!isWorkspaceRequest && !isProjectsRequest) {
     return null;
   }
   if (process.env.MYAGENTS_BROWSER_DEV_STORAGE !== "1") {
@@ -120,6 +144,29 @@ export async function handleWorkbenchDevStorageRoute(
       { success: false, error: "Browser development storage is disabled." },
       404,
     );
+  }
+
+  if (isProjectsRequest) {
+    try {
+      if (request.method === "GET") {
+        return jsonResponse({ success: true, projects: loadProjects() });
+      }
+      const payload: unknown = await request.json();
+      const projects = isRecord(payload) ? payload.projects : undefined;
+      if (!isProjectList(projects)) {
+        throw new Error("projects must be a valid project list");
+      }
+      const savedProjects = await atomicModifyProjects(() => projects);
+      return jsonResponse({ success: true, projects: savedProjects });
+    } catch (error) {
+      return jsonResponse(
+        {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        400,
+      );
+    }
   }
 
   try {

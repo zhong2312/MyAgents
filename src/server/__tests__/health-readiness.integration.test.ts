@@ -16,6 +16,8 @@
  * unit-level test covers the wire behaviour by transitivity.
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   __resetReadinessForTests,
@@ -25,6 +27,7 @@ import {
   markDeferredInitFailed,
   markDeferredInitReady,
   resetDeferredInitForRetry,
+  runDeferredInit,
   setDeferredInitPhase,
 } from '../readiness-state';
 
@@ -37,6 +40,15 @@ afterEach(() => {
 });
 
 describe('Pattern 4 — readiness state machine', () => {
+  it('keeps DeferredInitState as the only startup gate and failure signal', () => {
+    const source = readFileSync(resolve('src/server/index.ts'), 'utf8');
+
+    expect(source).not.toContain('__myagentsDeferredInit');
+    expect(source).not.toContain('deferredInitPromise');
+    expect(source).not.toContain('resolveDeferredInit');
+    expect(source).not.toContain('rejectDeferredInit');
+  });
+
   it('(a) liveness is independent of init: /health/live (the bare 200 path) does not consult the state machine', () => {
     // The liveness endpoint in index.ts returns
     //   jsonResponse({ status: 'ok', timestamp: Date.now() })
@@ -83,6 +95,40 @@ describe('Pattern 4 — readiness state machine', () => {
     expect(r.body.phase).toBe('migration');
     expect(r.body.error).toContain('SQLITE_CORRUPT');
     expect(r.body.retryable).toBe(false);
+  });
+
+  it('classifies a controlled bootstrap exception without an unhandled rejection channel', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      setDeferredInitPhase('session-restore');
+      await runDeferredInit(
+        async () => {
+          throw new Error('controlled bootstrap failure');
+        },
+        () => 'session-restore',
+        () => {
+          // Even a diagnostic sink failure must not create a second terminal.
+          throw new Error('diagnostic sink failed');
+        },
+      );
+      await new Promise<void>(resolveImmediate => setImmediate(resolveImmediate));
+
+      expect(unhandled).toEqual([]);
+      expect(buildReadyResponseBody()).toEqual({
+        status: 503,
+        body: {
+          state: 'failed',
+          phase: 'session-restore',
+          error: 'controlled bootstrap failure',
+          retryable: false,
+        },
+      });
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   it('(d) route gate returns structured 503 during pending — never hangs, never 500s', () => {

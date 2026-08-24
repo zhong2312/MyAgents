@@ -21,19 +21,19 @@ const channel: ChannelSurface = {
 const mocks = {
   migrateChannelToNewSession: vi.fn(),
   adoptMigratedSession: vi.fn(),
-  resetSession: vi.fn(),
+  releaseMigratedTabOwner: vi.fn(),
   reportError: vi.fn(),
 };
 
-function runTransition(allowPlainResetFallback: boolean) {
+function runTransition() {
   return transitionChannelBoundSession({
     sessionId: 'old-session',
+    tabId: 'tab-1',
     boundChannel: channel,
     migrateChannelToNewSession: mocks.migrateChannelToNewSession,
     adoptMigratedSession: mocks.adoptMigratedSession,
-    resetSession: mocks.resetSession,
+    releaseMigratedTabOwner: mocks.releaseMigratedTabOwner,
     reportError: mocks.reportError,
-    allowPlainResetFallback,
   });
 }
 
@@ -42,45 +42,49 @@ describe('transitionChannelBoundSession', () => {
     await i18n.changeLanguage('zh-CN');
     vi.clearAllMocks();
     mocks.adoptMigratedSession.mockResolvedValue(true);
-    mocks.resetSession.mockResolvedValue(true);
+    mocks.releaseMigratedTabOwner.mockResolvedValue(false);
   });
 
   it('adopts the migrated channel session without plain reset', async () => {
     mocks.migrateChannelToNewSession.mockResolvedValue('new-session');
 
-    await expect(runTransition(false)).resolves.toBe(true);
+    await expect(runTransition()).resolves.toBe(true);
 
     expect(mocks.migrateChannelToNewSession).toHaveBeenCalledWith({
       oldSessionId: 'old-session',
+      tabId: 'tab-1',
       sessionKey: channel.sessionKey,
     });
     expect(mocks.adoptMigratedSession).toHaveBeenCalledWith('new-session', { sidecarAlreadyMigrated: true });
-    expect(mocks.resetSession).not.toHaveBeenCalled();
+    expect(mocks.releaseMigratedTabOwner).not.toHaveBeenCalled();
   });
 
-  it('allows plain reset fallback for normal new-session clicks', async () => {
+  it('fails closed when migration returns no target', async () => {
     mocks.migrateChannelToNewSession.mockResolvedValue(null);
 
-    await expect(runTransition(true)).resolves.toBe(true);
+    await expect(runTransition()).resolves.toBe(false);
 
-    expect(mocks.resetSession).toHaveBeenCalledTimes(1);
+    expect(mocks.adoptMigratedSession).not.toHaveBeenCalled();
+    expect(mocks.releaseMigratedTabOwner).not.toHaveBeenCalled();
+    expect(mocks.reportError).toHaveBeenCalledWith('Channel 重绑失败，已取消新对话');
   });
 
-  it('fails closed for delete preparation when migration returns null', async () => {
-    mocks.migrateChannelToNewSession.mockResolvedValue(null);
+  it('releases the migrated Tab owner when renderer adoption is refused', async () => {
+    mocks.migrateChannelToNewSession.mockResolvedValue('new-session');
+    mocks.adoptMigratedSession.mockResolvedValue(false);
 
-    await expect(runTransition(false)).resolves.toBe(false);
+    await expect(runTransition()).resolves.toBe(false);
 
-    expect(mocks.resetSession).not.toHaveBeenCalled();
-    expect(mocks.reportError).toHaveBeenCalledWith('Channel 重绑失败，已取消删除');
+    expect(mocks.releaseMigratedTabOwner).toHaveBeenCalledWith('new-session', 'tab-1');
+    expect(mocks.reportError).toHaveBeenCalledWith('Channel 重绑失败，已取消新对话');
   });
 
-  it('fails closed for delete preparation when migration throws', async () => {
+  it('fails closed without owner cleanup when migration never committed', async () => {
     mocks.migrateChannelToNewSession.mockRejectedValue(new Error('offline'));
 
-    await expect(runTransition(false)).resolves.toBe(false);
+    await expect(runTransition()).resolves.toBe(false);
 
-    expect(mocks.resetSession).not.toHaveBeenCalled();
-    expect(mocks.reportError).toHaveBeenCalledWith('Channel 重绑失败，已取消删除');
+    expect(mocks.releaseMigratedTabOwner).not.toHaveBeenCalled();
+    expect(mocks.reportError).toHaveBeenCalledWith('Channel 重绑失败，已取消新对话');
   });
 });

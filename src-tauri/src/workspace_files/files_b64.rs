@@ -22,8 +22,8 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 
 use super::path_safety::{
-    resolve_inside_workspace, sanitize_filename, validate_external_read_path,
-    validate_workspace_root,
+    reject_managed_global_skill_mutation, resolve_inside_workspace, sanitize_filename,
+    validate_external_read_path, validate_workspace_root,
 };
 
 /// Hard ceiling on collision retries — guards against pathological loops.
@@ -83,6 +83,7 @@ pub async fn cmd_workspace_import_files_b64(
     let workspace_root = validate_workspace_root(&workspace)?;
     let target_root =
         resolve_inside_workspace(&workspace_root, target_dir.as_deref().unwrap_or(""))?;
+    reject_managed_global_skill_mutation(&workspace_root, &target_root)?;
 
     tokio::fs::create_dir_all(&target_root)
         .await

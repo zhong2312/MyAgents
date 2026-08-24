@@ -229,6 +229,14 @@ for (const entry of entries) {
 }
 ```
 
+### 6. 在 secret-bearing transport 边界投影错误
+
+HTTP client 的错误文本通常携带完整请求 URL。若协议把凭据放在 URL 中
+（例如 Telegram Bot API 的 `/bot{token}/...`），不得把 `reqwest::Error`、
+`Request` 或完整 URL 直接格式化进产品错误和日志；transport owner 必须先投影为
+`timeout / connection / request / body / decode` 等无 URL 的有界类别。状态码和
+服务端返回的非敏感错误描述可按现有协议记录，但不能依赖事后日志正则来补救。
+
 ## 文件结构
 
 ```
@@ -297,14 +305,14 @@ for (const entry of entries) {
 
 | 层 | 位置 | 过滤内容 |
 |----|------|---------|
-| L1 | `sse.ts` `SILENT_EVENTS` + `claude-code.ts` NDJSON reader | 所有 SSE text/thinking/tool/subagent chunk 或 delta，以及 Claude Code raw stream-json（启用 partial messages）；不得按每 N 条采样或聚合后重新落盘，解析后的无正文 semantic summary 可记录 |
+| L1 | `sse.ts` `SILENT_EVENTS` + `claude-code.ts` NDJSON reader | 所有 SSE text/thinking/tool/subagent chunk 或 delta，以及 Claude Code raw stream-json（启用 partial messages）；不得按每 N 条采样或聚合后重新落盘。非静默 SSE 也只能记录事件名与整个 payload 的 `{present, chars, hash}` 不可逆摘要（replay 的受控 message ID/role/scope 语义投影除外），不能递归预览字段；解析后的无正文 semantic summary 可记录 |
 | L2 | `http-log-policy.ts` | `/health{,/live,/ready,/functional}`、`/api/unified-log`、`/api/session-state`、`/agent/dir`、`/sessions`、`/api/commands`、`/api/agents/enabled`、`/api/git/branch` 的成功轮询请求行 |
 | L3 | `sidecar/stdio.rs` + `sidecar/session_lifecycle.rs` / `sidecar/instances.rs` node-out 去重 | Node.js logger 初始化后停止 stdout 捕获（检测 `[Logger] Unified logging initialized`） |
 | L4 | `logger.ts` WARN/ERROR owner | patched `console.warn/error` 只由 Node logger 落盘，不再镜像到 stderr 形成 Rust 第二份副本 |
 | L5 | `bridge.rs` + Plugin Bridge compat logger | 过滤 heartbeat，以及插件逐次 `onPartialReply` debug snapshot |
 | L6 | `agent-session.ts` SDK message | 摘要替代完整 JSON（`type=assistant model=opus`） |
 
-Builtin / external runtime 在成功持久化边界输出 `[assistant-output]`：组合文本先归一化为单行，仅保留前 100 个 Unicode code point，并记录原始 `chars`。流式 delta 与 raw partial transport 永不进入统一日志；既有低频 SDK result 诊断仍可保留自身的有界字段摘要。Plugin Bridge 的 pending dispatch terminal 只记录 `canonical_final` 的 count/chars/hash，不再复制同一 IM 正文。Codex `thread/start|resume` 的 `developerInstructions` 属于敏感系统提示词，日志只允许 `{present, chars, hash}`，不得记录任何文本前缀；实际 RPC 参数保持原值。
+Builtin / external runtime 在成功持久化边界输出 `[assistant-output]`：组合文本先归一化为单行，仅保留前 100 个 Unicode code point，并记录原始 `chars`。流式 delta 与 raw partial transport 永不进入统一日志；既有低频 SDK result 诊断仍可保留自身的有界字段摘要。Plugin Bridge 的 pending dispatch terminal 只记录 `canonical_final` 的 count/chars/hash，不再复制同一 IM 正文。Codex `thread/start|resume` 的 `developerInstructions`、`cwd`、thread ID 属于敏感启动参数，notification 中的 command、file path、tool value、provider error 和 stderr 也属于敏感 runtime payload；日志只允许计数、稳定协议枚举与 `{present, chars, hash}`，不得记录任何文本前缀，实际 RPC/事件参数保持原值。`external-session.ts` 的 terminal/log owner 同样只能把 Runtime error 投影成这组不可逆 metadata 后写 `console`/perf trace；面向 Chat/IM 的原始 terminal error 仍沿既有产品事件传递，不能为了日志脱敏破坏用户错误契约。
 
 **时间戳格式**：本地时间 `YYYY-MM-DD HH:MM:SS.mmm`（非 UTC ISO 8601）。
 

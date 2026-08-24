@@ -4,6 +4,7 @@ import {
   generateFantasyMapCandidate,
   type FantasyPoint,
 } from "./fantasyMapGenerator";
+import type { MapGenerationPlan } from "./mapGenerationPlan";
 
 function pointInPolygon(
   candidate: FantasyPoint,
@@ -127,6 +128,21 @@ function pathsCross(
       );
     });
   });
+}
+
+function featureAnchor(points: readonly FantasyPoint[]): FantasyPoint {
+  if (points.length === 1) return points[0]!;
+  const center = points.reduce(
+    (result, candidate) => ({
+      x: result.x + candidate.x / points.length,
+      y: result.y + candidate.y / points.length,
+    }),
+    { x: 0, y: 0 },
+  );
+  return {
+    x: Math.round(center.x * 10) / 10,
+    y: Math.round(center.y * 10) / 10,
+  };
 }
 
 describe("Fantasy Map Generator", () => {
@@ -454,5 +470,583 @@ describe("Fantasy Map Generator", () => {
           ),
         ).toBe(true);
       });
+  });
+
+  it("将完整地图规划绑定到正式实体，并为未命中实体补充玄幻标记", () => {
+    const generated = generateFantasyMapCandidate({
+      seed: "generation-plan",
+      width: 1_600,
+      height: 1_000,
+      layerId: "layer-main",
+      regionCount: 5,
+      riverCount: 5,
+      plan: {
+        schemaVersion: 1,
+        styleId: "xuanhuan-zh",
+        worldSourceHash: "a".repeat(64),
+        scope: {
+          worldNodeId: "world",
+          nodeIds: ["world", "north"],
+          nodePath: "九州",
+          generationLevelTypeId: "continent",
+          generationLevelName: "大陆",
+        },
+        azgaar: {
+          heightmapTemplate: "east-asia",
+          landmassCount: 1,
+          regionCount: 5,
+          riverCount: 5,
+          states: 2,
+          cultures: 2,
+          religions: 1,
+          precipitation: 160,
+        },
+        spatialLayers: [
+          {
+            id: "layer-north",
+            name: "北荒",
+            worldNodeId: "north",
+            parentId: null,
+            levelTypeId: "region",
+            role: "region",
+            zone: "north",
+            climate: ["寒冷"],
+            terrain: ["雪岭"],
+            anchor: { x: 0.2, y: 0.2 },
+            notes: "雪山北境",
+          },
+          {
+            id: "layer-north-inner",
+            name: "北荒内域",
+            worldNodeId: "north",
+            parentId: "layer-north",
+            levelTypeId: "domain",
+            role: "domain",
+            zone: "north",
+            climate: ["严寒"],
+            terrain: ["冰原"],
+            anchor: { x: 0.92, y: 0.08 },
+            notes: "北荒腹地的冰原领地。",
+          },
+        ],
+        entities: [
+          {
+            id: "xuan-bing-palace",
+            entityRef: { kind: "setting", id: "setting-xuan-bing" },
+            name: "玄冰宫",
+            role: "sect",
+            spatialLayerId: "layer-north",
+            anchor: { x: 0.2, y: 0.2 },
+            preferredTerrain: ["雪山灵脉"],
+            importance: 5,
+            description: "北荒宗门",
+          },
+          {
+            id: "ancient-ruin",
+            entityRef: null,
+            name: "太古遗迹",
+            role: "ruin",
+            spatialLayerId: "layer-north",
+            anchor: { x: 0.28, y: 0.25 },
+            preferredTerrain: ["雪岭"],
+            importance: 2,
+            description: "遗迹",
+          },
+          {
+            id: "north-snow-ridge",
+            entityRef: null,
+            name: "北境雪岭",
+            role: "mountain",
+            spatialLayerId: "layer-north",
+            anchor: { x: 0.5, y: 0.34 },
+            preferredTerrain: ["雪山"],
+            importance: 5,
+            description: "北荒的主山脉。",
+          },
+          {
+            id: "heaven-river",
+            entityRef: null,
+            name: "天池河",
+            role: "waterway",
+            spatialLayerId: "layer-north",
+            anchor: { x: 0.46, y: 0.46 },
+            preferredTerrain: ["河谷"],
+            importance: 5,
+            description: "发源于北境雪岭的主河。",
+          },
+          {
+            id: "cloud-city",
+            entityRef: null,
+            name: "云中城",
+            role: "city",
+            spatialLayerId: "layer-north",
+            anchor: { x: 0.56, y: 0.56 },
+            preferredTerrain: ["河网", "平原"],
+            importance: 5,
+            description: "河道交通中心。",
+          },
+        ],
+        territories: [
+          {
+            id: "xuan-bing-domain",
+            factionRef: { kind: "faction", id: "xuan-bing-palace" },
+            name: "玄冰宫道域",
+            spatialLayerId: "layer-north",
+            anchor: { x: 0.24, y: 0.24 },
+            extent: 0.18,
+            boundaryStyle: "hatch",
+            importance: 5,
+            description: "玄冰宫镇守的北荒雪岭道域。",
+          },
+        ],
+        relations: [
+          {
+            fromId: "xuan-bing-palace",
+            toId: "layer-north",
+            type: "located-near",
+            description: "依托雪岭",
+          },
+          {
+            fromId: "heaven-river",
+            toId: "north-snow-ridge",
+            type: "originates-at",
+            description: "天池河发源于北境雪岭",
+          },
+          {
+            fromId: "heaven-river",
+            toId: "cloud-city",
+            type: "flows-through",
+            description: "天池河流经云中城",
+          },
+          {
+            fromId: "xuan-bing-domain",
+            toId: "layer-north",
+            type: "controls",
+            description: "玄冰宫道域位于北荒。",
+          },
+          {
+            fromId: "ancient-ruin",
+            toId: "north-snow-ridge",
+            type: "hidden-in",
+            description: "太古遗迹隐藏在北境雪岭。",
+          },
+          {
+            fromId: "xuan-bing-palace",
+            toId: "cloud-city",
+            type: "connected-to",
+            description: "玄冰宫灵脉与云中城相连。",
+          },
+          {
+            fromId: "xuan-bing-domain",
+            toId: "layer-north-inner",
+            type: "separated-by",
+            description: "玄冰宫道域与北荒内域由结界隔绝。",
+          },
+        ],
+        visual: {
+          paperPreset: "parchment",
+          labelHierarchy: "balanced",
+          borderStyle: "ink",
+          reliefStyle: "ink-peaks",
+          waterStyle: "indigo-ripple",
+          terrainMaterials: ["snow"],
+          ornaments: ["compass"],
+          notes: "玄幻舆图",
+        },
+        rationale: "北荒以雪岭为骨",
+      },
+    });
+    const palace = generated.features.find(
+      (feature) => feature.props.planEntityId === "xuan-bing-palace",
+    );
+    const ruin = generated.features.find(
+      (feature) => feature.props.planEntityId === "ancient-ruin",
+    );
+    const north = generated.features.find(
+      (feature) =>
+        feature.props.spatialLayerId === "layer-north" &&
+        feature.props.spatialRole === "region",
+    );
+    const northInner = generated.features.find(
+      (feature) => feature.props.spatialLayerId === "layer-north-inner",
+    );
+    const snowRidge = generated.features.find(
+      (feature) => feature.props.planEntityId === "north-snow-ridge",
+    );
+    const heavenRiver = generated.features.find(
+      (feature) => feature.props.planEntityId === "heaven-river",
+    );
+    const cloudCity = generated.features.find(
+      (feature) => feature.props.planEntityId === "cloud-city",
+    );
+    const territory = generated.features.find(
+      (feature) => feature.props.planTerritoryId === "xuan-bing-domain",
+    );
+    const connection = generated.features.find(
+      (feature) => feature.props.planRelationType === "connected-to",
+    );
+    const separation = generated.features.find(
+      (feature) => feature.props.planRelationType === "separated-by",
+    );
+    expect(palace?.entityRef).toEqual({
+      kind: "setting",
+      id: "setting-xuan-bing",
+    });
+    expect(north?.entityRef).toEqual({ kind: "setting", id: "north" });
+    expect(north?.props).toMatchObject({
+      worldNodeId: "north",
+      entityRefKind: "setting",
+      entityRefId: "north",
+    });
+    expect(palace?.props.component).toBe("faction-seat");
+    expect(palace?.props.spatialLayerId).toBe("layer-north");
+    expect(ruin?.props.component).toBe("ruins");
+    expect(palace?.props.planRelations).toContain("located-near");
+    expect(
+      Math.hypot(
+        (palace?.points[0]?.x ?? 0) -
+          (featureAnchor(north?.points ?? []).x ?? 0),
+        (palace?.points[0]?.y ?? 0) -
+          (featureAnchor(north?.points ?? []).y ?? 0),
+      ),
+    ).toBeLessThanOrEqual(40);
+    expect(
+      northInner?.points.every((item) =>
+        pointInPolygon(item, north?.points ?? []),
+      ),
+    ).toBe(true);
+    for (const plannedFeature of [
+      palace,
+      ruin,
+      snowRidge,
+      heavenRiver,
+      cloudCity,
+    ]) {
+      expect(plannedFeature).toBeDefined();
+      expect(
+        plannedFeature?.points.every((item) =>
+          pointInPolygon(item, north?.points ?? []),
+        ),
+      ).toBe(true);
+    }
+    expect(heavenRiver?.points[0]).toEqual(
+      featureAnchor(snowRidge?.points ?? []),
+    );
+    expect(heavenRiver?.points).toContainEqual(cloudCity?.points[0]);
+    expect(territory).toMatchObject({
+      kind: "area",
+      name: "玄冰宫道域",
+      entityRef: { kind: "faction", id: "xuan-bing-palace" },
+      props: {
+        planTerritoryId: "xuan-bing-domain",
+        entityRole: "territory",
+        entityRefKind: "faction",
+        entityRefId: "xuan-bing-palace",
+        boundaryStyle: "hatch",
+      },
+    });
+    expect(territory?.points.length).toBeGreaterThanOrEqual(3);
+    expect(territory?.props.planRelations).toContain("controls");
+    expect(connection).toMatchObject({
+      kind: "route",
+      name: "灵脉连接",
+      props: {
+        planRelationType: "connected-to",
+        planRelationFromId: "xuan-bing-palace",
+        planRelationToId: "cloud-city",
+        routeStyle: "ley-line",
+      },
+    });
+    expect(connection?.points[0]).toEqual(featureAnchor(palace?.points ?? []));
+    expect(connection?.points.at(-1)).toEqual(
+      featureAnchor(cloudCity?.points ?? []),
+    );
+    expect(separation).toMatchObject({
+      kind: "route",
+      name: "隔绝结界",
+      props: {
+        planRelationType: "separated-by",
+        planRelationFromId: "xuan-bing-domain",
+        planRelationToId: "layer-north-inner",
+        routeStyle: "barrier",
+      },
+    });
+    expect(
+      Math.hypot(
+        (ruin?.points[0]?.x ?? 0) -
+          (featureAnchor(snowRidge?.points ?? []).x ?? 0),
+        (ruin?.points[0]?.y ?? 0) -
+          (featureAnchor(snowRidge?.points ?? []).y ?? 0),
+      ),
+    ).toBeLessThanOrEqual(40);
+  });
+
+  it("为结构性规划角色生成正确几何，并避免错误的地标印章", () => {
+    const plan: MapGenerationPlan = {
+      schemaVersion: 1,
+      styleId: "xuanhuan-zh",
+      worldSourceHash: "b".repeat(64),
+      scope: {
+        worldNodeId: "world",
+        nodeIds: ["world"],
+        nodePath: "九州",
+        generationLevelTypeId: "continent",
+        generationLevelName: "大陆",
+      },
+      azgaar: {
+        heightmapTemplate: "east-asia",
+        landmassCount: 1,
+        regionCount: 3,
+        riverCount: 2,
+        states: 2,
+        cultures: 1,
+        religions: 0,
+        precipitation: 160,
+      },
+      spatialLayers: [
+        {
+          id: "layer-world",
+          name: "九州",
+          worldNodeId: "world",
+          parentId: null,
+          levelTypeId: "continent",
+          role: "realm",
+          zone: "center",
+          climate: [],
+          terrain: ["平原"],
+          anchor: { x: 0.5, y: 0.5 },
+          notes: "世界主陆块。",
+        },
+      ],
+      entities: [
+        {
+          id: "planned-realm",
+          entityRef: null,
+          name: "中州",
+          role: "realm",
+          spatialLayerId: "layer-world",
+          anchor: { x: 0.5, y: 0.5 },
+          preferredTerrain: ["平原"],
+          importance: 5,
+          description: "中央大域。",
+        },
+        {
+          id: "planned-lake",
+          entityRef: null,
+          name: "太虚湖",
+          role: "lake",
+          spatialLayerId: "layer-world",
+          anchor: { x: 0.42, y: 0.42 },
+          preferredTerrain: ["湖泊"],
+          importance: 3,
+          description: "内陆湖泊。",
+        },
+        {
+          id: "planned-biome",
+          entityRef: null,
+          name: "苍梧林海",
+          role: "biome",
+          spatialLayerId: "layer-world",
+          anchor: { x: 0.62, y: 0.56 },
+          preferredTerrain: ["森林"],
+          importance: 3,
+          description: "连续森林地貌。",
+        },
+        {
+          id: "planned-vein",
+          entityRef: null,
+          name: "北境龙脉",
+          role: "vein",
+          spatialLayerId: "layer-world",
+          anchor: { x: 0.35, y: 0.3 },
+          preferredTerrain: ["山脉"],
+          importance: 4,
+          description: "贯穿北境的灵脉。",
+        },
+        {
+          id: "planned-city",
+          entityRef: null,
+          name: "天京",
+          role: "capital",
+          spatialLayerId: "layer-world",
+          anchor: { x: 0.55, y: 0.5 },
+          preferredTerrain: ["平原"],
+          importance: 5,
+          description: "中央都城。",
+        },
+      ],
+      relations: [],
+      visual: {
+        paperPreset: "parchment",
+        labelHierarchy: "balanced",
+        borderStyle: "ink",
+        reliefStyle: "ink-peaks",
+        waterStyle: "indigo-ripple",
+        terrainMaterials: ["forest"],
+        ornaments: [],
+        notes: "结构角色投影测试。",
+      },
+      rationale: "验证结构几何与地标素材职责分离。",
+    };
+    const generated = generateFantasyMapCandidate({
+      seed: "structural-plan-roles",
+      width: 1_600,
+      height: 1_000,
+      layerId: "layer-main",
+      regionCount: 3,
+      riverCount: 2,
+      plan,
+    });
+    const featureFor = (id: string) =>
+      generated.features.find((feature) => feature.props.planEntityId === id);
+
+    expect(featureFor("planned-realm")).toMatchObject({
+      kind: "area",
+      props: { entityRole: "realm" },
+    });
+    expect(featureFor("planned-lake")).toMatchObject({
+      kind: "area",
+      props: { entityRole: "lake", terrain: "lake" },
+    });
+    expect(featureFor("planned-biome")).toMatchObject({
+      kind: "area",
+      props: { entityRole: "biome", terrain: "biome" },
+    });
+    expect(featureFor("planned-vein")).toMatchObject({
+      kind: "route",
+      props: { entityRole: "vein", terrain: "mountain" },
+    });
+    expect(featureFor("planned-vein")?.points.length).toBeGreaterThanOrEqual(2);
+    expect(featureFor("planned-city")).toMatchObject({
+      kind: "marker",
+      props: { entityRole: "capital", component: "capital" },
+    });
+    expect(featureFor("planned-realm")?.props.component).toBeUndefined();
+    expect(featureFor("planned-lake")?.props.component).toBeUndefined();
+    expect(featureFor("planned-biome")?.props.component).toBeUndefined();
+  });
+
+  it("没有显式锚点时按空间区域语义落位，并让子实体继承区域方位", () => {
+    const plan: MapGenerationPlan = {
+      schemaVersion: 1,
+      styleId: "xuanhuan-zh",
+      worldSourceHash: "c".repeat(64),
+      scope: {
+        worldNodeId: "world",
+        nodeIds: ["world", "north", "south"],
+        nodePath: "九州",
+        generationLevelTypeId: "continent",
+        generationLevelName: "大陆",
+      },
+      azgaar: {
+        heightmapTemplate: "east-asia",
+        landmassCount: 1,
+        regionCount: 4,
+        riverCount: 2,
+        states: 2,
+        cultures: 1,
+        religions: 0,
+        precipitation: 160,
+      },
+      spatialLayers: [
+        {
+          id: "layer-north",
+          name: "北荒",
+          worldNodeId: "north",
+          parentId: null,
+          levelTypeId: "region",
+          role: "region",
+          zone: "north",
+          climate: ["严寒"],
+          terrain: ["雪岭"],
+          anchor: null,
+          notes: "北境寒冷。",
+        },
+        {
+          id: "layer-south",
+          name: "南疆",
+          worldNodeId: "south",
+          parentId: null,
+          levelTypeId: "region",
+          role: "region",
+          zone: "south",
+          climate: ["湿热"],
+          terrain: ["雨林"],
+          anchor: null,
+          notes: "南疆湿热。",
+        },
+      ],
+      entities: [
+        {
+          id: "north-sect",
+          entityRef: { kind: "setting", id: "ice-palace" },
+          name: "玄冰宫",
+          role: "sect",
+          spatialLayerId: "layer-north",
+          anchor: null,
+          preferredTerrain: ["雪岭"],
+          importance: 4,
+          description: "北境宗门。",
+        },
+        {
+          id: "south-city",
+          entityRef: { kind: "location", id: "rain-city" },
+          name: "南疆城",
+          role: "city",
+          spatialLayerId: "layer-south",
+          anchor: null,
+          preferredTerrain: ["雨林"],
+          importance: 4,
+          description: "南疆城池。",
+        },
+      ],
+      relations: [],
+      visual: {
+        paperPreset: "parchment",
+        labelHierarchy: "balanced",
+        borderStyle: "ink",
+        reliefStyle: "ink-peaks",
+        waterStyle: "indigo-ripple",
+        terrainMaterials: ["snow", "forest"],
+        ornaments: [],
+        notes: "语义锚点测试。",
+      },
+      rationale: "北荒与南疆没有坐标时仍需按空间语义分区。",
+    };
+    const input = {
+      seed: "semantic-zone-fallback",
+      width: 1_600,
+      height: 1_000,
+      layerId: "layer-main",
+      regionCount: 4,
+      riverCount: 2,
+      plan,
+    } as const;
+    const generated = generateFantasyMapCandidate(input);
+    const repeated = generateFantasyMapCandidate(input);
+    const featureFor = (id: string) =>
+      generated.features.find((feature) => feature.props.planEntityId === id);
+    const north = generated.features.find(
+      (feature) => feature.props.spatialLayerId === "layer-north",
+    );
+    const south = generated.features.find(
+      (feature) => feature.props.spatialLayerId === "layer-south",
+    );
+    const northSect = featureFor("north-sect");
+    const southCity = featureFor("south-city");
+
+    expect(north).toBeDefined();
+    expect(south).toBeDefined();
+    expect(northSect).toBeDefined();
+    expect(southCity).toBeDefined();
+    expect(north?.props.terrainMaterial).toBe("snow");
+    expect(south?.props.terrainMaterial).toBe("forest");
+    expect(featureAnchor(north?.points ?? []).y).toBeLessThan(
+      featureAnchor(south?.points ?? []).y,
+    );
+    expect(featureAnchor(northSect?.points ?? []).y).toBeLessThan(
+      featureAnchor(southCity?.points ?? []).y,
+    );
+    expect(generated).toEqual(repeated);
   });
 });

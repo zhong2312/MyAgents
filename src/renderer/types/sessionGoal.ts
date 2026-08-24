@@ -1,9 +1,20 @@
+import type { RuntimeType } from '@/../shared/types/runtime';
+
 export type GoalStatus = 'active' | 'paused' | 'complete' | 'blocked' | 'canceled';
 
 export interface GoalEndConditions {
   deadline?: string;
   maxExecutions?: number;
   aiCanExit: boolean;
+}
+
+export interface SessionGoalDraftConfig {
+  taskKind: 'goal';
+  prompt: string;
+  endConditions: GoalEndConditions;
+  notifyEnabled: boolean;
+  permissionMode?: string;
+  runtime?: RuntimeType;
 }
 
 export interface SessionGoalConfig {

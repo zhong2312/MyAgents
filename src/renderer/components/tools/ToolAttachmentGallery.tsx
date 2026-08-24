@@ -15,9 +15,10 @@
  * Kind dispatch is intentionally small; new kinds slot into the switch.
  */
 
-import ToolImageAttachment from './ToolImageAttachment';
-import ToolAudioAttachment from './ToolAudioAttachment';
+import { FileIcon } from '@/components/file-icon';
 import type { ToolAttachment } from '../../../shared/types/tool-attachment';
+import ToolAudioAttachment from './ToolAudioAttachment';
+import ToolImageAttachment from './ToolImageAttachment';
 
 interface Props {
   attachments: ToolAttachment[];
@@ -30,6 +31,7 @@ export default function ToolAttachmentGallery({ attachments }: Props) {
     <div className="mt-2 flex flex-wrap gap-2">
       {attachments.map((a, idx) => {
         const key = a.pendingId || a.refPath || `att-${idx}`;
+        const fileName = attachmentFileName(a);
         switch (a.kind) {
           case 'image':
             return <ToolImageAttachment key={key} attachment={a} />;
@@ -43,14 +45,28 @@ export default function ToolAttachmentGallery({ attachments }: Props) {
             return (
               <div
                 key={key}
-                className="rounded border border-[var(--line)] bg-[var(--paper-inset)]/30 px-3 py-2 text-xs text-[var(--ink-secondary)]"
+                className="flex min-w-56 items-start gap-2.5 rounded border border-[var(--line)] bg-[var(--paper-inset)]/30 px-3 py-2 text-xs text-[var(--ink-secondary)]"
               >
-                <div className="font-medium">{a.mimeType}</div>
-                {a.caption ? <div className="mt-1 line-clamp-2 text-[var(--ink-muted)]">{a.caption}</div> : null}
+                <FileIcon name={fileName} size="regular" />
+                <div className="min-w-0">
+                  <div className="truncate font-medium" title={fileName}>{fileName}</div>
+                  <div className="truncate text-[var(--ink-muted)]">{a.mimeType}</div>
+                  {a.caption ? <div className="mt-1 line-clamp-2 text-[var(--ink-muted)]">{a.caption}</div> : null}
+                </div>
               </div>
             );
         }
       })}
     </div>
   );
+}
+
+function attachmentFileName(attachment: ToolAttachment): string {
+  const path = attachment.sourcePath || attachment.savedPath || attachment.refPath;
+  const rawName = path.split(/[/\\]/).pop() || attachment.mimeType;
+  try {
+    return decodeURIComponent(rawName);
+  } catch {
+    return rawName;
+  }
 }

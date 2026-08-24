@@ -9,6 +9,7 @@ import {
   isActiveSearchMatch,
   mergeExpandedFilesAfterRefresh,
   normalizeFileSearchHits,
+  normalizeFolderSearchHits,
   normalizeWorkspaceSearchPath,
   parentDirectoryPath,
 } from './workspaceSearchNavigation';
@@ -57,6 +58,9 @@ describe('workspace search navigation helpers', () => {
       hit('src\\server\\title-generator.ts', [12]),
     ]);
     expect(normalized.path).toBe('src/server/title-generator.ts');
+    expect(normalizeFolderSearchHits([
+      { path: 'src\\server', name: 'server' },
+    ])[0].path).toBe('src/server');
   });
 
   it('returns the first content match line when available', () => {
@@ -64,21 +68,17 @@ describe('workspace search navigation helpers', () => {
     expect(firstMatchLine(hit('title-only.md'))).toBeUndefined();
   });
 
-  it('defaults new query results to expanded', () => {
-    expect([...defaultExpandedFilesForHits([hit('a.md'), hit('b.md')])]).toEqual([
-      'a.md',
-      'b.md',
-    ]);
+  it('defaults new query results to the two-line compact state', () => {
+    expect([...defaultExpandedFilesForHits([hit('a.md'), hit('b.md')])]).toEqual([]);
   });
 
-  it('preserves manual collapsed state across refresh while expanding new hits', () => {
+  it('preserves manual expanded state across refresh while keeping new hits compact', () => {
     const previousHits = [hit('a.md'), hit('b.md')];
     const previousExpanded = new Set(['a.md']);
     const nextHits = [hit('a.md'), hit('b.md'), hit('c.md')];
 
     expect([...mergeExpandedFilesAfterRefresh(previousExpanded, previousHits, nextHits)]).toEqual([
       'a.md',
-      'c.md',
     ]);
   });
 

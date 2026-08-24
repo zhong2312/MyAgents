@@ -20,6 +20,13 @@ import {
 import { smoothMapPath } from "../business/mapHydrography";
 import { getMapTerrainMaterialPreset } from "../business/mapTerrainMaterials";
 import { mapArtworkStampRenderSize } from "../business/mapArtworkTransform";
+import {
+  getMapLabelFrameStyle,
+  getMapLabelStyle,
+  getMapLabelTextDimensions,
+  mapLabelLines,
+  resolveMapLabelPlacements,
+} from "../business/mapLabels";
 import { renderMapDocumentToCanvas } from "./mapSceneExporter";
 import { isMapFeatureFreeformArea } from "../entities/mapSchema";
 import type {
@@ -193,6 +200,7 @@ function PreviewScene({ map }: { readonly map: MapDocument }) {
 }
 
 function PreviewFeatures({ map }: { readonly map: MapDocument }) {
+  const placements = resolveMapLabelPlacements(map.features);
   return (
     <>
       {map.features.map((feature) => {
@@ -207,7 +215,8 @@ function PreviewFeatures({ map }: { readonly map: MapDocument }) {
           feature.kind === "marker" ||
           feature.kind === "label" ||
           feature.kind === "node";
-        const anchor = featureLabelAnchor(feature);
+        const placement = placements.get(feature.id);
+        const anchor = placement?.layout.anchor ?? featureLabelAnchor(feature);
         const markerAsset =
           feature.kind === "marker"
             ? getMapArtworkStampAsset(feature.props.component ?? "")
@@ -231,7 +240,25 @@ function PreviewFeatures({ map }: { readonly map: MapDocument }) {
           ? (markerWidth * markerVariant.height) / markerVariant.width
           : 0;
         const showLabel =
-          feature.kind === "label" || feature.props.showLabel === "true";
+          (feature.kind === "label" || feature.props.showLabel === "true") &&
+          placement?.visible !== false;
+        const labelStyle = showLabel ? getMapLabelStyle(feature) : null;
+        const labelFrame = labelStyle
+          ? getMapLabelFrameStyle(labelStyle)
+          : null;
+        const labelDimensions = labelStyle
+          ? getMapLabelTextDimensions(feature.name, labelStyle)
+          : null;
+        const labelLines = labelStyle
+          ? mapLabelLines(feature.name, labelStyle)
+          : [];
+        const labelAnchor = anchor ?? { x: 0, y: 0 };
+        const labelLineHeight = (labelStyle?.fontSize ?? 14) * 1.15;
+        const labelFirstLineY =
+          labelAnchor.y - (labelLineHeight * (labelLines.length - 1)) / 2;
+        const labelTransform = placement
+          ? `rotate(${labelStyle!.rotation + placement.layout.pathRotation} ${labelAnchor.x} ${labelAnchor.y})`
+          : undefined;
         return (
           <g key={feature.id} opacity={opacity}>
             {!isPoint && path && (
@@ -263,20 +290,61 @@ function PreviewFeatures({ map }: { readonly map: MapDocument }) {
                 strokeWidth={2}
               />
             ) : null}
-            {showLabel && anchor && feature.name && (
-              <text
-                x={anchor.x}
-                y={anchor.y - 8}
-                fill={feature.props.labelColor ?? "#453a32"}
-                fontSize={Math.max(10, Number(feature.props.labelSize ?? 14))}
-                textAnchor="middle"
-                paintOrder="stroke"
-                stroke="#fffaf1"
-                strokeWidth={3}
-                strokeOpacity={0.82}
-              >
-                {feature.name}
-              </text>
+            {showLabel && anchor && feature.name && labelStyle && (
+              <g transform={labelTransform}>
+                {labelFrame && labelDimensions ? (
+                  labelStyle.frame === "seal" ? (
+                    <circle
+                      data-map-label-frame="seal"
+                      cx={anchor.x}
+                      cy={anchor.y}
+                      r={
+                        Math.max(
+                          labelDimensions.width,
+                          labelDimensions.height,
+                        ) / 2
+                      }
+                      fill={labelFrame.fill}
+                      stroke={labelFrame.stroke}
+                      strokeWidth={labelFrame.lineWidth}
+                    />
+                  ) : (
+                    <rect
+                      data-map-label-frame="cartouche"
+                      x={anchor.x - labelDimensions.width / 2}
+                      y={anchor.y - labelDimensions.height / 2}
+                      width={labelDimensions.width}
+                      height={labelDimensions.height}
+                      rx={labelStyle.fontSize * 0.18}
+                      fill={labelFrame.fill}
+                      stroke={labelFrame.stroke}
+                      strokeWidth={labelFrame.lineWidth}
+                    />
+                  )
+                ) : null}
+                <text
+                  fill={labelStyle.color}
+                  fontSize={labelStyle.fontSize}
+                  textAnchor="middle"
+                  paintOrder="stroke"
+                  stroke={labelStyle.haloColor}
+                  strokeWidth={labelStyle.haloWidth}
+                  strokeOpacity={0.82}
+                  fontFamily={labelStyle.fontFamily}
+                  fontWeight={labelStyle.fontWeight}
+                  fontStyle={labelStyle.italic ? "italic" : undefined}
+                >
+                  {labelLines.map((line, index) => (
+                    <tspan
+                      key={`${feature.id}:${index}`}
+                      x={anchor.x}
+                      y={labelFirstLineY + index * labelLineHeight}
+                    >
+                      {line}
+                    </tspan>
+                  ))}
+                </text>
+              </g>
             )}
           </g>
         );

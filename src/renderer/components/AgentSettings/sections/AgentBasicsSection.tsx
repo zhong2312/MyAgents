@@ -6,7 +6,7 @@ import { useConfig } from '@/hooks/useConfig';
 import { isProviderAvailable } from '@/config/services/providerService';
 import type { AgentConfig } from '../../../../shared/types/agent';
 import type { AgentStatusData } from '@/hooks/useAgentStatuses';
-import { patchAgentConfig } from '@/config/services/agentConfigService';
+import { patchAgentConfig, setProactiveAgentEnabled } from '@/config/services/agentConfigService';
 
 interface AgentBasicsSectionProps {
   agent: AgentConfig;
@@ -20,7 +20,7 @@ function permissionLabel(mode: string | undefined, t: TFunction<'settings'>): st
   return `📋 ${t('agentSettings.permission.plan')}`;
 }
 
-export default function AgentBasicsSection({ agent, status, onAgentChanged }: AgentBasicsSectionProps) {
+export default function AgentBasicsSection({ agent, onAgentChanged }: AgentBasicsSectionProps) {
   const { t } = useTranslation('settings');
   const { providers, apiKeys, providerVerifyStatus } = useConfig();
   const [name, setName] = useState(agent.name);
@@ -54,9 +54,17 @@ export default function AgentBasicsSection({ agent, status, onAgentChanged }: Ag
     }
   }, [name, agent.name, saveField]);
 
-  const handleToggleEnabled = useCallback(() => {
-    saveField({ enabled: !agent.enabled });
-  }, [agent.enabled, saveField]);
+  const handleToggleEnabled = useCallback(async () => {
+    setSaving(true);
+    try {
+      await setProactiveAgentEnabled(agent.id, !agent.enabled);
+      if (isMountedRef.current) onAgentChanged();
+    } catch (error) {
+      console.error('[AgentBasics] Toggle proactive mode failed:', error);
+    } finally {
+      if (isMountedRef.current) setSaving(false);
+    }
+  }, [agent.enabled, agent.id, onAgentChanged]);
 
   const selectedProvider = providers.find(p => p.id === agent.providerId);
   const modelDisplay = agent.model || selectedProvider?.primaryModel || t('agentSettings.basics.notSet');
@@ -66,8 +74,6 @@ export default function AgentBasicsSection({ agent, status, onAgentChanged }: Ag
   const isSelectedProviderAvailable = selectedProvider
     ? isProviderAvailable(selectedProvider, apiKeys, providerVerifyStatus)
     : true;
-
-  const hasRunningChannels = status?.channels.some(ch => ch.status === 'online') ?? false;
 
   return (
     <div className="space-y-4">
@@ -117,7 +123,7 @@ export default function AgentBasicsSection({ agent, status, onAgentChanged }: Ag
             agent.enabled ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
           }`}
           onClick={handleToggleEnabled}
-          disabled={saving || hasRunningChannels}
+          disabled={saving}
         >
           <span
             className={`pointer-events-none inline-block h-3.5 w-3.5 rounded-full bg-[var(--toggle-thumb)] shadow-sm ring-0 transition-transform ${
@@ -128,11 +134,6 @@ export default function AgentBasicsSection({ agent, status, onAgentChanged }: Ag
         <span className="text-xs text-[var(--ink-muted)]">
           {agent.enabled ? t('agentSettings.basics.enabled') : t('agentSettings.basics.disabled')}
         </span>
-        {hasRunningChannels && (
-          <span className="text-xs text-[var(--ink-subtle)]">
-            {t('agentSettings.basics.runningChannelsHint')}
-          </span>
-        )}
       </div>
     </div>
   );

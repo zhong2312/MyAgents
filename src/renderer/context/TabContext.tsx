@@ -214,8 +214,8 @@ export interface TabContextValue extends TabState {
      * Soft session swap for the IM-handover "新对话保留绑定" flow.
      *
      * Used when the Rust handover (`cmd_session_new_with_surface_migration`)
-     * has ALREADY minted a fresh session_id on the running sidecar via
-     * `/api/im/session/new` and rotated the channel binding to it. The renderer
+     * has ALREADY migrated the exact Tab + Agent owners and minted a fresh
+     * session_id through the proof-bearing surface-migration endpoint. The renderer
      * MUST NOT call `resetSession()` afterwards — that would POST `/chat/reset`
      * and mint yet another session id, leaving the channel binding pointing
      * at the migrate-minted id while the tab adopts the second mint

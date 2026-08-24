@@ -91,7 +91,43 @@ jobs:
           mkdir -p src-tauri/binaries
           printf '#!/usr/bin/env sh\nexit 0\n' > src-tauri/binaries/cuse-x86_64-unknown-linux-gnu
           chmod +x src-tauri/binaries/cuse-x86_64-unknown-linux-gnu
-          mkdir -p mino
-          printf '# CI placeholder for Tauri resource validation\n' > mino/CLAUDE.md
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D clippy::disallowed_methods -D clippy::disallowed_macros
+
+  # `--all-targets` above covers Rust target kinds for Linux; it does not
+  # type-check `cfg(windows)`. Keep one native Windows compile gate so stable
+  # toolchain compatibility is verified before the release scripts run.
+  windows-rust:
+    name: Windows cargo check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Prepare Tauri bundle path placeholders for cargo check
+        shell: pwsh
+        run: |
+          $resourceDirs = @(
+            'src-tauri/resources/claude-agent-sdk',
+            'src-tauri/resources/sharp-runtime',
+            'src-tauri/resources/tsx-runtime',
+            'src-tauri/resources/nodejs',
+            'src-tauri/resources/cli',
+            'src-tauri/binaries'
+          )
+          foreach ($directory in $resourceDirs) {
+            New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          }
+          Set-Content src-tauri/resources/server-dist.js 'console.log("ci server-dist placeholder");'
+          Set-Content src-tauri/resources/plugin-bridge-dist.mjs 'console.log("ci plugin-bridge placeholder");'
+          Set-Content src-tauri/resources/claude-agent-sdk/.ci-placeholder 'ci placeholder'
+          Set-Content src-tauri/resources/sharp-runtime/.ci-placeholder 'ci placeholder'
+          Set-Content src-tauri/resources/tsx-runtime/.ci-placeholder 'ci placeholder'
+          Set-Content src-tauri/resources/nodejs/.ci-placeholder 'ci placeholder'
+          Set-Content src-tauri/resources/cli/.ci-placeholder 'ci placeholder'
+          Set-Content src-tauri/resources/vcruntime140.dll 'ci placeholder'
+          Set-Content src-tauri/resources/vcruntime140_1.dll 'ci placeholder'
+          Set-Content src-tauri/binaries/cuse-x86_64-pc-windows-msvc.exe 'ci placeholder'
+      - run: cargo check --manifest-path src-tauri/Cargo.toml --locked

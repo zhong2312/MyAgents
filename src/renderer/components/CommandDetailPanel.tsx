@@ -1,6 +1,6 @@
 /**
  * CommandDetailPanel - Component for viewing and editing a Command
- * Supports preview/edit mode with save confirmation and file rename
+ * Supports preview/edit mode with save confirmation
  * UI structure matches SkillDetailPanel for consistency
  *
  * Uses Tab-scoped API when in Tab context (WorkspaceConfigPanel),
@@ -18,7 +18,6 @@ import ConfirmDialog from '@/components/ConfirmDialog';
 import Markdown from '@/components/Markdown';
 import MonacoEditor from '@/components/MonacoEditor';
 import type { CommandFrontmatter, CommandDetail } from '../../shared/skillsTypes';
-import { sanitizeFolderName } from '../../shared/utils';
 import { shortenPathForDisplay } from '@/utils/pathDetection';
 
 interface CommandDetailPanelProps {
@@ -155,9 +154,6 @@ const CommandDetailPanel = forwardRef<CommandDetailPanelRef, CommandDetailPanelP
             setIsEditing(false);
         }, [originalCommandName, originalDescription, originalBody]);
 
-        // Get the expected new file name based on current command name
-        const expectedFileName = commandName.trim() ? sanitizeFolderName(commandName.trim()) : '';
-
         const handleSave = useCallback(async () => {
             if (!command) return;
             if (!commandName.trim()) {
@@ -171,46 +167,20 @@ const CommandDetailPanel = forwardRef<CommandDetailPanelRef, CommandDetailPanelP
                     description,
                 };
 
-                // Check if file should be renamed (only if user modified name AND sanitized name differs from current file)
-                const newFileName = sanitizeFolderName(commandName.trim());
                 const currentFileName = command.fileName || name;
-                const nameWasModified = commandName.trim() !== originalCommandName;
-                const shouldRename = nameWasModified && newFileName && newFileName !== currentFileName;
 
                 // When using Tab API, no need to pass agentDir (sidecar already has it)
                 const payload = isInTabContext
-                    ? { scope, frontmatter, body, ...(shouldRename ? { newFileName } : {}) }
-                    : { scope, frontmatter, body, ...(shouldRename ? { newFileName } : {}), ...(scope === 'project' && agentDir ? { agentDir } : {}) };
+                    ? { scope, frontmatter, body }
+                    : { scope, frontmatter, body, ...(scope === 'project' && agentDir ? { agentDir } : {}) };
 
-                const response = await api.put<{
-                    success: boolean;
-                    error?: string;
-                    fileName?: string;
-                    path?: string;
-                }>(
+                const response = await api.put<{ success: boolean; error?: string }>(
                     `/api/command-item/${encodeURIComponent(currentFileName)}`,
                     payload
                 );
 
                 if (response.success) {
                     toastRef.current.success(t('resourceDetail.common.saveSuccess'));
-
-                    // If file was renamed, always close detail view (name prop is now invalid)
-                    const fileWasRenamed = response.fileName && response.fileName !== currentFileName;
-                    if (fileWasRenamed) {
-                        onSaved(true); // Auto-close when file renamed
-                        return;
-                    }
-
-                    // Update command state with new path if file was renamed
-                    if (response.fileName && response.path) {
-                        setCommand(prev => prev ? {
-                            ...prev,
-                            name: commandName.trim(),
-                            fileName: response.fileName!,
-                            path: response.path!
-                        } : null);
-                    }
 
                     // Update original values
                     setOriginalCommandName(commandName.trim());
@@ -226,7 +196,7 @@ const CommandDetailPanel = forwardRef<CommandDetailPanelRef, CommandDetailPanelP
             } finally {
                 setSaving(false);
             }
-        }, [command, name, scope, agentDir, commandName, originalCommandName, description, body, onSaved, api, isInTabContext, t]);
+        }, [command, name, scope, agentDir, commandName, description, body, onSaved, api, isInTabContext, t]);
 
         const handleDelete = useCallback(async () => {
             if (!command) return;
@@ -286,15 +256,6 @@ const CommandDetailPanel = forwardRef<CommandDetailPanelRef, CommandDetailPanelP
             );
         }
 
-        // Calculate preview path based on edited command name
-        // Only show "will rename" if user actually changed the name AND the sanitized file name is different
-        const currentFileName = command.fileName || name;
-        const nameWasModified = commandName.trim() !== originalCommandName;
-        const pathChanged = isEditing && nameWasModified && !!expectedFileName && expectedFileName !== currentFileName;
-        const previewPath = pathChanged
-            ? command.path.replace(`${currentFileName}.md`, `${expectedFileName}.md`)
-            : command.path;
-
         return (
             <div className="flex h-full flex-col">
                 {/* Header */}
@@ -303,20 +264,16 @@ const CommandDetailPanel = forwardRef<CommandDetailPanelRef, CommandDetailPanelP
                         <h3 className="truncate text-lg font-semibold text-[var(--ink)]">{commandName || name}</h3>
                         <div className="mt-0.5 flex items-center gap-2">
                             <span
-                                className={`max-w-[300px] truncate font-mono text-xs ${pathChanged ? 'text-[var(--accent)]' : 'text-[var(--ink-muted)]'}`}
-                                title={previewPath}
+                                className="max-w-[300px] truncate font-mono text-xs text-[var(--ink-muted)]"
+                                title={command.path}
                             >
-                                {shortenPathForDisplay(previewPath)}
+                                {shortenPathForDisplay(command.path)}
                             </span>
-                            {pathChanged && (
-                                <span className="text-xs text-[var(--accent)]">{t('resourceDetail.common.willRename')}</span>
-                            )}
                             <button
                                 type="button"
                                 onClick={handleOpenInFinder}
-                                disabled={pathChanged}
-                                className="flex-shrink-0 rounded p-0.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-50 disabled:cursor-not-allowed"
-                                title={pathChanged ? t('resourceDetail.common.openAfterSave') : t('resourceDetail.common.openLocation')}
+                                className="flex-shrink-0 rounded p-0.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                                title={t('resourceDetail.common.openLocation')}
                             >
                                 <FolderOpen className="h-3.5 w-3.5" />
                             </button>

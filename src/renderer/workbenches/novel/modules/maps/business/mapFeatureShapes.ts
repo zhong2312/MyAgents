@@ -4,9 +4,9 @@ import type { MapAreaShape, MapBrushPointCurve } from "./mapCanvasSession";
 const SHAPE_SEGMENTS = 32;
 const DEFAULT_SHAPE_RADIUS = 48;
 
-/** 根据一次拖拽的包围盒生成画笔区域；polygon 由调用方保留真实手绘轨迹。 */
+/** 根据一次拖拽的包围盒生成规则画笔区域；闭合和多边形由调用方保留轨迹。 */
 export function createMapAreaShapePoints(
-  shape: Exclude<MapAreaShape, "polygon" | "freehand">,
+  shape: Exclude<MapAreaShape, "closed" | "polygon" | "freehand">,
   start: MapScenePoint,
   end: MapScenePoint,
 ): MapScenePoint[] {
@@ -113,10 +113,14 @@ function isNearlyStraightPath(points: readonly MapScenePoint[]): boolean {
   // 真实拖拽会因此绕过“弧线”分支，最终看起来仍是一条折线。把阈值设为
   // 4.5% 只吸收小幅抖动，明显偏离主方向的自由轨迹仍交给 Catmull-Rom。
   const tolerance = Math.max(1.5, length * 0.045);
-  return points.slice(1, -1).every((point) =>
-    Math.abs((point.x - start.x) * dy - (point.y - start.y) * dx) / length <=
-      tolerance,
-  );
+  return points
+    .slice(1, -1)
+    .every(
+      (point) =>
+        Math.abs((point.x - start.x) * dy - (point.y - start.y) * dx) /
+          length <=
+        tolerance,
+    );
 }
 
 function smoothControlPoints(
@@ -206,9 +210,7 @@ export function mapBrushCurvePoints(
       ? points.slice(0, -1)
       : points;
   const sampled = smoothControlPoints(source, closed);
-  return sampled.length > 1
-    ? sampled
-    : source.map((point) => ({ ...point }));
+  return sampled.length > 1 ? sampled : source.map((point) => ({ ...point }));
 }
 
 /**
@@ -267,7 +269,13 @@ export function isMapBrushPathClosed(
   points: readonly MapScenePoint[],
   tolerance = 24,
 ): boolean {
+  // 仅凭首尾距离会把所有短开放笔画误判成闭合区域：当笔画总长度本身
+  // 还没有超过闭合容差时，用户实际上不可能可靠地区分“回到起点”和
+  // “画了一小段弯线”。先要求有足够的轨迹长度，再沿用首尾接近规则。
+  const minimumPathLength = Math.max(0, tolerance);
   return (
-    points.length >= 3 && distance(points[0]!, points.at(-1)!) <= tolerance
+    points.length >= 3 &&
+    pathLength(points, false) > minimumPathLength &&
+    distance(points[0]!, points.at(-1)!) <= tolerance
   );
 }

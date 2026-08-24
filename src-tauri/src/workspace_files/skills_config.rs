@@ -1,9 +1,7 @@
 //! Read-only access to `~/.myagents/skills-config.json`.
 //!
-//! Both `slash.rs` (picker UI) and `skill_sync.rs` (symlink mirroring) need
-//! the user-disabled list. Two parallel readers were drifting (one even
-//! pointed at the wrong file path); centralized here so the next "also read
-//! field X" change is a one-line edit instead of two.
+//! Used by the no-Sidecar Launcher picker. Project-level capability selection
+//! is intentionally not interpreted in Rust; Runtime admission is Node-owned.
 //!
 //! Schema parity with sidecar `interface SkillsConfig`. We only deserialize
 //! `disabled` because nothing else is needed at the Rust callsites today;
@@ -59,6 +57,7 @@ pub const REQUIRED_SYSTEM_SKILLS: &[&str] = &[
     "myagents-memory-gardener",
     "myagents-memory-molt",
     "myagents-cli",
+    "myagents-anydoc",
     "myagents-task-automation",
     "myagents-docs",
 ];

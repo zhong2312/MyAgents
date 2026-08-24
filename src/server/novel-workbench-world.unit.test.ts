@@ -45,6 +45,7 @@ import {
   updateNovelWorkbenchDraft,
 } from "./novel-workbench-draft";
 import { createNovelWorkbenchServer } from "./tools/novel-workbench-tool";
+import { createFactionFiles } from "../shared/workbenches/novel/factionStorage";
 import { createInspirationFiles } from "../shared/workbenches/novel/inspirationStorage";
 
 type WorldDraftPayload = {
@@ -841,8 +842,8 @@ describe("novel world draft validation", () => {
               ?.azgaarLayer === "province",
         ),
       ).toBe(true);
-      // Full JSON 的全部城市与网格细节仍在 SVG 底图中，MapDocument 只接收
-      // 经过类型限额和世界架构命名优先级筛选的可编辑对象。
+      // Full JSON 的结构化对象与玄幻素材统一写入 MapDocument；SVG 只作为
+      // Runtime 诊断输出，不再成为独立底图事实。
       expect(generatedFeatures.length).toBeLessThan(500);
       expect(
         generatedFeatures.every(
@@ -859,12 +860,18 @@ describe("novel world draft validation", () => {
         ]),
       );
       expect(generatedMap.canvas).toEqual(
-        expect.objectContaining({
-          backgroundImageWidth: expect.any(Number),
-          backgroundImageHeight: expect.any(Number),
-        }),
+        expect.not.objectContaining({ backgroundImage: expect.any(String) }),
       );
     }
+    expect(generatedMap).toEqual(
+      expect.objectContaining({
+        artwork: expect.objectContaining({
+          layers: expect.arrayContaining([
+            expect.objectContaining({ stamps: expect.any(Array) }),
+          ]),
+        }),
+      }),
+    );
     const generatedMaterials = new Set(
       generatedFeatures
         .map(
@@ -1033,4 +1040,769 @@ describe("novel world draft validation", () => {
 
     expect(generated.error).toContain("重新调用 novel_world_get_context");
   });
+
+  it("地图生成必须经过规划草案确认阶段", async () => {
+    configureNovelWorkbenchRequest(
+      {
+        mode: "maps",
+        promptId: "novel.maps.fantasy",
+        promptVersion: "1.0.0",
+      },
+      { sessionId: "session-map-planning-phase", workspace },
+    );
+    for (const file of createFactionFiles({
+      schemaVersion: 2,
+      factions: [{ id: "great-qian", name: "大乾神朝" }],
+    })) {
+      const path = join(workspace, ...file.path.split("/"));
+      await fs.mkdir(dirname(path), { recursive: true });
+      await fs.writeFile(path, file.content, "utf8");
+    }
+    const worldContext = await callTool("novel_world_get_context", {});
+    const legacy = await callTool("novel_maps_generate_fantasy_map", {
+      seed: "planning-source",
+      worldSourceHash: String(worldContext.sourceHash),
+      landmassCount: 1,
+      regionCount: 4,
+      riverCount: 3,
+      azgaarTemplate: "eurasia",
+      azgaarStates: 4,
+      azgaarCultures: 3,
+      azgaarReligions: 2,
+      azgaarPrecipitation: 180,
+    });
+    const legacyDraft = await loadNovelWorkbenchDraft<Record<string, unknown>>(
+      workspace,
+      "maps",
+      String(legacy.draftId),
+    );
+    const generationPlan = legacyDraft.payload.generationPlan;
+    expect(generationPlan).toBeDefined();
+    const plannedGenerationPlan = {
+      ...(generationPlan as Record<string, unknown>),
+      spatialLayers: [
+        {
+          id: "north-region",
+          name: "北荒",
+          worldNodeId: "world-root",
+          parentId: null,
+          levelTypeId: "world-root",
+          role: "region",
+          zone: "north",
+          climate: ["严寒"],
+          terrain: ["雪岭", "冰原"],
+          anchor: { x: 0.26, y: 0.24 },
+          notes: "北方雪岭与冰原交界的荒域。",
+        },
+      ],
+      entities: [
+        {
+          id: "snow-ridge",
+          entityRef: null,
+          name: "北境雪岭",
+          role: "mountain",
+          spatialLayerId: "north-region",
+          anchor: { x: 0.3, y: 0.18 },
+          preferredTerrain: ["雪原", "山脉"],
+          importance: 5,
+          description: "北方主山脉与灵脉源头。",
+        },
+        {
+          id: "heaven-pool",
+          entityRef: null,
+          name: "天池",
+          role: "lake",
+          spatialLayerId: "north-region",
+          anchor: { x: 0.4, y: 0.26 },
+          preferredTerrain: ["雪原"],
+          importance: 4,
+          description: "雪岭下的灵泉天池。",
+        },
+        {
+          id: "cloud-city",
+          entityRef: null,
+          name: "云中城",
+          role: "city",
+          spatialLayerId: "north-region",
+          anchor: { x: 0.52, y: 0.56 },
+          preferredTerrain: ["平原", "河网"],
+          importance: 5,
+          description: "位于水系交通中心的主城。",
+        },
+        {
+          id: "heaven-river",
+          entityRef: null,
+          name: "天池河",
+          role: "waterway",
+          spatialLayerId: "north-region",
+          anchor: { x: 0.42, y: 0.34 },
+          preferredTerrain: ["雪岭", "河谷"],
+          importance: 5,
+          description: "由北境雪岭流向云中城的主河。",
+        },
+        {
+          id: "sword-sect",
+          entityRef: null,
+          name: "万剑宗",
+          role: "sect",
+          spatialLayerId: "north-region",
+          anchor: { x: 0.47, y: 0.34 },
+          preferredTerrain: ["山脉"],
+          importance: 5,
+          description: "依雪岭而建的剑修宗门。",
+        },
+        {
+          id: "hidden-realm",
+          entityRef: null,
+          name: "天池秘境",
+          role: "secret-realm",
+          spatialLayerId: "north-region",
+          anchor: { x: 0.38, y: 0.3 },
+          preferredTerrain: ["雪原", "山脉"],
+          importance: 4,
+          description: "隐藏在天池周边的秘境入口。",
+        },
+      ],
+      territories: [
+        {
+          id: "great-qian-domain",
+          factionRef: { kind: "faction", id: "great-qian" },
+          name: "大乾神朝疆域",
+          spatialLayerId: "north-region",
+          anchor: { x: 0.54, y: 0.52 },
+          extent: 0.24,
+          boundaryStyle: "wash",
+          importance: 5,
+          description: "大乾神朝在中州河网的直辖疆域。",
+        },
+      ],
+      naming: {
+        entries: [
+          {
+            id: "north-state",
+            role: "state",
+            name: "北荒道",
+            rationale: "北方州域。",
+          },
+          {
+            id: "north-province",
+            role: "province",
+            name: "玄冰府",
+            rationale: "北荒内府。",
+          },
+          {
+            id: "north-biome",
+            role: "biome",
+            name: "万里冰原",
+            rationale: "寒地地貌。",
+          },
+          {
+            id: "north-burg",
+            role: "burg",
+            name: "云中城",
+            rationale: "规划主城。",
+          },
+          {
+            id: "north-river",
+            role: "river",
+            name: "天池河",
+            rationale: "规划主河。",
+          },
+          {
+            id: "north-lake",
+            role: "lake",
+            name: "天池",
+            rationale: "规划湖泊。",
+          },
+          {
+            id: "north-route",
+            role: "route",
+            name: "雪岭古道",
+            rationale: "山中道路。",
+          },
+          {
+            id: "north-marker",
+            role: "marker",
+            name: "天池秘境",
+            rationale: "玄幻地点。",
+          },
+          {
+            id: "north-region",
+            role: "region",
+            name: "北荒",
+            rationale: "正式空间层。",
+          },
+        ],
+      },
+      relations: [
+        {
+          fromId: "heaven-pool",
+          toId: "snow-ridge",
+          type: "originates-at",
+          description: "天池位于雪岭灵脉。",
+        },
+        {
+          fromId: "heaven-river",
+          toId: "snow-ridge",
+          type: "originates-at",
+          description: "天池河发源于北境雪岭。",
+        },
+        {
+          fromId: "heaven-river",
+          toId: "cloud-city",
+          type: "flows-through",
+          description: "天池河流经云中城。",
+        },
+        {
+          fromId: "sword-sect",
+          toId: "snow-ridge",
+          type: "located-near",
+          description: "万剑宗坐落于雪岭。",
+        },
+        {
+          fromId: "hidden-realm",
+          toId: "heaven-pool",
+          type: "hidden-in",
+          description: "天池秘境入口隐藏在天池附近。",
+        },
+        {
+          fromId: "sword-sect",
+          toId: "cloud-city",
+          type: "connected-to",
+          description: "万剑宗灵脉与云中城相连。",
+        },
+        {
+          fromId: "great-qian-domain",
+          toId: "north-region",
+          type: "controls",
+          description: "大乾神朝疆域受北荒空间层约束。",
+        },
+      ],
+    };
+
+    const missingNaming = await callTool("novel_maps_prepare_generation_plan", {
+      draftId: "map-planning-without-naming",
+      title: "缺失命名目录的规划",
+      generationPlan: {
+        ...plannedGenerationPlan,
+        naming: undefined,
+      },
+    });
+    expect(missingNaming.error).toContain("必须提供 generationPlan.naming");
+
+    const prepared = await callTool("novel_maps_prepare_generation_plan", {
+      draftId: "map-planning-phase",
+      title: "规划阶段地图",
+      generationPlan: plannedGenerationPlan,
+    });
+    expect(prepared.phase).toBe("planning");
+    expect(prepared.requiresAuthorConfirmation).toBe(true);
+
+    const blocked = await callTool("novel_maps_generate_fantasy_map", {
+      draftId: "map-planning-phase",
+      seed: "should-not-run",
+      worldSourceHash: String(worldContext.sourceHash),
+      generationPlan: plannedGenerationPlan,
+    });
+    expect(blocked.error).toContain("规划");
+
+    const confirmed = await callTool("novel_maps_confirm_generation_plan", {
+      draftId: "map-planning-phase",
+    });
+    expect(confirmed.confirmed).toBe(true);
+    expect(confirmed.phase).toBe("visual");
+    const draft = await loadNovelWorkbenchDraft<Record<string, unknown>>(
+      workspace,
+      "maps",
+      "map-planning-phase",
+    );
+    expect(draft.payload).toEqual(
+      expect.objectContaining({
+        phase: "visual",
+        generationPlan: plannedGenerationPlan,
+      }),
+    );
+
+    const visual = await callTool("novel_maps_generate_fantasy_map", {
+      draftId: "map-planning-phase",
+      seed: "confirmed-visual",
+      mapName: "确认后的玄幻地图",
+      worldSourceHash: String(worldContext.sourceHash),
+      generationPlan: plannedGenerationPlan,
+    });
+    expect(visual.error).toBeUndefined();
+    const visualDraft = await loadNovelWorkbenchDraft<Record<string, unknown>>(
+      workspace,
+      "maps",
+      "map-planning-phase",
+    );
+    expect(visualDraft.payload.operations).toHaveLength(1);
+    expect(visualDraft.payload.phase).toBe("visual");
+    const queried = await callTool("novel_maps_query_draft_features", {
+      draftId: "map-planning-phase",
+      candidateId: "fantasy-" + String(worldContext.sourceHash).slice(0, 12),
+      entityRole: "region",
+    });
+    expect(queried.error).toBeUndefined();
+    expect(queried.totalMatches).toEqual(expect.any(Number));
+    expect(queried.features).toEqual(expect.any(Array));
+
+    const candidateId =
+      "fantasy-" + String(worldContext.sourceHash).slice(0, 12);
+    const territoryQuery = await callTool("novel_maps_query_draft_features", {
+      draftId: "map-planning-phase",
+      candidateId,
+      planTerritoryId: "great-qian-domain",
+    });
+    expect(territoryQuery.error).toBeUndefined();
+    const territoryFeature = (
+      territoryQuery.features as Array<{
+        id: string;
+        kind: string;
+        entityRef: unknown;
+        points: Array<{ x: number; y: number }>;
+        props: Record<string, string | undefined>;
+      }>
+    )[0]!;
+    expect(territoryFeature).toMatchObject({
+      kind: "area",
+      entityRef: { kind: "faction", id: "great-qian" },
+      props: {
+        planTerritoryId: "great-qian-domain",
+        entityRole: "territory",
+        entityRefKind: "faction",
+        entityRefId: "great-qian",
+        boundaryStyle: "wash",
+      },
+    });
+    expect(territoryFeature.points.length).toBeGreaterThanOrEqual(3);
+    const detachedTerritory = await callTool(
+      "novel_maps_patch_draft_features",
+      {
+        draftId: "map-planning-phase",
+        candidateId,
+        patches: [
+          {
+            featureId: territoryFeature.id,
+            props: { planTerritoryId: "detached-territory" },
+          },
+        ],
+      },
+    );
+    expect(detachedTerritory.error).toBeUndefined();
+    const territoryAudit = await callTool("novel_maps_validate_draft", {
+      draftId: "map-planning-phase",
+    });
+    expect(territoryAudit.valid).toBe(false);
+    expect(territoryAudit.errors).toEqual(
+      expect.arrayContaining([expect.stringContaining("大乾神朝疆域")]),
+    );
+    const restoredTerritory = await callTool(
+      "novel_maps_patch_draft_features",
+      {
+        draftId: "map-planning-phase",
+        candidateId,
+        patches: [
+          {
+            featureId: territoryFeature.id,
+            props: { planTerritoryId: "great-qian-domain" },
+          },
+        ],
+      },
+    );
+    expect(restoredTerritory.error).toBeUndefined();
+
+    const sect = await callTool("novel_maps_query_draft_features", {
+      draftId: "map-planning-phase",
+      candidateId,
+      planEntityId: "sword-sect",
+    });
+    const sectFeature = (
+      sect.features as Array<{
+        id: string;
+        points: Array<{ x: number; y: number }>;
+        props: Record<string, string | undefined>;
+      }>
+    )[0]!;
+    const detachedSect = await callTool("novel_maps_patch_draft_features", {
+      draftId: "map-planning-phase",
+      candidateId,
+      patches: [
+        {
+          featureId: sectFeature.id,
+          points: [{ x: 12, y: 12 }],
+        },
+      ],
+    });
+    expect(detachedSect.error).toBeUndefined();
+    const patchedSectDraft = await loadNovelWorkbenchDraft<{
+      operations: Array<{ value: Record<string, unknown> }>;
+    }>(workspace, "maps", "map-planning-phase");
+    const patchedCandidate = patchedSectDraft.payload.operations[0]!.value;
+    const patchedArtwork = patchedCandidate.artwork as {
+      layers: Array<{
+        stamps: Array<{
+          sourceFeatureId?: string;
+          x: number;
+          y: number;
+        }>;
+      }>;
+    };
+    const patchedSectStamp = patchedArtwork.layers
+      .flatMap((layer) => layer.stamps)
+      .find((stamp) => stamp.sourceFeatureId === sectFeature.id);
+    expect(patchedSectStamp).toMatchObject({ x: 12, y: 12 });
+    const relationAudit = await callTool("novel_maps_validate_draft", {
+      draftId: "map-planning-phase",
+    });
+    expect(relationAudit.valid).toBe(false);
+    expect(relationAudit.errors).toEqual(
+      expect.arrayContaining([expect.stringContaining("邻近位置")]),
+    );
+    const restoredSect = await callTool("novel_maps_patch_draft_features", {
+      draftId: "map-planning-phase",
+      candidateId,
+      patches: [{ featureId: sectFeature.id, points: sectFeature.points }],
+    });
+    expect(restoredSect.error).toBeUndefined();
+
+    const detachedSectLayer = await callTool(
+      "novel_maps_patch_draft_features",
+      {
+        draftId: "map-planning-phase",
+        candidateId,
+        patches: [
+          {
+            featureId: sectFeature.id,
+            props: { spatialLayerId: "detached-region" },
+          },
+        ],
+      },
+    );
+    expect(detachedSectLayer.error).toBeUndefined();
+    const entityLayerAudit = await callTool("novel_maps_validate_draft", {
+      draftId: "map-planning-phase",
+    });
+    expect(entityLayerAudit.valid).toBe(false);
+    expect(entityLayerAudit.errors).toEqual(
+      expect.arrayContaining([expect.stringContaining("万剑宗")]),
+    );
+    const restoredSectLayer = await callTool(
+      "novel_maps_patch_draft_features",
+      {
+        draftId: "map-planning-phase",
+        candidateId,
+        patches: [
+          {
+            featureId: sectFeature.id,
+            props: { spatialLayerId: sectFeature.props.spatialLayerId },
+          },
+        ],
+      },
+    );
+    expect(restoredSectLayer.error).toBeUndefined();
+
+    const connectionQuery = await callTool("novel_maps_query_draft_features", {
+      draftId: "map-planning-phase",
+      candidateId,
+      query: "灵脉连接",
+    });
+    const connectionFeature = (
+      connectionQuery.features as Array<{
+        id: string;
+        points: Array<{ x: number; y: number }>;
+        props: Record<string, string | undefined>;
+      }>
+    ).find((feature) => feature.props.planRelationType === "connected-to")!;
+    expect(connectionFeature).toMatchObject({
+      props: {
+        planRelationFromId: "sword-sect",
+        planRelationToId: "cloud-city",
+        routeStyle: "ley-line",
+      },
+    });
+    const detachedConnection = await callTool(
+      "novel_maps_patch_draft_features",
+      {
+        draftId: "map-planning-phase",
+        candidateId,
+        patches: [
+          {
+            featureId: connectionFeature.id,
+            points: [
+              { x: 12, y: 12 },
+              { x: 24, y: 24 },
+            ],
+          },
+        ],
+      },
+    );
+    expect(detachedConnection.error).toBeUndefined();
+    const connectionAudit = await callTool("novel_maps_validate_draft", {
+      draftId: "map-planning-phase",
+    });
+    expect(connectionAudit.valid).toBe(false);
+    expect(connectionAudit.errors).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("关系路线未连接规划端点"),
+      ]),
+    );
+    const restoredConnection = await callTool(
+      "novel_maps_patch_draft_features",
+      {
+        draftId: "map-planning-phase",
+        candidateId,
+        patches: [
+          { featureId: connectionFeature.id, points: connectionFeature.points },
+        ],
+      },
+    );
+    expect(restoredConnection.error).toBeUndefined();
+
+    const hiddenRealm = await callTool("novel_maps_query_draft_features", {
+      draftId: "map-planning-phase",
+      candidateId,
+      planEntityId: "hidden-realm",
+    });
+    const hiddenRealmFeature = (
+      hiddenRealm.features as Array<{
+        id: string;
+        points: Array<{ x: number; y: number }>;
+      }>
+    )[0]!;
+    const detachedHiddenRealm = await callTool(
+      "novel_maps_patch_draft_features",
+      {
+        draftId: "map-planning-phase",
+        candidateId,
+        patches: [
+          { featureId: hiddenRealmFeature.id, points: [{ x: 12, y: 12 }] },
+        ],
+      },
+    );
+    expect(detachedHiddenRealm.error).toBeUndefined();
+    const containmentAudit = await callTool("novel_maps_validate_draft", {
+      draftId: "map-planning-phase",
+    });
+    expect(containmentAudit.valid).toBe(false);
+    expect(containmentAudit.errors).toEqual(
+      expect.arrayContaining([expect.stringContaining("未落在目标区域内")]),
+    );
+    const restoredHiddenRealm = await callTool(
+      "novel_maps_patch_draft_features",
+      {
+        draftId: "map-planning-phase",
+        candidateId,
+        patches: [
+          {
+            featureId: hiddenRealmFeature.id,
+            points: hiddenRealmFeature.points,
+          },
+        ],
+      },
+    );
+    expect(restoredHiddenRealm.error).toBeUndefined();
+
+    const waterway = await callTool("novel_maps_query_draft_features", {
+      draftId: "map-planning-phase",
+      candidateId,
+      planEntityId: "heaven-river",
+    });
+    const waterwayFeature = (
+      waterway.features as Array<{
+        id: string;
+        points: Array<{ x: number; y: number }>;
+      }>
+    )[0]!;
+    expect(waterwayFeature.points.length).toBeGreaterThanOrEqual(2);
+    const corrupted = await callTool("novel_maps_patch_draft_features", {
+      draftId: "map-planning-phase",
+      candidateId,
+      patches: [
+        {
+          featureId: waterwayFeature.id,
+          points: [
+            { x: 12, y: 12 },
+            { x: 28, y: 28 },
+          ],
+        },
+      ],
+    });
+    expect(corrupted.error).toBeUndefined();
+    const geometryAudit = await callTool("novel_maps_validate_draft", {
+      draftId: "map-planning-phase",
+    });
+    expect(geometryAudit.valid).toBe(false);
+    expect(geometryAudit.errors).toEqual(
+      expect.arrayContaining([expect.stringContaining("河流“天池河”")]),
+    );
+    const restored = await callTool("novel_maps_patch_draft_features", {
+      draftId: "map-planning-phase",
+      candidateId,
+      patches: [
+        { featureId: waterwayFeature.id, points: waterwayFeature.points },
+      ],
+    });
+    expect(restored.error).toBeUndefined();
+
+    const spatialLayer = await callTool("novel_maps_query_draft_features", {
+      draftId: "map-planning-phase",
+      candidateId,
+      query: "北荒",
+    });
+    const spatialLayerFeature = (
+      spatialLayer.features as Array<{
+        id: string;
+        props: Record<string, string | undefined>;
+      }>
+    ).find(
+      (feature) =>
+        feature.props.spatialLayerId === "north-region" &&
+        feature.props.spatialRole === "region",
+    )!;
+    const detachedLayer = await callTool("novel_maps_patch_draft_features", {
+      draftId: "map-planning-phase",
+      candidateId,
+      patches: [
+        {
+          featureId: spatialLayerFeature.id,
+          props: { spatialLayerId: "detached-region" },
+        },
+      ],
+    });
+    expect(detachedLayer.error).toBeUndefined();
+    const spatialLayerAudit = await callTool("novel_maps_validate_draft", {
+      draftId: "map-planning-phase",
+    });
+    expect(spatialLayerAudit.valid).toBe(false);
+    expect(spatialLayerAudit.errors).toEqual(
+      expect.arrayContaining([expect.stringContaining("北荒")]),
+    );
+    const restoredLayer = await callTool("novel_maps_patch_draft_features", {
+      draftId: "map-planning-phase",
+      candidateId,
+      patches: [
+        {
+          featureId: spatialLayerFeature.id,
+          props: { spatialLayerId: "north-region" },
+        },
+      ],
+    });
+    expect(restoredLayer.error).toBeUndefined();
+
+    const validation = await callTool("novel_maps_validate_draft", {
+      draftId: "map-planning-phase",
+    });
+    expect(validation.valid).toBe(true);
+    const submitted = await callTool("novel_maps_submit_draft", {
+      draftId: "map-planning-phase",
+      validationToken: String(validation.validationToken),
+    });
+    expect(submitted.submitted).toBe(true);
+
+    const proposalId = String(submitted.proposalId);
+    const proposalRoot = join(
+      workspace,
+      "world",
+      "maps",
+      "proposals",
+      proposalId,
+    );
+    const manifest = JSON.parse(
+      await fs.readFile(join(proposalRoot, "proposal.json"), "utf8"),
+    ) as {
+      operations: Array<{ candidateId: string; valuePath: string }>;
+    };
+    const candidate = JSON.parse(
+      await fs.readFile(
+        join(proposalRoot, manifest.operations[0]!.valuePath),
+        "utf8",
+      ),
+    ) as {
+      canvas: {
+        backgroundImage: string | null;
+        backgroundAssetPath?: string | null;
+      };
+      features: Array<{
+        id: string;
+        name: string;
+        entityRef: unknown;
+        props: Record<string, string>;
+      }>;
+      artwork: {
+        layers: Array<{
+          stamps: Array<{ assetId: string; rotation: number }>;
+        }>;
+      };
+      scene: {
+        layers: Array<{
+          id: string;
+          regions: Array<{
+            id: string;
+            kind: string;
+            terrainMaterial: string | null;
+          }>;
+          strokes: Array<{ terrainMaterial: string | null }>;
+        }>;
+      };
+    };
+    expect(candidate.canvas.backgroundImage).toBeNull();
+    expect(candidate.canvas.backgroundAssetPath ?? null).toBeNull();
+    expect(
+      candidate.features.some((feature) =>
+        /[\u3400-\u9fff]/u.test(feature.name),
+      ),
+    ).toBe(true);
+    expect(
+      candidate.features.every((feature) => !/[A-Za-z]/u.test(feature.name)),
+    ).toBe(true);
+    expect(
+      candidate.features.find(
+        (feature) =>
+          feature.props.spatialLayerId === "north-region" &&
+          feature.props.spatialRole === "region",
+      ),
+    ).toMatchObject({
+      entityRef: { kind: "setting", id: "world-root" },
+      props: {
+        worldNodeId: "world-root",
+        entityRefKind: "setting",
+        entityRefId: "world-root",
+      },
+    });
+    expect(
+      candidate.artwork.layers.some((layer) => layer.stamps.length > 0),
+    ).toBe(true);
+    const generatedArtwork = candidate.artwork.layers.flatMap(
+      (layer) => layer.stamps,
+    );
+    expect(generatedArtwork).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ assetId: "mountain-range" }),
+        expect.objectContaining({ assetId: "faction-seat" }),
+        expect.objectContaining({ assetId: "secret-realm" }),
+      ]),
+    );
+    const terrainScene = candidate.scene.layers.find(
+      (layer) => layer.id === "scene-terrain",
+    );
+    expect(terrainScene?.regions.some((region) => region.kind === "land")).toBe(
+      true,
+    );
+    const northFeature = candidate.features.find(
+      (feature) =>
+        feature.props.spatialLayerId === "north-region" &&
+        feature.props.spatialRole === "region",
+    );
+    expect(
+      terrainScene?.regions.find(
+        (region) => region.id === `generated-region-${northFeature?.id}`,
+      ),
+    ).toMatchObject({ terrainMaterial: "snow" });
+    expect(terrainScene?.strokes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ terrainMaterial: "snow" }),
+      ]),
+    );
+  }, 30_000);
 });

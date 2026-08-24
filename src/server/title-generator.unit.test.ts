@@ -220,6 +220,7 @@ describe("buildExternalTitleSessionOptions", () => {
     sessionId: "title-session",
     workspacePath: "/workspace",
     userPrompt: "Write the title",
+    clientUserMessageId: "title-user-message",
     runtimeType: "codex" as const,
     model: "gpt-5.6-sol",
   };

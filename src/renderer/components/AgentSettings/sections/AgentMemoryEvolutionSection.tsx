@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { currentSupportedLocale } from '@/i18n/format';
 import type { AgentConfig } from '../../../../shared/types/agent';
 import {
   DEFAULT_MEMORY_EVOLUTION_CONFIG,
@@ -10,6 +11,12 @@ import {
   patchAgentConfig,
 } from '@/config/services/agentConfigService';
 import { useToast } from '@/components/Toast';
+import { isTauriEnvironment } from '@/utils/browserMock';
+import { listenWithCleanup } from '@/utils/tauriListen';
+import {
+  formatMemoryEvolutionRunTime,
+  type MemoryEvolutionLastRun,
+} from './memoryEvolutionStatus';
 
 interface AgentMemoryEvolutionSectionProps {
   agent: AgentConfig;
@@ -27,10 +34,35 @@ export default function AgentMemoryEvolutionSection({
   const { t } = useTranslation('settings');
   const toast = useToast();
   const toastRef = useRef(toast);
+  const [lastRun, setLastRun] = useState<MemoryEvolutionLastRun | null>(null);
 
   useEffect(() => {
     toastRef.current = toast;
   }, [toast]);
+
+  const refreshLastRun = useCallback(async () => {
+    if (!isTauriEnvironment()) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const status = await invoke<MemoryEvolutionLastRun | null>('cmd_get_memory_evolution_status', {
+        workspacePath,
+      });
+      setLastRun(status);
+    } catch (e) {
+      console.warn('[AgentMemoryEvolutionSection] Memory evolution status read failed:', e);
+    }
+  }, [workspacePath]);
+
+  useEffect(() => {
+    void refreshLastRun();
+    if (!isTauriEnvironment()) return;
+
+    const abortController = new AbortController();
+    void listenWithCleanup('cron:execution-complete', () => {
+      void refreshLastRun();
+    }, abortController.signal);
+    return () => abortController.abort();
+  }, [refreshLastRun]);
 
   const ensureRuleSubstrate = useCallback(async (): Promise<boolean> => {
     try {
@@ -69,6 +101,9 @@ export default function AgentMemoryEvolutionSection({
   }, [agent, t, workspaceId, workspacePath]);
 
   const enabled = agent.memoryEvolution?.enabled ?? false;
+  const lastRunTime = lastRun
+    ? formatMemoryEvolutionRunTime(lastRun.executedAt, Date.now(), currentSupportedLocale())
+    : '';
 
   const handleToggle = useCallback(async () => {
     const nextEnabled = !enabled;
@@ -114,6 +149,20 @@ export default function AgentMemoryEvolutionSection({
           />
         </button>
       </div>
+      {lastRun && lastRunTime && (
+        <div className="border-t border-dashed border-[var(--line)] pt-3" aria-live="polite">
+          <span
+            className={`text-xs ${lastRun.success ? 'text-[var(--ink-muted)]' : 'text-[var(--danger)]'}`}
+          >
+            {t(
+              lastRun.success
+                ? 'agentSettings.memoryEvolution.lastRunSuccess'
+                : 'agentSettings.memoryEvolution.lastRunFailure',
+              { time: lastRunTime },
+            )}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

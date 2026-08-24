@@ -10,6 +10,7 @@ import {
   parseLiteLLMCatalog,
   lookupModelContextLength,
   lookupModelCapability,
+  modelSupportsModality,
   lookupProviderModelContextLength,
   __resetModelCapabilityCacheForTests,
 } from './model-capabilities';
@@ -171,6 +172,51 @@ describe('parseLiteLLMCatalog', () => {
     expect(m.has('pricing-only')).toBe(false);
   });
 
+  it('retains LiteLLM modality-only entries and preserves unknown per field', () => {
+    const m = parseLiteLLMCatalog({
+      'openrouter/xiaomi/mimo-v2.5': {
+        mode: 'chat',
+        supports_vision: true,
+        supports_audio_input: true,
+      },
+    });
+
+    expect(m.get('openrouter/xiaomi/mimo-v2.5')?.inputModalitySupport).toEqual({
+      image: { supported: true, source: 'litellm' },
+      audio: { supported: true, source: 'litellm' },
+    });
+    expect(m.get('mimo-v2.5')?.inputModalitySupport?.video).toBeUndefined();
+  });
+
+  it('uses supported_modalities when dedicated LiteLLM booleans are absent', () => {
+    const m = parseLiteLLMCatalog({
+      'provider/multimodal-model': {
+        mode: 'responses',
+        supported_modalities: ['text', 'image'],
+      },
+    });
+
+    expect(m.get('provider/multimodal-model')?.inputModalities).toEqual(['text', 'image']);
+    expect(m.get('provider/multimodal-model')?.inputModalitySupport).toEqual({
+      image: { supported: true, source: 'litellm' },
+      video: { supported: false, source: 'litellm' },
+      audio: { supported: false, source: 'litellm' },
+    });
+  });
+
+  it('does not invent a bare image verdict when provider-qualified LiteLLM entries disagree', () => {
+    const m = parseLiteLLMCatalog({
+      'provider-a/Model-X': { mode: 'chat', max_input_tokens: 128_000, supports_vision: true },
+      'provider-b/model-x': { mode: 'chat', max_input_tokens: 128_000, supports_vision: false },
+    });
+
+    expect(m.get('provider-a/Model-X')?.inputModalitySupport?.image?.supported).toBe(true);
+    expect(m.get('provider-b/model-x')?.inputModalitySupport?.image?.supported).toBe(false);
+    expect(m.get('Model-X')?.contextLength).toBe(128_000);
+    expect(m.get('Model-X')?.inputModalitySupport?.image).toBeUndefined();
+    expect(m.get('model-x')?.inputModalitySupport?.image).toBeUndefined();
+  });
+
   it('is robust to non-object / null inputs', () => {
     expect(parseLiteLLMCatalog(null).size).toBe(0);
     expect(parseLiteLLMCatalog('nope').size).toBe(0);
@@ -330,6 +376,31 @@ describe('capability-suffix tolerance + per-field merge (#338)', () => {
     const cap = lookupModelCapability('glm-5-turbo');
     expect(cap?.inputModalities).toEqual(['text']); // explicit override preserved
     expect(cap?.contextLength).toBe(202_752);        // gap filled from the bundled preset
+  });
+
+  it('uses LiteLLM only as positive evidence and never lets its negative veto a provider offering', () => {
+    const cacheDir = join(tmpHome, '.myagents', 'cache');
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      join(cacheDir, 'litellm_model_prices.json'),
+      JSON.stringify({
+        'provider/unique-modality-model': { mode: 'chat', supports_vision: false },
+      }),
+    );
+    __resetModelCapabilityCacheForTests();
+    expect(modelSupportsModality('unique-modality-model', 'image')).toBe(true);
+
+    const providersDir = join(tmpHome, '.myagents', 'providers');
+    mkdirSync(providersDir, { recursive: true });
+    writeFileSync(
+      join(providersDir, 'explicit-text.json'),
+      JSON.stringify({
+        id: 'explicit-text',
+        models: [{ model: 'unique-modality-model', inputModalities: ['text'] }],
+      }),
+    );
+    __resetModelCapabilityCacheForTests();
+    expect(modelSupportsModality('unique-modality-model', 'image')).toBe(false);
   });
 
   // applyContextWindowSuffix must not feed the SDK a garbage model option built

@@ -9,6 +9,7 @@ import {
 import { useMemo, useState } from "react";
 
 import type {
+  LegacySimulationProposal,
   NarrativeEngineering,
   SimulationProposal,
   SimulationProposalStatus,
@@ -24,15 +25,21 @@ function createStableId(prefix: string): string {
   return `${prefix}-${random.toLowerCase()}`;
 }
 
-function riskLabel(level: SimulationProposal["riskLevel"]): string {
+function riskLabel(level: "low" | "medium" | "high"): string {
   if (level === "high") return "高风险";
   if (level === "low") return "低风险";
   return "中风险";
 }
 
+function isLegacyProposal(
+  proposal: SimulationProposal,
+): proposal is LegacySimulationProposal {
+  return !("kind" in proposal);
+}
+
 function reviewProposal(
   library: NarrativeEngineering,
-  proposal: SimulationProposal,
+  proposal: LegacySimulationProposal,
   status: Extract<SimulationProposalStatus, "accepted" | "rejected">,
 ): NarrativeEngineering {
   const reviewedAt = new Date().toISOString();
@@ -77,7 +84,10 @@ function reviewProposal(
           id: createStableId("section-plan"),
           order: index,
           title: node.title,
-          description: [node.summary, node.checkpoint && `验收：${node.checkpoint}`]
+          description: [
+            node.summary,
+            node.checkpoint ? `验收：${node.checkpoint}` : "",
+          ]
             .filter(Boolean)
             .join("\n"),
           povCharacterId: null,
@@ -100,15 +110,15 @@ export default function SimulationProposalReview({
   const [filter, setFilter] = useState<ProposalFilter>("pending");
   const counts = useMemo(
     () => ({
-      all: library.simulationProposals.length,
+      all: library.simulationProposals.filter(isLegacyProposal).length,
       pending: library.simulationProposals.filter(
-        (item) => item.status === "pending",
+        (item) => isLegacyProposal(item) && item.status === "pending",
       ).length,
       accepted: library.simulationProposals.filter(
-        (item) => item.status === "accepted",
+        (item) => isLegacyProposal(item) && item.status === "accepted",
       ).length,
       rejected: library.simulationProposals.filter(
-        (item) => item.status === "rejected",
+        (item) => isLegacyProposal(item) && item.status === "rejected",
       ).length,
     }),
     [library.simulationProposals],
@@ -116,6 +126,7 @@ export default function SimulationProposalReview({
   const visible = useMemo(
     () =>
       library.simulationProposals
+        .filter(isLegacyProposal)
         .filter((item) => filter === "all" || item.status === filter)
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
     [filter, library.simulationProposals],
@@ -128,10 +139,10 @@ export default function SimulationProposalReview({
           <div>
             <div className="flex items-center gap-2">
               <GitBranch className="h-4 w-4 text-[var(--accent-cool)]" />
-              <h2 className="text-base font-semibold">推演候选</h2>
+              <h2 className="text-base font-semibold">剧情提案</h2>
             </div>
             <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-              接受后生成可编辑的章节计划，并继承来源章节的线路和故事弧关联。
+              审阅旧版剧情推演生成的候选，接受后生成可编辑章节计划。
             </p>
           </div>
           <div className="flex flex-wrap items-center rounded-md bg-[var(--paper-inset)] p-0.5">
@@ -158,9 +169,9 @@ export default function SimulationProposalReview({
         {visible.length === 0 ? (
           <div className="py-20 text-center">
             <Sparkles className="mx-auto h-9 w-9 text-[var(--ink-subtle)]" />
-            <h3 className="mt-4 text-sm font-semibold">没有匹配的推演候选</h3>
+            <h3 className="mt-4 text-sm font-semibold">没有匹配的剧情提案</h3>
             <p className="mt-2 text-sm text-[var(--ink-muted)]">
-              在正文工作台运行剧情推演后，候选会出现在这里。
+              确认剧情候选后，记录会出现在这里。
             </p>
           </div>
         ) : (
@@ -173,7 +184,9 @@ export default function SimulationProposalReview({
                 <header className="flex flex-wrap items-start gap-3 border-b border-[var(--line-subtle)] px-4 py-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-sm font-semibold">{proposal.title}</h3>
+                      <h3 className="text-sm font-semibold">
+                        {proposal.title}
+                      </h3>
                       <span
                         className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${
                           proposal.riskLevel === "high"
@@ -194,7 +207,8 @@ export default function SimulationProposalReview({
                       </span>
                     </div>
                     <p className="mt-1 text-xs text-[var(--ink-subtle)]">
-                      {proposal.agentRole || "推演 Agent"} · {new Date(proposal.createdAt).toLocaleString("zh-CN")}
+                      {proposal.agentRole || "剧情推演 Agent"} ·{" "}
+                      {new Date(proposal.createdAt).toLocaleString("zh-CN")}
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-3 text-xs text-[var(--ink-muted)]">
@@ -271,7 +285,10 @@ export default function SimulationProposalReview({
                 {proposal.reviewedAt && (
                   <footer className="flex items-center gap-2 border-t border-[var(--line-subtle)] px-4 py-2 text-xs text-[var(--ink-subtle)]">
                     <CircleAlert className="h-3.5 w-3.5" />
-                    {proposal.status === "accepted" ? "已生成章节计划" : "已保留拒绝记录"} · {new Date(proposal.reviewedAt).toLocaleString("zh-CN")}
+                    {proposal.status === "accepted"
+                      ? "已生成章节计划"
+                      : "已保留拒绝记录"}{" "}
+                    · {new Date(proposal.reviewedAt).toLocaleString("zh-CN")}
                   </footer>
                 )}
               </article>

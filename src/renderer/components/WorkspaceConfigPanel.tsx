@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
+import { dismissTopmost } from '@/utils/closeLayer';
 
 import { CUSTOM_EVENTS } from '../../shared/constants';
 import { useToast } from '@/components/Toast';
@@ -26,6 +27,7 @@ import IntroductionPanel from './IntroductionPanel';
 import type { IntroductionPanelRef } from './IntroductionPanel';
 import { WorkspaceGeneralTab } from './AgentSettings';
 import type { CapabilityInitialSelect } from '../../shared/skillsTypes';
+import type { ChannelType } from '../../shared/types/agent';
 
 interface WorkspaceConfigPanelProps {
     agentDir: string;
@@ -41,6 +43,10 @@ interface WorkspaceConfigPanelProps {
      *  parent (Chat) is expected to close this overlay and dispatch `/init` to its
      *  current Tab session. Omit to hide the action. */
     onRequestInit?: () => void;
+    /** Open the General tab directly in the selected Channel wizard. */
+    initialAddChannelPlatform?: ChannelType;
+    /** Acknowledge the one-shot Channel deep-link after General consumes it. */
+    onInitialAddChannelPlatformConsumed?: () => void;
 }
 
 export type Tab = 'general' | 'system-prompts' | 'introduction' | 'skills' | 'agent';
@@ -73,9 +79,8 @@ const TAB_ITEMS: { key: Tab; labelKey: string }[] = [
     { key: 'skills', labelKey: 'agentSettings.panel.tabs.skills' },
 ];
 
-export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: externalRefreshKey = 0, initialTab, initialSelect, onRequestInit }: WorkspaceConfigPanelProps) {
+export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: externalRefreshKey = 0, initialTab, initialSelect, onRequestInit, initialAddChannelPlatform, onInitialAddChannelPlatformConsumed }: WorkspaceConfigPanelProps) {
     const { t } = useTranslation('settings');
-    useCloseLayer(() => { onClose(); return true; }, 200);
     const toast = useToast();
     // Stabilize toast reference to avoid unnecessary effect re-runs
     const toastRef = useRef(toast);
@@ -132,6 +137,7 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
         }
         onClose();
     }, [isAnyEditing, onClose, t]);
+    useCloseLayer(() => { handleClose(); return true; }, 200);
 
     // Handle back with editing check
     const handleBackFromDetail = useCallback(() => {
@@ -148,8 +154,9 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
             if (e.key === 'Escape') {
                 if (detailView.type !== 'none') {
                     handleBackFromDetail();
-                } else {
-                    handleClose();
+                } else if (dismissTopmost()) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
                 }
             }
         };
@@ -165,13 +172,13 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
         };
     }, []);
 
-    // Listen for skill copy events to refresh the list
+    // Keep this panel on the same persisted capability generation as Chat.
     useEffect(() => {
-        const handleSkillCopied = () => {
+        const handleCapabilitiesChanged = () => {
             setInternalRefreshKey(k => k + 1);
         };
-        window.addEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
-        return () => window.removeEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
+        window.addEventListener(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED, handleCapabilitiesChanged);
+        return () => window.removeEventListener(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED, handleCapabilitiesChanged);
     }, []);
 
     const handleSelectSkill = useCallback((name: string, scope: 'user' | 'project', isNewSkill?: boolean) => {
@@ -197,6 +204,16 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
         setDetailView({ type: 'none' });
         setInternalRefreshKey(k => k + 1);
     }, []);
+
+    const handleCapabilityItemSaved = useCallback((autoClose?: boolean) => {
+        handleItemSaved(autoClose);
+        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
+    }, [handleItemSaved]);
+
+    const handleCapabilityItemDeleted = useCallback(() => {
+        handleItemDeleted();
+        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
+    }, [handleItemDeleted]);
 
     // Handle tab switch with editing check
     const handleTabSwitch = useCallback((tab: Tab) => {
@@ -275,7 +292,11 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
                     {detailView.type === 'none' ? (
                         <>
                             {activeTab === 'general' && (
-                                <WorkspaceGeneralTab agentDir={agentDir} />
+                                <WorkspaceGeneralTab
+                                    agentDir={agentDir}
+                                    initialAddChannelPlatform={initialAddChannelPlatform}
+                                    onInitialAddChannelPlatformConsumed={onInitialAddChannelPlatformConsumed}
+                                />
                             )}
                             {activeTab === 'system-prompts' && (
                                 <SystemPromptsPanel ref={systemPromptsRef} agentDir={agentDir} onRequestInit={onRequestInit} />
@@ -291,7 +312,6 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
                                         onSelectSkill={handleSelectSkill}
                                         onSelectCommand={handleSelectCommand}
                                         refreshKey={refreshKey}
-                                        onClose={onClose}
                                     />
                                     <WorkspaceAgentsList
                                         scope="project"
@@ -309,8 +329,8 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
                             name={detailView.name}
                             scope={detailView.scope}
                             onBack={handleBackFromDetail}
-                            onSaved={handleItemSaved}
-                            onDeleted={handleItemDeleted}
+                            onSaved={handleCapabilityItemSaved}
+                            onDeleted={handleCapabilityItemDeleted}
                             startInEditMode={detailView.isNewSkill}
                             agentDir={agentDir}
                         />
@@ -320,8 +340,8 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
                             name={detailView.name}
                             scope={detailView.scope}
                             onBack={handleBackFromDetail}
-                            onSaved={handleItemSaved}
-                            onDeleted={handleItemDeleted}
+                            onSaved={handleCapabilityItemSaved}
+                            onDeleted={handleCapabilityItemDeleted}
                             agentDir={agentDir}
                         />
                     ) : detailView.type === 'agent' ? (

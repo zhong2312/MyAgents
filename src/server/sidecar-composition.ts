@@ -133,6 +133,7 @@ const GLOBAL_PREFIXES = ['/api/mcp/oauth/', '/api/workbench-ai/run/'] as const;
 const COMMON_EXACT_PATHS = new Set([
   '/api/runtime/models',
   '/api/runtime/permission-modes',
+  '/api/project-capabilities',
   '/debug/logger',
   '/health',
   '/health/functional',
@@ -146,9 +147,13 @@ const COMMON_PREFIXES = [
   '/api/cc-plugin/',
   '/api/command-item/',
   '/api/command-items',
+  '/api/project-capability/',
   '/api/rules',
   '/api/skill/',
   '/api/skills',
+  // Browser development storage is still bounded to the active workspace by
+  // its route handler. It must pass the sidecar capability gate first.
+  '/api/workbench-dev-storage/',
   '/bridge/',
   '/refs/',
 ] as const;
@@ -158,7 +163,6 @@ const SESSION_ADMIN_ROUTES = new Set([
   'im/send-media',
   'im/wake',
   'reload',
-  'status',
   'task/create-attached',
 ]);
 
@@ -166,6 +170,7 @@ const SESSION_ADMIN_PREFIXES = ['goal/', 'session/'] as const;
 
 const COMMON_ADMIN_PREFIXES = [
   'agent/',
+  'anydoc/',
   'cc-plugin/',
   'config/',
   'cron/',
@@ -184,7 +189,7 @@ const COMMON_ADMIN_PREFIXES = [
   'vision/',
 ] as const;
 
-const COMMON_ADMIN_ROUTES = new Set(['help', 'version']);
+const COMMON_ADMIN_ROUTES = new Set(['help', 'status', 'version']);
 
 function startsWithAny(pathname: string, prefixes: readonly string[]): boolean {
   return prefixes.some(prefix => pathname.startsWith(prefix));

@@ -53,6 +53,8 @@ export interface WorkbenchRendererContext {
   readonly route: string;
   readonly isActive: boolean;
   readonly storage: WorkbenchStorage;
+  /** 更新宿主工作台导航中的当前项目标题；传入 null 恢复工作台默认名称。 */
+  setShellTitle?(title: string | null): void;
   readonly agentSessions: WorkbenchAgentSessions;
   readonly aiRuns: WorkbenchAiRuns;
   /** 工作区全文搜索；浏览器开发模式不可用（isAvailable=false）。 */

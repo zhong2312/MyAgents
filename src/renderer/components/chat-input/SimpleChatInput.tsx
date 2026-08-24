@@ -1,30 +1,23 @@
 import {
   AlertCircle,
   AtSign,
-  Ban,
   ChevronRight,
   ChevronUp,
-  Eye,
-  FilePenLine,
-  FileText,
   Gauge,
   Loader,
-  LockOpen,
   Paperclip,
   Plus,
   Send,
   Settings2,
-  ShieldCheck,
-  ShieldQuestion,
   Square,
   Timer,
   Wrench,
   X,
-  type LucideIcon,
 } from 'lucide-react';
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, forwardRef, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { FileIcon } from '@/components/file-icon';
 import Tip from '@/components/Tip';
 import { useToast } from '@/components/Toast';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -34,8 +27,18 @@ import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { type PermissionMode, PERMISSION_MODES, type Provider, type ProviderVerifyStatus, getModelDisplayName } from '@/config/types';
 import { useConfigData } from '@/config/useConfigData';
 import { resolveEnterKeyAction, sendKeyHint } from '@/utils/chatSendKey';
-import SlashCommandMenu, { type SlashCommand, filterAndSortCommands, mergeSlashCommands } from '../SlashCommandMenu';
-import { isClientActionCommand, resolveClientActionName, withClientActionCommands } from '@/utils/slashActions';
+import SlashCommandMenu, {
+  type SlashCommand,
+  filterAndSortCommands,
+  mergeLocalSlashCommands,
+  mergeSdkSlashCommands,
+} from '../SlashCommandMenu';
+import {
+  CLIENT_ACTION_SLASH_COMMANDS,
+  isClientActionCommand,
+  resolveClientActionName,
+  withClientActionCommands,
+} from '@/utils/slashActions';
 import QueuedMessagesPanel from '../QueuedMessageBubble';
 import CronTaskStatusBar from '../cron/CronTaskStatusBar';
 import GoalStatusBar from '../goal/GoalStatusBar';
@@ -65,6 +68,7 @@ import { imageAttachmentName } from './attachmentNames';
 import { MentionTabButton } from './components/MentionTabButton';
 import { ThoughtPickerRow } from './components/ThoughtPickerRow';
 import { useAttachmentHandling } from './hooks/useAttachmentHandling';
+import { PermissionModeIcon, PermissionModeMenuContent } from '../PermissionModeMenu';
 
 // ===== Module-level pure helpers (extracted from render body) =====
 
@@ -91,41 +95,6 @@ function getCurrentModelLabel(
 ): string {
   if (!modelId) return fallbackLabel;
   return provider ? getModelDisplayName(provider, modelId) : modelId;
-}
-
-const PERMISSION_MODE_ICONS: Partial<Record<string, LucideIcon>> = {
-  auto: ShieldCheck,
-  plan: Eye,
-  fullAgency: LockOpen,
-  default: ShieldQuestion,
-  manual: ShieldQuestion,
-  dontAsk: Ban,
-  acceptEdits: FilePenLine,
-  bypassPermissions: LockOpen,
-  autoEdit: FilePenLine,
-  yolo: LockOpen,
-  suggest: ShieldQuestion,
-  'auto-edit': FilePenLine,
-  'full-auto': ShieldCheck,
-  'no-restrictions': LockOpen,
-};
-
-function PermissionModeIcon({
-  value,
-  fallback,
-  className,
-}: {
-  value: string | undefined;
-  fallback: string | undefined;
-  className: string;
-}) {
-  if (value) {
-    const Icon = PERMISSION_MODE_ICONS[value];
-    if (!Icon) return <span>{fallback}</span>;
-    return <Icon aria-hidden="true" className={className} strokeWidth={1.75} />;
-  }
-
-  return <span>{fallback}</span>;
 }
 
 function runtimeMcpServerId(toolName: string): string | null {
@@ -240,6 +209,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   onGoalCancel,
   onGoalDismiss,
   onSlashAction,
+  clientActionSlashCommands,
+  showBuiltinSdkSlashCommands = true,
+  workspaceSlashCommands,
   sdkSlashCommands = [],
   mode = 'chat',
   toolbarPrefix,
@@ -524,23 +496,48 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [slashSearchQuery, setSlashSearchQuery] = useState('');
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
+  const slashCommandLoadIdRef = useRef(0);
   const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
   const [slashPosition, setSlashPosition] = useState<number | null>(null);
 
   const clientActionsEnabled = !!onSlashAction;
+  const enabledClientActionCommands = useMemo(
+    () => clientActionsEnabled
+      ? [...CLIENT_ACTION_SLASH_COMMANDS, ...(clientActionSlashCommands ?? [])]
+      : [],
+    [clientActionSlashCommands, clientActionsEnabled],
+  );
   const localizedFallbackSlashCommands = useMemo(
-    () => BUILTIN_FALLBACK_SLASH_COMMANDS.map(cmd => ({
-      ...cmd,
-      description: t(`input.slashCommands.${cmd.name}`, { defaultValue: cmd.description }),
-    })),
-    [t],
+    () => showBuiltinSdkSlashCommands
+      ? BUILTIN_FALLBACK_SLASH_COMMANDS.map(cmd => ({
+        ...cmd,
+        description: t(`input.slashCommands.${cmd.name}`, { defaultValue: cmd.description }),
+      }))
+      : [],
+    [showBuiltinSdkSlashCommands, t],
+  );
+  // Launcher receives a runtime-neutral filesystem inventory whose Rust
+  // scanner includes Claude SDK builtins. Project that raw inventory at render
+  // time so provider/runtime changes cannot be overwritten by a late scan from
+  // the previous selection. Chat's injected capability snapshot passes through
+  // the same boundary for one consistent composer invariant.
+  const runtimeVisibleSlashCommands = useMemo(
+    () => showBuiltinSdkSlashCommands
+      ? slashCommands
+      : slashCommands.filter(command => command.source !== 'builtin'),
+    [showBuiltinSdkSlashCommands, slashCommands],
+  );
+  const runtimeVisibleSdkSlashCommands = useMemo(
+    () => showBuiltinSdkSlashCommands ? sdkSlashCommands : [],
+    [showBuiltinSdkSlashCommands, sdkSlashCommands],
   );
   const mergedSlashCommands = useMemo(
     () => withClientActionCommands(
-      mergeSlashCommands(slashCommands, sdkSlashCommands),
+      mergeSdkSlashCommands(runtimeVisibleSlashCommands, runtimeVisibleSdkSlashCommands),
       clientActionsEnabled,
+      clientActionSlashCommands ?? [],
     ),
-    [slashCommands, sdkSlashCommands, clientActionsEnabled],
+    [runtimeVisibleSlashCommands, runtimeVisibleSdkSlashCommands, clientActionsEnabled, clientActionSlashCommands],
   );
 
   // Compute filtered slash commands once per render (used in both handleKeyDown and JSX)
@@ -637,13 +634,19 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   }, []);
 
   // Fetch slash commands function (extracted for reuse).
-  // PRD 0.2.7: routed through fileService.listSlashCommands (Rust scan +
-  // frontmatter parse), not the sidecar /api/commands. Launcher gets the
-  // exact same menu as chat-tab — no more "ah, the launcher has no apiGet"
-  // empty-menu bug.
+  // Chat tabs inject the same effective capability winners used by their
+  // sidebar and Runtime. Launcher has no Sidecar and retains the read-only
+  // workspace scan fallback.
   const fetchCommands = useCallback(async () => {
+    const requestId = ++slashCommandLoadIdRef.current;
     const apply = (list: SlashCommand[]) =>
-      setSlashCommands(list);
+      requestId === slashCommandLoadIdRef.current && setSlashCommands(list);
+    if (workspaceSlashCommands !== undefined) {
+      // Product builtins own their reserved names; disk-backed capabilities
+      // fill only the remaining namespace.
+      apply(mergeLocalSlashCommands(localizedFallbackSlashCommands, workspaceSlashCommands));
+      return;
+    }
     if (!fileService.isAvailable) {
       // Fall back to builtins so the menu isn't empty in browser dev mode.
       apply(localizedFallbackSlashCommands);
@@ -658,10 +661,12 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
         apply(localizedFallbackSlashCommands);
       }
     } catch (err) {
-      console.error('Failed to fetch slash commands, using fallback:', err);
-      apply(localizedFallbackSlashCommands);
+      if (requestId === slashCommandLoadIdRef.current) {
+        console.error('Failed to fetch slash commands, using fallback:', err);
+        apply(localizedFallbackSlashCommands);
+      }
     }
-  }, [fileService, localizedFallbackSlashCommands]);
+  }, [fileService, localizedFallbackSlashCommands, workspaceSlashCommands]);
 
   // Fetch slash commands on mount or when workspacePath changes (so launcher
   // workspace switching reloads project-level skills).
@@ -669,21 +674,21 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     fetchCommands();
   }, [workspacePath, fetchCommands]);
 
-  // Listen for skill copy events to refresh commands list
+  // Launcher has no Sidecar snapshot, so capability mutations refresh its
+  // read-only filesystem inventory through the same invalidation event.
   useEffect(() => {
-    const handleSkillCopied = () => {
+    const handleCapabilitiesChanged = () => {
       // Delay slightly to ensure file system is updated
       setTimeout(() => {
         fetchCommands();
       }, 100);
     };
-    window.addEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
-    return () => window.removeEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
+    window.addEventListener(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED, handleCapabilitiesChanged);
+    return () => window.removeEventListener(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED, handleCapabilitiesChanged);
   }, [fetchCommands]);
 
-  // Handle user-level skill selection
-  // No-op: user-level skills/commands are synced as symlinks into project .claude/
-  // by syncProjectUserConfig() at session startup. No per-invocation copy needed.
+  // Selection is already represented by the injected effective snapshot (or
+  // the Launcher's read-only inventory); no per-invocation file copy is needed.
   const handleSkillSelect = useCallback((_cmd: SlashCommand) => {}, []);
 
   const {
@@ -1040,7 +1045,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     const text = inputValue.trim();
     if (!text && images.length === 0) return;
     if (onSlashAction && images.length === 0 && text.startsWith('/')) {
-      const actionName = resolveClientActionName(text);
+      const actionName = resolveClientActionName(text, enabledClientActionCommands);
       if (actionName) {
         if (showConfigLockedReason()) return;
         setInputValue('');
@@ -1106,7 +1111,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     } finally {
       sendingRef.current = false;
     }
-  }, [onSend, images, inputValue, provider, currentModelId, isExternalRuntime, setImages, t, onSlashAction, showConfigLockedReason]);
+  }, [onSend, images, inputValue, provider, currentModelId, isExternalRuntime, setImages, t, onSlashAction, enabledClientActionCommands, showConfigLockedReason]);
 
   // Handle keyboard navigation in file search and slash menu
   // Handler for selecting a slash command — shared by the click path
@@ -1132,16 +1137,16 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       setInputValue(`${before}${after}`);
       setShowSlashMenu(false);
       setSlashPosition(null);
-      onSlashAction(resolveClientActionName(cmd.name) ?? cmd.name);
+      onSlashAction(resolveClientActionName(cmd.name, enabledClientActionCommands) ?? cmd.name);
       return;
     }
 
     handleSkillSelect(cmd);
-    setInputValue(`${before}/${cmd.name} ${after}`);
+    setInputValue(`${before}/${cmd.invocationName ?? cmd.name} ${after}`);
     setShowSlashMenu(false);
     setSlashPosition(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- textareaRef is a stable ref
-  }, [slashPosition, inputValue, slashSearchQuery, handleSkillSelect, onSlashAction, showConfigLockedReason]);
+  }, [slashPosition, inputValue, slashSearchQuery, handleSkillSelect, onSlashAction, enabledClientActionCommands, showConfigLockedReason]);
 
   const handleKeyDown = useCallback(async (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Shift+Tab to cycle permission mode
@@ -1626,7 +1631,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                             }
                           }}
                         >
-                          <FileText className={`h-4 w-4 flex-shrink-0 ${isSelected ? 'text-[var(--accent)]' : 'text-[var(--ink-muted)]/80'}`} />
+                          <FileIcon name={file.name} />
                           <span className={`min-w-0 truncate font-medium ${isSelected ? 'text-[var(--ink)]' : 'text-[var(--ink-secondary)]'}`}>
                             {file.name}
                           </span>
@@ -1910,51 +1915,25 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 placement="top-start"
                 className="composer-toolbar-menu-enter w-72 py-1"
               >
-                <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--line)]">
-                  <span className="text-xs font-medium text-[var(--ink-muted)]">{t('input.permissionModeHeader')}</span>
-                  {onOpenAgentSettings && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowModeMenu(false);
-                        onOpenAgentSettings();
-                      }}
-                      className="text-xs font-medium text-[var(--accent)] hover:text-[var(--accent-warm-hover)] transition-colors"
-                    >
-                      {t('input.agentSettings')}
-                    </button>
-                  )}
-                </div>
-                {displayPermissionModes.map((mode) => (
-                  <button
-                    key={mode.value}
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (mode.value === 'fullAgency' || (mode.value as string) === 'bypassPermissions') {
-                        toastRef.current.warning(t('input.autonomyWarning'), 5000);
-                      }
-                      onPermissionModeChange?.(mode.value);
+                <PermissionModeMenuContent
+                  items={displayPermissionModes}
+                  selectedValue={permissionMode}
+                  header={t('input.permissionModeHeader')}
+                  headerAction={onOpenAgentSettings ? {
+                    label: t('input.agentSettings'),
+                    onClick: () => {
                       setShowModeMenu(false);
-                    }}
-                    className={`flex w-full flex-col items-start px-3 py-2 text-left ${permissionMode === mode.value
-                      ? 'bg-[var(--accent)]/10'
-                      : 'hover:bg-[var(--hover-bg)]'
-                      }`}
-                  >
-                    <span className={`text-sm font-medium flex items-center gap-1.5 ${permissionMode === mode.value ? 'text-[var(--accent)]' : 'text-[var(--ink)]'
-                      }`}>
-                      <PermissionModeIcon
-                        value={mode.value}
-                        fallback={mode.icon}
-                        className="h-4 w-4 shrink-0"
-                      />
-                      {mode.label}
-                    </span>
-                    <span className="text-xs text-[var(--ink-muted)] mt-0.5">{mode.description}</span>
-                  </button>
-                ))}
+                      onOpenAgentSettings();
+                    },
+                  } : undefined}
+                  onSelect={(value) => {
+                    if (value === 'fullAgency' || value === 'bypassPermissions') {
+                      toastRef.current.warning(t('input.autonomyWarning'), 5000);
+                    }
+                    onPermissionModeChange?.(value as PermissionMode);
+                    setShowModeMenu(false);
+                  }}
+                />
               </Popover>
 
               {/* Tool/MCP Dropdown */}

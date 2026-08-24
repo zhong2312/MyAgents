@@ -77,7 +77,7 @@ export function buildNarrativeAiAgentRequest({
     "更新已有线路、故事弧、目录或章节时，必须在对应 upsert 工具中填写 targetId，且 targetId 必须是上下文中已有对象的稳定 ID。更新章节时，既有节和段也必须分别用 targetId 保留稳定 ID；只有明确新增对象时才省略 targetId。不得仅因标题相同而新建副本。";
   const outlineTaskRule =
     task === "outline"
-      ? '\n\n本次是大纲结构规划：只处理卷、篇、组的层级、每层的主题或时空边界和排序。若快照不足以判断已保存的目录状态，可按需调用 novel_narrative_get_context({ scope: "outline" })。作者要求实际创建或调整大纲时，必须用 novel_narrative_upsert_draft_directories 写入目录候选：父目录引用同一草稿的 candidateId 或已有目录稳定 ID，根卷使用 null。卷、篇、组属于目录，不得创建同名故事弧代替目录；本任务不得用章节候选代替目录。'
+      ? '\n\n本次是全书大纲结构规划：先以小说总览中的“预计章节规模”为容量契约，规划覆盖全书的卷、篇、组层级、主题或时空边界和排序。不得把少量样章当作全书规划。创建草稿时必须传 planningScope: "full-novel"；叶子目录必须填写 plannedChapterCount，非叶子目录填写 0，所有叶子目录的章节额度之和必须落在预计章节范围内。若快照不足以判断已保存的目录状态，可按需调用 novel_narrative_get_context({ scope: "outline" })。作者要求实际创建或调整大纲时，必须用 novel_narrative_upsert_draft_directories 写入目录候选：父目录引用同一草稿的 candidateId 或已有目录稳定 ID，根卷使用 null。卷、篇、组属于目录，不得创建同名故事弧代替目录；本任务不必为每一章展开节和段。'
       : "";
   const chapterTaskRule =
     task === "chapters"

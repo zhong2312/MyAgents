@@ -126,6 +126,49 @@ describe("createNovelTimelineProposalRepository", () => {
     ).toBe("applied");
   });
 
+  it("兼容采纳缺少审计时间戳的旧时间线提案", async () => {
+    const {
+      createdAt: _createdAt,
+      updatedAt: _updatedAt,
+      ...legacyValue
+    } = eventValue("event-legacy", "旧提案事件");
+    const storage = new NovelMemoryStorage({
+      ...Object.fromEntries(
+        createTimelineLibraryInitializationFiles(NOW).map((file) => [
+          file.path,
+          file.content,
+        ]),
+      ),
+      [timelineProposalManifestPath("proposal-legacy")]:
+        serializeTimelineProposalManifest(
+          manifest("proposal-legacy", [
+            {
+              candidateId: "candidate-legacy",
+              kind: "event",
+              action: "create",
+              summary: "旧提案事件",
+              value: legacyValue,
+              status: "pending",
+            },
+          ]),
+        ),
+    });
+
+    await createNovelTimelineProposalRepository(storage).apply(
+      "proposal-legacy",
+      ["candidate-legacy"],
+    );
+
+    const timeline = await createNovelTimelineLibraryRepository(storage).load();
+    expect(timeline.library.events).toEqual([
+      expect.objectContaining({
+        id: "event-legacy",
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    ]);
+  });
+
   it("采纳时执行跨库引用校验，悬空引用被拒绝", async () => {
     const storage = new NovelMemoryStorage({
       ...Object.fromEntries(
@@ -279,9 +322,12 @@ describe("createNovelTimelineProposalRepository", () => {
     );
 
     expect(
-      JSON.parse(storage.getText(timelineRecordPath("events", "event-1"))!)
-        .title,
-    ).toBe("提案版本的开端");
+      JSON.parse(storage.getText(timelineRecordPath("events", "event-1"))!),
+    ).toMatchObject({
+      title: "提案版本的开端",
+      createdAt: NOW,
+      updatedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/u),
+    });
   });
 
   it("删除新建候选时拒绝留下事件引用的提案", async () => {

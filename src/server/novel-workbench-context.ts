@@ -15,9 +15,9 @@ export const NOVEL_WORKBENCH_SDK_INSTRUCTIONS = `这些工具是 MyAgents 小说
 向用户描述时统一称为“小说工作台内置工具”，不得暴露 mcp__ 前缀、novel-workbench 适配器名称或底层传输协议。
 不得建议用户前往 MCP 设置、开关 MCP 服务、检查 MCP 连接或通过重启应用恢复这些工具。
 如果工具调用失败，只能如实说明小说工作台内置工具本次执行失败；不要臆测网络连接、服务进程或用户配置原因。
-可根据当前任务自主选择时间线、剧情、人物、世界、物品或修行体系的上下文读取工具，不要为了遍历工具而进行无目的调用。领域路由必须保持一致：世界架构只调用 novel_world_get_context，修行体系只调用 novel_cultivation_get_context（事实源入口为 world/cultivation/index.json，各体系模块按目录拆分），不要把修行路径传给世界架构工具。地图生成必须先调用 novel_world_get_context 获取 sourceHash，再把该 sourceHash 传给 novel_maps_generate_fantasy_map；地图工具会重新读取完整的空间树、设定 Markdown、词条、地点聚合和势力聚合并校验哈希，拒绝使用过期世界架构生成候选。地图默认输出风格为 xuanhuan-zh 中文奇幻/玄幻地图：地名、势力、山川、水系、秘境和聚落使用中文，不得保留 Azgaar 默认英文随机标签，也不得把默认西式政治地图配色当作最终视觉风格。Azgaar 只负责几何与地形候选，生成工具会统一处理中文命名、玄幻语义和羊皮纸/靛青水域/赭石边界样式。若没有配置独立 Azgaar Runtime，工具会明确返回 compatibility-adapter 降级标识，不得把它描述为已调用 Azgaar 核心。
+可根据当前任务自主选择时间线、剧情、人物、世界、物品或修行体系的上下文读取工具，不要为了遍历工具而进行无目的调用。世界推演场景使用 world 只读上下文，模型必须返回结构化事件候选；规则内核、Schema 和运行账本负责最终校验，模型不得直接写入正式事实或提案。simulation.advance 只是场景 ID，不是新的工具模式。领域路由必须保持一致：世界架构只调用 novel_world_get_context，修行体系只调用 novel_cultivation_get_context（事实源入口为 world/cultivation/index.json，各体系模块按目录拆分），不要把修行路径传给世界架构工具。地图生成必须先调用 novel_world_get_context 获取 sourceHash，再调用 novel_maps_prepare_generation_plan 保存完整规划；规划工具返回后必须展示规划并等待作者明确确认，未确认不得调用 novel_maps_confirm_generation_plan 或 novel_maps_generate_fantasy_map。确认后才把同一 draftId、同一 generationPlan 和 sourceHash 传给视觉生成工具；地图工具会重新读取完整的空间树、设定 Markdown、词条、地点聚合和势力聚合并校验哈希，拒绝使用过期世界架构生成候选。地图默认输出风格为 xuanhuan-zh 中文奇幻/玄幻地图：地名、势力、山川、水系、秘境和聚落使用中文，不得保留 Azgaar 默认英文随机标签，也不得把默认西式政治地图配色当作最终视觉风格。Azgaar 只负责几何与地形候选，生成工具会统一处理中文命名、玄幻语义和羊皮纸/靛青水域/赭石边界样式。若没有配置独立 Azgaar Runtime，工具会明确返回 compatibility-adapter 降级标识，不得把它描述为已调用 Azgaar 核心。
 跨领域上下文工具只用于读取事实；草稿、校验和提交工具仍受当前会话领域约束，不得尝试跨领域写入。
-所有小说工作台写入都必须小批量增量进行：单次默认不超过 32 项、64 KB；优先复用同一草稿多次调用领域 upsert/patch 工具，禁止为了修改少量字段重新上传完整大 JSON。工具返回大小或批次超限时，必须拆分后继续同一草稿。
+所有小说工作台写入都必须小批量增量进行：单次默认不超过 32 项、64 KB；优先复用同一草稿多次调用领域 upsert/patch 工具，禁止为了修改少量字段重新上传完整大 JSON。地图自然语言局部返工前必须先调用 novel_maps_query_draft_features 获取真实 candidateId 和 featureId，再调用 novel_maps_patch_draft_features；工具返回大小或批次超限时，必须拆分后继续同一草稿。
 普通 SDK 命令和文件工具仍然可用。可按任务需要使用 Read、Glob、Grep、Bash 等工具读取小说项目内外的素材与设定，也可在用户任务需要时使用 Write、Edit 等工具处理文件；不得声称受控小说工作台会话没有文件系统访问权限。
 小说工作台管理的正式结构化事实仍应通过当前领域的“草稿 -> 校验 -> 提案”协议写回。内置工具失败或 sourceHash 冲突时，不得把原始文件操作冒充为提案提交成功；应如实说明提案尚未提交。`;
 

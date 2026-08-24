@@ -4,7 +4,7 @@ import { forwardRef, useImperativeHandle } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SimpleChatInputHandle } from '@/components/SimpleChatInput';
-import type { Project } from '@/config/types';
+import { MANAGED_CODEX_PROVIDER, type Project } from '@/config/types';
 import { i18n } from '@/i18n';
 import { ThemeRegistry, ThemeRuntimeProvider } from '@/theme';
 import { syntheticTheme } from '@/theme/__tests__/syntheticTheme';
@@ -49,13 +49,18 @@ vi.mock('@/components/SimpleChatInput', () => ({
   default: forwardRef<SimpleChatInputHandle, {
     active?: boolean;
     onSlashAction?: (name: string) => void;
+    showBuiltinSdkSlashCommands?: boolean;
   }>(function SimpleChatInputMock(
-    { active, onSlashAction },
+    { active, onSlashAction, showBuiltinSdkSlashCommands },
     _ref,
   ) {
     useImperativeHandle(_ref, () => simpleInputHandle, []);
     return (
-      <div data-testid="launcher-input" data-active={String(active)}>
+      <div
+        data-testid="launcher-input"
+        data-active={String(active)}
+        data-show-builtin-sdk-commands={String(showBuiltinSdkSlashCommands)}
+      >
         input
         <button type="button" onClick={() => onSlashAction?.('goal')}>open goal</button>
       </div>
@@ -237,6 +242,7 @@ describe('BrandSection', () => {
     const stack = container.querySelector('.launcher-below-input-stack');
 
     expect(stack).not.toBeNull();
+    expect(stack).toHaveClass('mt-2');
     expect(screen.getByTestId('launcher-context-row')).toBeInTheDocument();
     expect(stack as HTMLElement).toContainElement(screen.getByTestId('launcher-context-row'));
     expect(stack as HTMLElement).toContainElement(screen.getByRole('button', { name: /配置模型供应商/ }));
@@ -256,6 +262,41 @@ describe('BrandSection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'open goal' }));
 
     expect(screen.getByTestId('cron-settings')).toHaveAttribute('data-task-kind', 'goal');
+  });
+
+  it.each([
+    {
+      name: 'Managed Codex provider',
+      props: {
+        provider: {
+          ...MANAGED_CODEX_PROVIDER,
+          primaryModel: 'gpt-5.6-sol',
+          models: [{
+            model: 'gpt-5.6-sol',
+            modelName: 'GPT-5.6-Sol',
+            modelSeries: 'codex',
+          }],
+        },
+      },
+      expected: 'false',
+    },
+    {
+      name: 'system CLI runtime',
+      props: { runtime: 'gemini' as const },
+      expected: 'false',
+    },
+    {
+      name: 'builtin execution',
+      props: {},
+      expected: 'true',
+    },
+  ])('projects Claude SDK slash commands for $name', ({ props, expected }) => {
+    renderBrandSection(props);
+
+    expect(screen.getByTestId('launcher-input')).toHaveAttribute(
+      'data-show-builtin-sdk-commands',
+      expected,
+    );
   });
 
   it('renders the no-provider CTA in English when the UI language is English', async () => {

@@ -36,8 +36,9 @@ export function resolveFileLinkTarget(
   if (!raw) return null;
 
   const { base, line: hashLine } = stripHashLine(raw);
-  const decodedBase = decodeUriLoose(base);
-  const localPath = fileUrlToPath(decodedBase) ?? decodedBase;
+  // Parse file URLs before generic URI decoding so encoded `#` / `?` remain
+  // filename characters instead of being reinterpreted as URL delimiters.
+  const localPath = fileUrlToPath(base) ?? decodeUriLoose(base);
   if (hasUnsupportedScheme(localPath)) return null;
 
   const { path: pathWithoutLine, line: suffixLine } = stripLineSuffix(localPath);
@@ -61,9 +62,17 @@ export function resolveFileLinkTarget(
 export function resolveFileActionTarget(
   rawPath: string,
   workspacePath: string | null | undefined,
+  options?: { parseLineReference?: boolean },
 ): FileActionTarget | null {
+  if (options?.parseLineReference || /^file:\/\//i.test(rawPath.trim())) {
+    return resolveFileLinkTarget(rawPath, workspacePath);
+  }
+
+  // Structured tool `file_path` values are native filenames, not Markdown
+  // references. Preserve legal POSIX names such as `report:12` / `note#L3`
+  // verbatim; only inline/Markdown references opt into line parsing above.
   const path = rawPath?.trim();
-  if (!path) return null;
+  if (!path || hasUnsupportedScheme(path)) return null;
   const workspaceRelative = workspacePath ? toWorkspaceRelativePath(path, workspacePath) : null;
   if (workspaceRelative) return { scope: 'workspace', path: workspaceRelative };
   if (isAbsolutePath(path)) return { scope: 'local', path };
@@ -127,7 +136,10 @@ function fileUrlToPath(raw: string): string | null {
   if (!/^file:\/\//i.test(raw)) return null;
   try {
     const url = new URL(raw);
-    if (url.host && url.host !== 'localhost') return null;
+    if (url.host && url.host !== 'localhost') {
+      const pathname = decodeURIComponent(url.pathname).replace(/\//g, '\\');
+      return pathname ? `\\\\${url.host}${pathname}` : null;
+    }
     let pathname = decodeURIComponent(url.pathname);
     if (/^\/[A-Za-z]:[/\\]/.test(pathname)) {
       pathname = pathname.slice(1).replace(/\//g, '\\');
@@ -236,7 +248,7 @@ function looksLikeRelativeFileReference(rawPath: string): boolean {
 }
 
 function isAbsolutePath(rawPath: string): boolean {
-  return rawPath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(rawPath);
+  return rawPath.startsWith('/') || /^[/\\]{2}/.test(rawPath) || /^[A-Za-z]:[\\/]/.test(rawPath);
 }
 
 function normalizeSlashes(rawPath: string): string {
@@ -245,7 +257,9 @@ function normalizeSlashes(rawPath: string): string {
 
 function normalizeForCompare(rawPath: string): string {
   const normalized = normalizeSlashes(rawPath);
-  return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
+  return /^[A-Za-z]:\//.test(normalized) || normalized.startsWith('//')
+    ? normalized.toLowerCase()
+    : normalized;
 }
 
 function stripTrailingSlash(rawPath: string): string {

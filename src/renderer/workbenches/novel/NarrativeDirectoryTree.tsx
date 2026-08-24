@@ -51,6 +51,14 @@ export default function NarrativeDirectoryTree({
     });
     return total;
   };
+  const plannedCountForDirectory = (directoryId: string): number => {
+    const directory = directories.find((item) => item.id === directoryId);
+    let total = directory?.plannedChapterCount ?? 0;
+    (children.get(directoryId) ?? []).forEach((child) => {
+      total += plannedCountForDirectory(child.id);
+    });
+    return total;
+  };
   const renderDirectories = (parentId: string | null, depth: number) =>
     (children.get(parentId) ?? []).map((directory) => {
       const childDirectories = children.get(directory.id) ?? [];
@@ -100,7 +108,8 @@ export default function NarrativeDirectoryTree({
               <span className="min-w-0 flex-1 truncate">{directory.title}</span>
               <span className="ne-directory-kind shrink-0 text-xs text-[var(--ink-subtle)]">
                 {KIND_LABELS[directory.kind]}
-                {chapterCounts ? ` · ${countForDirectory(directory.id)}` : ""}
+                {` · 规划 ${plannedCountForDirectory(directory.id)}`}
+                {chapterCounts ? ` / ${countForDirectory(directory.id)}` : ""}
               </span>
             </button>
           </div>

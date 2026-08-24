@@ -6,6 +6,11 @@
  */
 import { AUDIO_EXTENSIONS } from '@/utils/audioPlayer';
 
+export type InlineCodeTarget =
+  | { kind: 'web'; url: string }
+  | { kind: 'file'; path: string }
+  | { kind: 'plain' };
+
 /**
  * Common file extensions that strongly indicate a file path.
  *
@@ -37,6 +42,14 @@ const KNOWN_DOTFILES = new Set([
   '.babelrc', '.prettierignore', '.eslintignore',
 ]);
 
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
 /**
  * Quick, synchronous check: does `text` look like it could be a file or directory path?
  *
@@ -45,53 +58,89 @@ const KNOWN_DOTFILES = new Set([
  * False negatives should be minimised — we don't want to miss real paths.
  */
 export function looksLikeFilePath(text: string): boolean {
+  const path = text.trim();
+
   // Too short to be a path (e.g., "a", "go")
-  if (text.length < 2) return false;
+  if (path.length < 2) return false;
 
   // Too long to be a realistic path
-  if (text.length > 300) return false;
+  if (path.length > 300) return false;
 
-  // Contains spaces — almost never a path in AI output
-  if (text.includes(' ')) return false;
+  // Control characters cannot belong to an inline path target. Spaces and
+  // Unicode are intentionally allowed — the backend existence check, not this
+  // heuristic, is the final authority (e.g. `docs/Product Guide.md`).
+  if (hasControlCharacter(path)) return false;
 
-  // Contains URL scheme
-  if (/^https?:\/\//i.test(text) || text.includes('://')) return false;
+  // file:// is a local-file boundary handled by workspaceFileLinks. All other
+  // schemes are not filesystem paths; HTTP(S) is classified before this helper.
+  if (/^file:\/\//i.test(path)) return true;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(path) && !/^[A-Za-z]:[\\/]/.test(path)) return false;
 
   // Contains code-like characters that disqualify it as a path
   // () {} [] ; => are used in code expressions, not paths
-  if (/[(){}[\];=>]/.test(text)) return false;
+  if (/[(){}[\];=>]/.test(path)) return false;
 
   // Contains template literal / interpolation syntax
-  if (text.includes('${') || text.includes('`')) return false;
+  if (path.includes('${') || path.includes('`')) return false;
 
   // Known dotfiles (exact match)
-  if (KNOWN_DOTFILES.has(text)) return true;
+  if (KNOWN_DOTFILES.has(path)) return true;
 
   // Starts with ./ or ../ — very strong path signal
-  if (text.startsWith('./') || text.startsWith('../')) return true;
+  if (path.startsWith('./') || path.startsWith('../')) return true;
 
   // Contains path separator — strong signal, but filter out common non-path patterns
   // like "true/false", "yes/no", "input/output"
-  if (text.includes('/') || text.includes('\\')) {
-    const segments = text.split(/[/\\]/).filter(Boolean);
+  if (path.includes('/') || path.includes('\\')) {
+    const segments = path.split(/[/\\]/).filter(Boolean);
     // Single segment with separator (e.g., trailing slash) — still plausible
     if (segments.length < 2) return true;
     // At least one segment should contain a dot (extension / dotfile) OR
     // the total path should be long enough to be a real path (> 5 chars)
     const hasDot = segments.some(s => s.includes('.'));
-    if (hasDot || text.length > 5) return true;
+    if (hasDot || path.length > 5) return true;
     return false;
   }
 
-  // Has a file extension (e.g., "package.json", "index.ts")
-  const dotIndex = text.lastIndexOf('.');
-  if (dotIndex > 0 && dotIndex < text.length - 1) {
-    const ext = text.slice(dotIndex + 1).toLowerCase();
-    if (PATH_EXTENSIONS.has(ext)) return true;
+  // Any syntactically plausible file suffix is a candidate. The historical
+  // allowlist remains a strong signal/documentation aid, but it must not hide a
+  // real PDF/DOCX/custom-extension file from the authoritative existence check.
+  const dotIndex = path.lastIndexOf('.');
+  if (dotIndex > 0 && dotIndex < path.length - 1) {
+    const ext = path.slice(dotIndex + 1).toLowerCase();
+    if (PATH_EXTENSIONS.has(ext) || /^[\p{L}\p{N}_+-]{1,32}$/u.test(ext)) return true;
   }
 
   // Single word without extension or separator — not a path
   return false;
+}
+
+/**
+ * Classify inferred inline-code targets before any action is attached.
+ *
+ * Explicit Markdown links already carry author intent. Backtick content does
+ * not, so it is promoted only when it is a syntactically valid HTTP(S) URL or
+ * a plausible file candidate whose existence will subsequently be checked by
+ * FileActionContext.
+ */
+export function classifyInlineCodeTarget(text: string): InlineCodeTarget {
+  const value = text.trim();
+  if (!value) return { kind: 'plain' };
+
+  if (!hasControlCharacter(value) && !/%(?![\da-f]{2})/i.test(value)) {
+    try {
+      const parsed = new URL(value);
+      if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname) {
+        return { kind: 'web', url: value };
+      }
+    } catch {
+      // Fall through to file/plain classification.
+    }
+  }
+
+  return looksLikeFilePath(value)
+    ? { kind: 'file', path: value }
+    : { kind: 'plain' };
 }
 
 /**

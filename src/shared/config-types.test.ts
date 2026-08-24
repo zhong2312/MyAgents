@@ -6,6 +6,7 @@ import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   MANAGED_CODEX_PROVIDER,
   MANAGED_CODEX_REQUIRED_RUNTIME,
+  PRESET_MCP_SERVERS,
   PRESET_PROVIDERS,
   SUBSCRIPTION_PROVIDER_ID,
   XAI_SUBSCRIPTION_PROVIDER_ID,
@@ -26,6 +27,20 @@ import {
   withManagedCodexProviderCatalog,
 } from './config-types';
 import managedCodexRuntimeLock from './managed-codex-runtime.json';
+
+describe('MCP presets', () => {
+  it('keeps Tavily credentials out of the URL and projects them through an auth header', () => {
+    const tavily = PRESET_MCP_SERVERS.find(server => server.id === 'tavily-search');
+
+    expect(tavily).toMatchObject({
+      type: 'http',
+      url: 'https://mcp.tavily.com/mcp/',
+      headers: { Authorization: 'Bearer {{TAVILY_API_KEY}}' },
+      requiresConfig: ['TAVILY_API_KEY'],
+    });
+    expect(tavily?.url).not.toContain('TAVILY_API_KEY');
+  });
+});
 
 // normalizeProviderOrder reconciles a persisted provider order against the set
 // of providers that actually exist now: honor the saved order, drop stale/
@@ -229,23 +244,23 @@ describe('Chat history entry developer gate', () => {
 });
 
 describe('Zhipu preset models', () => {
-  it('ships only GLM-5.2 and GLM-5 Turbo in both presets and defaults to GLM-5.2', () => {
+  it('ships only GLM-5.3 and GLM-5 Turbo in both presets and defaults to GLM-5.3', () => {
     for (const providerId of ['zhipu', 'zhipu-ai']) {
       const provider = PRESET_PROVIDERS.find(p => p.id === providerId);
-      const model = provider?.models.find(m => m.model === 'glm-5.2');
+      const model = provider?.models.find(m => m.model === 'glm-5.3');
 
-      expect(provider?.primaryModel).toBe('glm-5.2');
-      expect(provider?.models.map(item => item.model)).toEqual(['glm-5.2', 'glm-5-turbo']);
+      expect(provider?.primaryModel).toBe('glm-5.3');
+      expect(provider?.models.map(item => item.model)).toEqual(['glm-5.3', 'glm-5-turbo']);
       expect(model).toMatchObject({
-        modelName: 'GLM 5.2',
+        modelName: 'GLM 5.3',
         modelSeries: 'zhipu',
         contextLength: 1_000_000,
         maxOutputTokens: 131_072,
         inputModalities: ['text'],
       });
       expect(provider?.modelAliases).toEqual({
-        opus: 'glm-5.2',
-        sonnet: 'glm-5.2',
+        opus: 'glm-5.3',
+        sonnet: 'glm-5.3',
         haiku: 'glm-5-turbo',
       });
     }
@@ -362,9 +377,9 @@ describe('model aliases', () => {
     const provider = PRESET_PROVIDERS.find(p => p.id === 'zhipu');
     expect(provider).toBeTruthy();
     expect(getEffectiveModelAliases(provider!)).toEqual({
-      fable: 'glm-5.2',
-      opus: 'glm-5.2',
-      sonnet: 'glm-5.2',
+      fable: 'glm-5.3',
+      opus: 'glm-5.3',
+      sonnet: 'glm-5.3',
       haiku: 'glm-5-turbo',
     });
   });

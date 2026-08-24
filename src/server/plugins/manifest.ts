@@ -2,11 +2,9 @@
  * manifest.ts — Read & validate .claude-plugin/plugin.json + scan a plugin
  * directory for a lightweight component inventory.
  *
- * MyAgents does NOT interpret plugin components at runtime — that's the
- * Claude Agent SDK's job once we hand it `Options.plugins: [{ type: 'local', path }]`.
- * This module exists only to (a) validate the manifest at install time and
- * (b) surface component counts in the Plugins UI panel. Everything else
- * stays opaque.
+ * This module validates persisted plugin metadata and surfaces component
+ * counts. Builtin Runtime hands the directory to Claude Agent SDK; Managed
+ * Codex interprets its supported runtime fields in the extension compiler.
  */
 
 import {
@@ -17,8 +15,9 @@ import {
   statSync,
   type Dirent,
 } from 'fs';
-import { join, relative, sep } from 'path';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'path';
 import { stripBom } from '../../shared/utils';
+import { parseFullSkillContent } from '../../shared/slashCommands';
 import type {
   PluginManifest,
   PluginComponentInventory,
@@ -54,8 +53,9 @@ export class PluginManifestError extends Error {
  * Read & validate plugin.json from a tree (in-memory) or directory (on-disk).
  *
  * Validates only the fields MyAgents persists: `name` (required, kebab-case)
- * + the optional metadata. Component path fields (`skills` / `agents` /
- * `hooks` / `mcpServers`) are left untouched — the SDK validates those.
+ * + optional metadata. Runtime component fields are intentionally omitted
+ * from this returned persistence shape; their installed-file authority stays
+ * in the consuming Runtime (SDK or Managed Codex extension compiler).
  */
 export function parsePluginManifest(raw: string): PluginManifest {
   let parsed: unknown;
@@ -125,6 +125,70 @@ export function readPluginManifestFromDir(dir: string): PluginManifest | null {
   if (!existsSync(manifestPath)) return null;
   const raw = readFileSync(manifestPath, 'utf-8');
   return parsePluginManifest(raw);
+}
+
+/**
+ * Enumerate the exact SDK `plugin:skill` names exposed by a trusted plugin.
+ * `Options.skills` is an allowlist, so the Builtin adapter must carry plugin
+ * Skills forward while narrowing project/global Skills. This scanner belongs
+ * to the plugin manifest owner and understands both default `skills/` and the
+ * manifest's additional `skills` paths.
+ */
+export function listPluginQualifiedSkillNames(installPath: string): string[] {
+  const rawManifest = JSON.parse(
+    readFileSync(join(installPath, '.claude-plugin', 'plugin.json'), 'utf8'),
+  ) as Record<string, unknown>;
+  const pluginName = typeof rawManifest.name === 'string' ? rawManifest.name.trim() : '';
+  if (!pluginName) return [];
+
+  const isWithinRoot = (candidate: string): boolean => {
+    const rel = relative(installPath, candidate);
+    return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+  };
+  const roots = [join(installPath, 'skills')];
+  const custom = typeof rawManifest.skills === 'string'
+    ? [rawManifest.skills]
+    : Array.isArray(rawManifest.skills)
+      ? rawManifest.skills.filter((value): value is string => typeof value === 'string')
+      : [];
+  for (const relativePath of custom) {
+    if (!relativePath.startsWith('./')) continue;
+    const candidate = resolve(installPath, relativePath);
+    if (isWithinRoot(candidate)) roots.push(candidate);
+  }
+
+  const result = new Set<string>();
+  const addSkillFolder = (folder: string): boolean => {
+    const folderMeta = lstatSync(folder);
+    if (!folderMeta.isDirectory() || folderMeta.isSymbolicLink()) return false;
+    const skillPath = join(folder, 'SKILL.md');
+    const skillMeta = lstatSync(skillPath);
+    if (!skillMeta.isFile() || skillMeta.isSymbolicLink() || skillMeta.size > 1024 * 1024) return false;
+    const parsed = parseFullSkillContent(readFileSync(skillPath, 'utf8'));
+    const skillName = parsed.frontmatter.name?.trim() || basename(folder);
+    if (skillName) result.add(`${pluginName}:${skillName}`);
+    return true;
+  };
+
+  for (const root of roots) {
+    if (!isWithinRoot(root)) continue;
+    try {
+      if (addSkillFolder(root)) continue;
+    } catch { /* container root, inspect one level below */ }
+    let entries: Dirent[];
+    try {
+      const meta = lstatSync(root);
+      if (!meta.isDirectory() || meta.isSymbolicLink()) continue;
+      entries = readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      try { addSkillFolder(join(root, entry.name)); } catch { /* invalid plugin skill */ }
+    }
+  }
+  return [...result].sort();
 }
 
 /**

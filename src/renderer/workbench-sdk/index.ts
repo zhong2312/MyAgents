@@ -2,6 +2,8 @@ export { defineWorkbench } from "./defineWorkbench";
 export { createWorkbenchRegistry, DuplicateWorkbenchError } from "./registry";
 export { CustomSelect, OverlayBackdrop, Popover } from "./ui";
 export { useCloseLayer } from "./lifecycle";
+export { useWorkbenchStorage } from "./storage";
+export { useWorkbenchToastOptional } from "./toast";
 export { useWorkbenchAvailableProviders } from "./modelCatalog";
 export {
   CompactAiRunWindow,

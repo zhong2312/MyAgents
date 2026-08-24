@@ -23,6 +23,8 @@ import type {
   TurnTerminalObserver,
 } from '../session-core/turn-queue';
 import type { AssistantChannelDelivery } from '../session-core/channel-delivery';
+import type { RuntimeExtensionDiagnostics } from '../../shared/types/runtime';
+import type { ImBridgeTurnContext } from '../session-core/im-bridge-types';
 
 export type SessionEngineKind = 'builtin' | 'external';
 
@@ -169,6 +171,7 @@ export type InjectedTurnRequest = {
   onTerminal?: TurnTerminalObserver;
   /** Final authority check at the runtime promotion boundary. */
   beforeDispatch?: DispatchGuard;
+  requiredSystemSkill?: RequiredSystemSkill;
 };
 
 export type InjectedTurnResult = {
@@ -217,6 +220,7 @@ export type ScheduledTurnPreparationResult = {
   providerRoutingRecovery?: string;
   runtimeConfig?: RuntimeConfig | null;
   beforeDispatch?: DispatchGuard;
+  requiredSystemSkill?: RequiredSystemSkill;
   release?: () => void | Promise<void>;
   error?: string;
   code?: 'session_bind_failed' | 'configuration_failed' | 'scenario_failed';
@@ -281,6 +285,8 @@ export type SessionEngineConfigSnapshot = {
   model: string | null;
   mcpServerIds: string[] | null;
   agentNames: string[] | null;
+  enabledPluginIds?: string[] | null;
+  extensionStatus?: RuntimeExtensionDiagnostics;
   enabledOfficialToolIds: OfficialToolId[] | null;
   permissionMode: string | null;
   providerId: string | null;
@@ -390,11 +396,14 @@ export interface SessionEngine {
     expected: RegisteredAgentSessionOrigin,
   ): Promise<{ success: boolean; metadataExists?: boolean; adoptedLegacyOrigin?: boolean; error?: string }>;
   getCurrentTurnIdentity(): TurnIdentity | null;
+  getActiveImBridgeTurnContext(): ImBridgeTurnContext | null;
   getSessionCompletionTerminal(): SessionCompletionTerminal | null;
   hasQueuedTurnOwnedBy(owner: TurnOwner): boolean;
   getHeldImConfigSnapshot(): SessionEngineHeldImConfigSnapshot;
   getLiveSessionOverlay(sessionId: string): SessionEngineLiveOverlay;
   sendDesktopMessage(request: DesktopMessageRequest): Promise<DesktopAdmissionResult>;
+  /** Run a runtime-native context compaction without adding a transcript turn. */
+  compactContext(): Promise<CapabilityOperationResult>;
   enqueueImMessage(request: ImMessageRequest): Promise<ImAdmissionResult>;
   cancelImRequest(requestId: string, reason?: string): Promise<ImCancelResult>;
   enqueueBackgroundMessage(request: BackgroundMessageRequest): Promise<ImAdmissionResult>;
@@ -440,12 +449,17 @@ export interface SessionEngine {
   updateMcpServers(servers: McpServerDefinition[]): Promise<{ success: boolean; servers?: string[]; skipped?: string; error?: string }>;
   configureWorkbenchToolset(toolset: unknown, systemPrompt?: unknown): Promise<WorkbenchToolsetConfigurationResult>;
   updateAgents(agents: Record<string, unknown>): Promise<{ success: boolean; skipped?: string; error?: string }>;
+  updateEnabledPluginIds(ids: string[] | null): Promise<{ success: boolean; enabledIds?: string[] | null; skipped?: string; error?: string }>;
   updateDesktopInteractionScenario(
     scenario: Extract<InteractionScenario, { type: 'desktop' }>,
   ): Promise<{ success: boolean; skipped?: string; error?: string }>;
   resetForNewDesktopSession(workspacePath: string): Promise<{ success: boolean; sessionId?: string; error?: string }>;
-  resetForNewImSession(
+  migrateBoundSurfaceSession(
     workspacePath: string,
-    options?: { metadataBirthPending?: boolean; metadataIndexed?: boolean },
+    options: {
+      targetSessionId: string;
+      metadataBirthPending?: boolean;
+      metadataIndexed?: boolean;
+    },
   ): Promise<{ success: boolean; sessionId?: string; error?: string }>;
 }

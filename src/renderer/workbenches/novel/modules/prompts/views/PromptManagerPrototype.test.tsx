@@ -156,11 +156,11 @@ describe("PromptManagerPrototype", () => {
       metadataText.indexOf("v1.0.0"),
     );
     expect(metadataText.indexOf("v1.0.0")).toBeLessThan(
-      metadataText.indexOf("StoryForge 小说提示词库"),
+      metadataText.indexOf("My Novel Studio 小说提示词库"),
     );
 
     expect(screen.getByLabelText("完整分组路径")).toHaveTextContent(
-      "StoryForge 小说提示词库",
+      "My Novel Studio 小说提示词库",
     );
     expect(screen.getByLabelText("完整分组路径")).toHaveTextContent(
       "novel.chapter.continue",
@@ -246,17 +246,18 @@ describe("PromptManagerPrototype", () => {
       screen.getAllByRole("button", { name: "重新安装为新副本" })[0],
     );
     expect(
-      screen.getAllByText("StoryForge 小说提示词库 · 副本 2").length,
+      screen.getAllByText("My Novel Studio 小说提示词库 · 副本 2").length,
     ).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     fireEvent.click(screen.getByRole("button", { name: /当前启用集/ }));
     expect(screen.getByText("检测到 40 组提示词冲突")).toBeInTheDocument();
-    expect(screen.getByText("0 项可执行")).toBeInTheDocument();
+    const executableLabel = screen.getByText(/项可执行/);
+    expect(executableLabel.parentElement).toHaveTextContent("1 项可执行");
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "保留 StoryForge 小说提示词库 · 副本 2，处理 novel.world.guide 冲突",
+        name: "保留 My Novel Studio 小说提示词库 · 副本 2，处理 novel.world.guide 冲突",
       }),
     );
     expect(screen.getByText("检测到 39 组提示词冲突")).toBeInTheDocument();

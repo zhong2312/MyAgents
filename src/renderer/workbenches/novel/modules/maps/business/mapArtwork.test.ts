@@ -247,6 +247,7 @@ describe("mapArtwork", () => {
       assetId: "city",
       x: 240,
       y: 180,
+      sourceFeatureId: "feature-cloud-city",
     });
     const inserted = addMapArtworkStamp(artwork, stamp);
     expect(findMapArtworkStamp(inserted, stamp.id)).toMatchObject({
@@ -276,6 +277,7 @@ describe("mapArtwork", () => {
       assetId: "forest",
       x: 320,
       y: 240,
+      sourceFeatureId: "feature-forest",
       variant: 2,
       scale: 1.8,
       opacity: 0.65,
@@ -290,6 +292,7 @@ describe("mapArtwork", () => {
       rotation: 12,
       flipX: true,
       flipY: false,
+      sourceFeatureId: "feature-forest",
     });
   });
 

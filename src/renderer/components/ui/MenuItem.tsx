@@ -5,7 +5,7 @@
 // tones and an `active` (submenu-open) highlight, and forwardRef so a row can
 // anchor a side submenu. Used by the session-domain menus that DropdownMenu
 // can't serve:
-//   - SessionMenuButton — needs a SessionID header row + a "绑定聊天机器人 ▸"
+//   - SessionMenuButton — needs a SessionID header row + a "在聊天机器人继续此对话 ›"
 //     submenu (active state + ref-anchored Popover).
 //   - SessionHistoryDropdown — per-row "更多" lives inside a hover-reveal
 //     toolbar, so it owns its own trigger styling/sizing + open-state coupling

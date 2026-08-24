@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# Local runtime
+.playwright-mcp/
+
+# Daily workspace (temp tasks, don't track)
+workspace/
+
+# Generated images (ignore loose, track in folder)
+*.png
+*.jpeg
+*.jpg
+!generated-images/
+
+# Backups
+*.zip
+
+# Claude Code auto-memory (separate from your memory system)
+.claude-auto-memory/
+
+# Credentials (never commit secrets)
+.config/

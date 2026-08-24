@@ -70,6 +70,7 @@ function createDirectory(
     description: "",
     status: "idea",
     order: nextNarrativeOrder(siblings),
+    plannedChapterCount: 0,
   };
 }
 
@@ -312,6 +313,26 @@ export default function NarrativeOutline({
                     </option>
                   ))}
                 </NarrativeSelect>
+              </label>
+              <label className="min-w-0">
+                <span className="mb-1.5 block text-xs font-medium text-[var(--ink-muted)]">
+                  直接规划章节数
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={selected.plannedChapterCount}
+                  onChange={(event) =>
+                    updateSelected({
+                      plannedChapterCount: Math.max(
+                        0,
+                        Number.parseInt(event.target.value, 10) || 0,
+                      ),
+                    })
+                  }
+                  className="ne-input"
+                />
               </label>
               <div className="col-span-full min-w-0">
                 <span className="mb-1.5 block text-xs font-medium text-[var(--ink-muted)]">

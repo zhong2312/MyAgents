@@ -23,6 +23,12 @@ describe('external runtime shell PATH fallback', () => {
     );
     expect(paths).toContain('C:\\Users\\tester\\.myagents\\npm-global');
     expect(paths).toContain('C:\\Users\\tester\\.myagents\\bin');
+    expect(paths.indexOf('C:\\Users\\tester\\.myagents\\bin')).toBeLessThan(
+      paths.indexOf('C:\\Users\\tester\\AppData\\Roaming\\npm'),
+    );
+    expect(paths.indexOf('C:\\Users\\tester\\.myagents\\bin')).toBeLessThan(
+      paths.indexOf('C:\\Users\\tester\\.myagents\\npm-global'),
+    );
   });
 
   it('prepends fallback paths before the inherited Windows PATH', () => {
@@ -41,7 +47,7 @@ describe('external runtime shell PATH fallback', () => {
     ).toBeLessThan(fallback.indexOf('C:\\Windows\\System32'));
   });
 
-  it('includes MyAgents npm-global before the app CLI on Unix-like platforms', () => {
+  it('keeps the app CLI ahead of npm-global on Unix-like platforms', () => {
     const paths = getFallbackPaths({
       platform: 'darwin',
       env: { HOME: '/Users/tester', PATH: '/usr/bin' },
@@ -53,7 +59,7 @@ describe('external runtime shell PATH fallback', () => {
     expect(paths).toContain('/Users/tester/.myagents/npm-global/bin');
     expect(paths).toContain('/Users/tester/.myagents/bin');
     expect(
-      paths.indexOf('/Users/tester/.myagents/npm-global/bin'),
-    ).toBeLessThan(paths.indexOf('/Users/tester/.myagents/bin'));
+      paths.indexOf('/Users/tester/.myagents/bin'),
+    ).toBeLessThan(paths.indexOf('/Users/tester/.myagents/npm-global/bin'));
   });
 });

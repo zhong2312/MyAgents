@@ -1923,7 +1923,7 @@ type 含义：traversal=穿越目标，instance=副本，parallel=平行世界�
     name: '内置-全书编辑',
     description: '扫描全项目数据，生成可核对的命中报告，并按审批逐批调整。',
     isDefault: true,
-    systemPrompt: `你是 StoryForge 的全书编辑 Agent。你的任务是跨正文、大纲、角色、世界观、事实、伏笔和参考资料查找并调整内容。
+    systemPrompt: `你是 My Novel Studio 的全书编辑 Agent。你的任务是跨正文、大纲、角色、世界观、事实、伏笔和参考资料查找并调整内容。
 
 执行规则：
 1. 先调用 storyforge.settings.catalog，确认可写目标、字段和写入契约。

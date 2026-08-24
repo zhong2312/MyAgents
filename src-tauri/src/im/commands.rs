@@ -1317,7 +1317,7 @@ pub async fn cmd_start_agent_channel(
     let needs_heartbeat =
         agent_instance.heartbeat_handle.is_none() && !agent_instance.channels.is_empty();
     if needs_heartbeat {
-        let hb_config = agentConfig.heartbeat.clone().unwrap_or_default();
+        let hb_config = agentConfig.effective_heartbeat();
         let agent_id_hb = agentId.clone();
         let agent_label = agentConfig.name.clone();
         let agent_state_for_hb = Arc::clone(&*agentState);
@@ -1488,8 +1488,9 @@ pub(super) fn configured_channel_status_from_state(
     agent_cfg: &AgentConfigRust,
     channel_cfg: &ChannelConfigRust,
     health_state: types::ImHealthState,
+    workspace_archived: bool,
 ) -> Option<ChannelStatus> {
-    if !should_report_missing_configured_channel(agent_cfg, channel_cfg) {
+    if workspace_archived || !should_report_missing_configured_channel(agent_cfg, channel_cfg) {
         return None;
     }
     let status = missing_configured_channel_status(&health_state.status);
@@ -1520,14 +1521,20 @@ async fn configured_channel_status_from_disk(
     agent_cfg: &AgentConfigRust,
     channel_cfg: &ChannelConfigRust,
 ) -> Option<ChannelStatus> {
-    if !should_report_missing_configured_channel(agent_cfg, channel_cfg) {
+    let workspace_archived = is_agent_workspace_archived(agent_cfg);
+    if workspace_archived || !should_report_missing_configured_channel(agent_cfg, channel_cfg) {
         return None;
     }
     let health = HealthManager::new(health::agent_channel_health_path(
         &agent_cfg.id,
         &channel_cfg.id,
     ));
-    configured_channel_status_from_state(agent_cfg, channel_cfg, health.get_state().await)
+    configured_channel_status_from_state(
+        agent_cfg,
+        channel_cfg,
+        health.get_state().await,
+        workspace_archived,
+    )
 }
 
 async fn merge_configured_channel_statuses(
@@ -2025,18 +2032,19 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
                     .release_all_sidecars_preserve_bindings(sidecar_manager);
             }
         }
-        // Hot-reload heartbeat config
-        if let Some(ref hb_json) = patch.heartbeat_config_json {
-            if let Ok(hb_config) = serde_json::from_str::<types::HeartbeatConfig>(hb_json) {
-                if let Some(ref hb_arc) = agent.heartbeat_config {
-                    *hb_arc.write().await = hb_config;
-                }
-                // Wake the heartbeat runner so it picks up the new interval immediately
-                // (otherwise it stays blocked on the old interval.tick())
-                // Use try_send (non-async) to avoid holding the agents mutex across an await point
-                if let Some(ref tx) = agent.heartbeat_wake_tx {
-                    let _ = tx.try_send(types::WakeReason::Interval);
-                }
+        if patch.enabled.is_some() {
+            agent.config.enabled = updated_agent.enabled;
+        }
+        // Hot-reload the effective heartbeat gate whenever either the master
+        // or child config changes. Disk remains authoritative for both fields.
+        if patch.heartbeat_config_json.is_some() || patch.enabled.is_some() {
+            agent.config.heartbeat = updated_agent.heartbeat.clone();
+            if let Some(ref hb_arc) = agent.heartbeat_config {
+                *hb_arc.write().await = updated_agent.effective_heartbeat();
+            }
+            // Wake the heartbeat runner so it adopts the new gate/interval now.
+            if let Some(ref tx) = agent.heartbeat_wake_tx {
+                let _ = tx.try_send(types::WakeReason::Interval);
             }
         }
         // Hot-reload memory auto-update config (v0.1.43)
@@ -2235,6 +2243,58 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
         }
     }
     drop(agents_guard);
+
+    if patch.enabled.is_some()
+        || patch.memory_auto_update_config_json.is_some()
+        || patch.memory_evolution_config_json.is_some()
+    {
+        let updated_agent = read_agent_configs_from_disk()
+            .into_iter()
+            .find(|candidate| candidate.id == agent_id)
+            .ok_or_else(|| format!("Agent {} not found in persisted config", agent_id))?;
+        let archived = is_agent_workspace_archived(&updated_agent);
+
+        if patch.enabled.is_some() || patch.memory_auto_update_config_json.is_some() {
+            let mut memory_auto_update = updated_agent.memory_auto_update.clone();
+            if let Some(config) = memory_auto_update.as_mut() {
+                config.enabled = updated_agent.enabled && config.enabled && !archived;
+            }
+            crate::memory_auto_update::configure_memory_auto_update_task(
+                crate::memory_auto_update::ConfigureMemoryAutoUpdateTaskRequest {
+                    agent_id: updated_agent.id.clone(),
+                    workspace_path: updated_agent.resolved_workspace_path.clone(),
+                    memory_auto_update,
+                    heartbeat: updated_agent.heartbeat.clone(),
+                },
+            )
+            .await?;
+        }
+
+        if patch.enabled.is_some() || patch.memory_evolution_config_json.is_some() {
+            let evolution_enabled = updated_agent.enabled
+                && updated_agent
+                    .memory_evolution
+                    .as_ref()
+                    .is_some_and(|config| config.enabled)
+                && !archived;
+            let workspace_id = config_store::project_id_for_agent(&updated_agent.id)
+                .unwrap_or_else(|| updated_agent.id.clone());
+            crate::memory_evolution::configure_memory_evolution_tasks(
+                crate::memory_evolution::ConfigureMemoryEvolutionTasksRequest {
+                    agent_id: updated_agent.id.clone(),
+                    workspace_id,
+                    workspace_path: updated_agent.resolved_workspace_path.clone(),
+                    runtime: updated_agent.runtime.clone(),
+                    runtime_config: updated_agent.runtime_config.clone(),
+                    mcp_enabled_servers: updated_agent.mcp_enabled_servers.clone(),
+                    memory_auto_update: updated_agent.memory_auto_update.clone(),
+                    heartbeat: updated_agent.heartbeat.clone(),
+                    enabled: evolution_enabled,
+                },
+            )
+            .await?;
+        }
+    }
 
     let _ = app_handle.emit("agent:config-changed", json!({}));
     Ok(())

@@ -62,7 +62,9 @@ pub use commands::{
     cmd_update_agent_config, cmd_update_im_bot_config,
 };
 use commands::{persist_bot_config_patch, read_available_providers_from_disk};
-pub(crate) use config_store::read_agent_configs_from_disk;
+pub(crate) use config_store::{
+    agent_id_for_project, is_agent_workspace_archived, read_agent_configs_from_disk,
+};
 use config_store::{
     missing_configured_channel_status, persist_agent_channel_model, persist_agent_config_patch,
     read_im_configs_from_disk, route_agent_heartbeat_once,
@@ -92,9 +94,10 @@ pub(crate) use state::{
     PendingApproval, PendingApprovals, PendingQuestion, PendingQuestions, SharedAgentLink,
 };
 use telegram::TelegramAdapter;
+pub(crate) use types::AgentConfigRust;
 use types::{
-    AgentConfigPatch, AgentConfigRust, AgentStatus, AskUserQuestionItem, AskUserQuestionPayload,
-    BotConfigPatch, ChannelConfigRust, ChannelStatus, GroupActivation, GroupEvent, GroupPermission,
+    AgentConfigPatch, AgentStatus, AskUserQuestionItem, AskUserQuestionPayload, BotConfigPatch,
+    ChannelConfigRust, ChannelStatus, GroupActivation, GroupEvent, GroupPermission,
     GroupPermissionStatus, HostInteractionCapability, ImAttachmentType, ImBotStatus, ImConfig,
     ImConversation, ImMessage, ImPlatform, ImSourceType, ImStatus, LastActiveChannel,
     LastActivePrivateTarget,

@@ -2,6 +2,8 @@
  * Shared types for Skills & Commands management
  */
 import type { SkillFrontmatter, CommandFrontmatter } from './slashCommands';
+import type { ProjectCapabilitySource } from './projectCapabilities';
+import type { SkillIntegrityIssue } from './skillIntegrity';
 
 // Re-export frontmatter types
 export type { SkillFrontmatter, CommandFrontmatter };
@@ -22,6 +24,10 @@ export interface SkillItem {
     required: boolean;
     /** Effective enablement (always true for project and required skills). */
     enabled: boolean;
+    /** Present in the workspace capability list; stable project override key. */
+    capabilityId?: string;
+    /** Physical origin after resolving MyAgents-managed project symlinks. */
+    origin?: ProjectCapabilitySource;
 }
 
 /**
@@ -29,11 +35,16 @@ export interface SkillItem {
  */
 export interface CommandItem {
     name: string;           // Display name (from frontmatter or fallback to fileName)
+    invocationName?: string; // Slash token derived from the source path in project capability snapshots
     fileName: string;       // Actual file name without .md extension
     description: string;
     scope: 'user' | 'project';
     path: string;
     author?: string;
+    enabled?: boolean;
+    required?: boolean;
+    capabilityId?: string;
+    origin?: ProjectCapabilitySource;
 }
 
 /**
@@ -44,6 +55,10 @@ export interface SkillDetail {
     folderName: string;
     path: string;
     scope: 'user' | 'project';
+    /** Content is versioned and maintained by MyAgents. */
+    systemOwned: boolean;
+    /** Product contract requires this global Skill to remain available. */
+    required: boolean;
     frontmatter: Partial<SkillFrontmatter>;
     body: string;
 }
@@ -66,6 +81,7 @@ export interface CommandDetail {
 export interface SkillsListResponse {
     success: boolean;
     skills: SkillItem[];
+    integrityIssues?: SkillIntegrityIssue[];
     error?: string;
 }
 

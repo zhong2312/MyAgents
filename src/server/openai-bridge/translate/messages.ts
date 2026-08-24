@@ -4,10 +4,12 @@ import type {
   AnthropicMessage,
   AnthropicContentBlock,
   AnthropicSystemBlock,
+  AnthropicTextBlock,
   AnthropicToolResultBlock,
 } from '../types/anthropic';
-import type { OpenAIMessage, OpenAIAssistantMessage, OpenAIContentPart } from '../types/openai';
+import type { OpenAIMessage, OpenAIAssistantMessage, OpenAIContentPart, OpenAITextContentPart } from '../types/openai';
 import { translateImageBlock, type ToolImageSaver } from './multimodal';
+import { projectPromptCacheBreakpoint } from './cache-semantics';
 
 /** Convert Anthropic system + messages to OpenAI messages array */
 export function translateMessages(
@@ -15,16 +17,29 @@ export function translateMessages(
   messages: AnthropicMessage[],
   thinkingEnabled = false,
   imageSaver?: ToolImageSaver,
+  promptCacheBreakpoints = false,
 ): OpenAIMessage[] {
   const result: OpenAIMessage[] = [];
 
   // 1. System prompt → system message
   if (system) {
-    const systemText = typeof system === 'string'
-      ? system
-      : system.map(b => b.text).join('\n\n');
+    const systemText = typeof system === 'string' ? system : system.map(b => b.text).join('\n\n');
     if (systemText) {
-      result.push({ role: 'system', content: systemText });
+      if (Array.isArray(system) && promptCacheBreakpoints) {
+        result.push({
+          role: 'system',
+          content: system.map((block, index) => {
+            const breakpoint = projectPromptCacheBreakpoint(true, block.cache_control);
+            return {
+              type: 'text' as const,
+              text: `${index > 0 ? '\n\n' : ''}${block.text}`,
+              ...(breakpoint ? { prompt_cache_breakpoint: breakpoint } : {}),
+            };
+          }),
+        });
+      } else {
+        result.push({ role: 'system', content: systemText });
+      }
     }
   }
 
@@ -55,9 +70,9 @@ export function translateMessages(
   // 3. Translate each message
   for (const msg of messages) {
     if (msg.role === 'user') {
-      translateUserMessage(msg, result, knownToolUseIds, imageSaver);
+      translateUserMessage(msg, result, knownToolUseIds, imageSaver, promptCacheBreakpoints);
     } else if (msg.role === 'assistant') {
-      translateAssistantMessage(msg, result, effectiveThinkingEnabled);
+      translateAssistantMessage(msg, result, effectiveThinkingEnabled, promptCacheBreakpoints);
     }
   }
 
@@ -69,6 +84,7 @@ function translateUserMessage(
   result: OpenAIMessage[],
   knownToolUseIds: Set<string>,
   imageSaver?: ToolImageSaver,
+  promptCacheBreakpoints = false,
 ): void {
   // String content → simple user message
   if (typeof msg.content === 'string') {
@@ -96,10 +112,14 @@ function translateUserMessage(
 
   // Emit tool messages first (OpenAI requires tool responses before next user message)
   for (const tr of toolResults) {
+    const content = extractToolResultContent(tr, imageSaver);
+    const breakpoint = projectPromptCacheBreakpoint(promptCacheBreakpoints, tr.cache_control);
     result.push({
       role: 'tool',
       tool_call_id: tr.tool_use_id,
-      content: extractToolResultContent(tr, imageSaver),
+      content: breakpoint
+        ? [{ type: 'text', text: content, prompt_cache_breakpoint: breakpoint }]
+        : content,
     });
   }
 
@@ -116,8 +136,8 @@ function translateUserMessage(
 
   // Emit remaining content as user message (if any)
   if (otherBlocks.length > 0) {
-    const parts = convertToOpenAIParts(otherBlocks);
-    if (parts.length === 1 && parts[0].type === 'text') {
+    const parts = convertToOpenAIParts(otherBlocks, promptCacheBreakpoints);
+    if (parts.length === 1 && parts[0].type === 'text' && !parts[0].prompt_cache_breakpoint) {
       result.push({ role: 'user', content: parts[0].text });
     } else if (parts.length > 0) {
       result.push({ role: 'user', content: parts });
@@ -125,13 +145,18 @@ function translateUserMessage(
   }
 }
 
-function translateAssistantMessage(msg: AnthropicMessage, result: OpenAIMessage[], thinkingEnabled: boolean): void {
+function translateAssistantMessage(
+  msg: AnthropicMessage,
+  result: OpenAIMessage[],
+  thinkingEnabled: boolean,
+  promptCacheBreakpoints: boolean,
+): void {
   if (typeof msg.content === 'string') {
     result.push({ role: 'assistant', content: msg.content });
     return;
   }
 
-  const textParts: string[] = [];
+  const textBlocks: AnthropicTextBlock[] = [];
   const thinkingParts: string[] = [];
   // Note: thought_signature is NOT included here. The bridge handler re-injects it from
   // its cache (handler.ts:106-138) after message translation. See: #68
@@ -139,7 +164,7 @@ function translateAssistantMessage(msg: AnthropicMessage, result: OpenAIMessage[
 
   for (const block of msg.content) {
     if (block.type === 'text') {
-      textParts.push(block.text);
+      textBlocks.push(block);
     } else if (block.type === 'tool_use') {
       toolCalls.push({
         id: block.id,
@@ -164,10 +189,23 @@ function translateAssistantMessage(msg: AnthropicMessage, result: OpenAIMessage[
   // Provide an empty reasoning_content to satisfy this validation.
   const needsReasoningContent = thinkingParts.length > 0
     || (thinkingEnabled && toolCalls.length > 0);
+  const structuredText: OpenAITextContentPart[] = textBlocks.map((block) => {
+    const breakpoint = projectPromptCacheBreakpoint(promptCacheBreakpoints, block.cache_control);
+    return {
+      type: 'text',
+      text: block.text,
+      ...(breakpoint ? { prompt_cache_breakpoint: breakpoint } : {}),
+    };
+  });
+  const hasTextBreakpoint = structuredText.some(part => part.prompt_cache_breakpoint);
 
   const assistantMsg: OpenAIAssistantMessage = {
     role: 'assistant',
-    content: textParts.length > 0 ? textParts.join('') : null,
+    content: textBlocks.length === 0
+      ? null
+      : hasTextBreakpoint
+        ? structuredText
+        : textBlocks.map(block => block.text).join(''),
     ...(needsReasoningContent ? { reasoning_content: thinkingParts.join('\n') } : {}),
     ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
   };
@@ -208,13 +246,25 @@ function extractToolResultContent(tr: AnthropicToolResultBlock, imageSaver?: Too
   return isError ? `<error>${text}</error>` : text;
 }
 
-function convertToOpenAIParts(blocks: AnthropicContentBlock[]): OpenAIContentPart[] {
+function convertToOpenAIParts(
+  blocks: AnthropicContentBlock[],
+  promptCacheBreakpoints: boolean,
+): OpenAIContentPart[] {
   const parts: OpenAIContentPart[] = [];
   for (const block of blocks) {
     if (block.type === 'text') {
-      parts.push({ type: 'text', text: block.text });
+      const breakpoint = projectPromptCacheBreakpoint(promptCacheBreakpoints, block.cache_control);
+      parts.push({
+        type: 'text',
+        text: block.text,
+        ...(breakpoint ? { prompt_cache_breakpoint: breakpoint } : {}),
+      });
     } else if (block.type === 'image') {
-      parts.push(translateImageBlock(block));
+      const breakpoint = projectPromptCacheBreakpoint(promptCacheBreakpoints, block.cache_control);
+      parts.push({
+        ...translateImageBlock(block),
+        ...(breakpoint ? { prompt_cache_breakpoint: breakpoint } : {}),
+      });
     }
     // tool_use and tool_result are handled separately
   }

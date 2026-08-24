@@ -21,6 +21,11 @@ const IDLE_COOLDOWN_MINUTES: i64 = 30;
 const ACTIVE_SESSION_LOOKBACK_DAYS: i64 = 7;
 const MEMORY_UPDATE_HTTP_TIMEOUT_SECS: u64 = 61 * 60;
 const MANAGED_AUTO_UPDATE_NAME: &str = "Memory Auto-Update";
+// This managed row is only a scheduler dispatcher. `NewSession` is the
+// existing Task schema's non-fixed-binding shape; `uses_session_engine`
+// excludes this managed kind, so execution still updates existing Sessions
+// one by one and never creates a dispatcher Session.
+const MANAGED_AUTO_UPDATE_RUN_MODE: crate::task::TaskRunMode = crate::task::TaskRunMode::NewSession;
 const MANAGED_AUTO_UPDATE_PROMPT: &str =
     "System-managed memory auto-update dispatcher. This Task is hidden from ordinary UI.";
 
@@ -28,6 +33,58 @@ static IN_FLIGHT_WORKSPACES: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 static CONFIGURE_LIFECYCLES: LazyLock<crate::keyed_lifecycle::KeyedLifecycleRegistry> =
     LazyLock::new(crate::keyed_lifecycle::KeyedLifecycleRegistry::new);
+
+fn managed_task_session_shape_drifted(task: &crate::task::Task) -> bool {
+    task.run_mode != Some(MANAGED_AUTO_UPDATE_RUN_MODE) || task.preselected_session_id.is_some()
+}
+
+async fn normalize_managed_task_session_shape(
+    store: &std::sync::Arc<crate::task::TaskStore>,
+    task: &crate::task::Task,
+) -> Result<crate::task::Task, String> {
+    if !managed_task_session_shape_drifted(task) {
+        return Ok(task.clone());
+    }
+    stop_managed_task(
+        store,
+        task,
+        "memory auto-update dispatcher Session binding normalized",
+    )
+    .await?;
+    store
+        .update(crate::task::TaskUpdateInput {
+            id: task.id.clone(),
+            name: None,
+            executor: None,
+            description: None,
+            execution_mode: None,
+            run_mode: Some(MANAGED_AUTO_UPDATE_RUN_MODE),
+            end_conditions: None,
+            interval_minutes: None,
+            cron_expression: None,
+            cron_timezone: None,
+            start_at: None,
+            recurring_window: None,
+            dispatch_at: None,
+            trigger: None,
+            clear_trigger: false,
+            model: None,
+            provider_id: None,
+            clear_provider_override: false,
+            permission_mode: None,
+            preselected_session_id: Some(String::new()),
+            runtime: None,
+            runtime_config: None,
+            clear_runtime_override: false,
+            mcp_enabled_servers: None,
+            clear_mcp_override: false,
+            tags: None,
+            notification: None,
+            notification_patch: None,
+            prompt: None,
+        })
+        .await
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -289,6 +346,13 @@ pub async fn configure_memory_auto_update_task(
         }
     }
 
+    // Session ownership is an invariant of the dispatcher row, independent
+    // of whether the Agent is currently enabled. Normalize before the config
+    // gate so disabled, archived, and orphaned historical rows also converge.
+    if let Some(existing) = keep.take() {
+        keep = Some(normalize_managed_task_session_shape(store, &existing).await?);
+    }
+
     let Some(mut config) = request
         .memory_auto_update
         .clone()
@@ -322,7 +386,6 @@ pub async fn configure_memory_auto_update_task(
         };
         let drifted = existing.name != MANAGED_AUTO_UPDATE_NAME
             || existing.execution_mode != crate::task::TaskExecutionMode::Recurring
-            || existing.run_mode != Some(crate::task::TaskRunMode::SingleSession)
             || existing.interval_minutes != Some(SCAN_CADENCE_MINUTES)
             || existing.cron_expression.is_some()
             || existing.start_at.as_deref() != Some(start_at.as_str())
@@ -348,7 +411,7 @@ pub async fn configure_memory_auto_update_task(
                     executor: None,
                     description: Some("System-managed memory auto-update dispatcher.".to_string()),
                     execution_mode: Some(crate::task::TaskExecutionMode::Recurring),
-                    run_mode: Some(crate::task::TaskRunMode::SingleSession),
+                    run_mode: Some(MANAGED_AUTO_UPDATE_RUN_MODE),
                     end_conditions: Some(crate::task::TaskEndConditions::default()),
                     interval_minutes: Some(SCAN_CADENCE_MINUTES),
                     cron_expression: Some(String::new()),
@@ -392,7 +455,7 @@ pub async fn configure_memory_auto_update_task(
                 workspace_path: request.workspace_path.clone(),
                 task_md_content: MANAGED_AUTO_UPDATE_PROMPT.to_string(),
                 execution_mode: crate::task::TaskExecutionMode::Recurring,
-                run_mode: Some(crate::task::TaskRunMode::SingleSession),
+                run_mode: Some(MANAGED_AUTO_UPDATE_RUN_MODE),
                 end_conditions: Some(crate::task::TaskEndConditions::default()),
                 interval_minutes: Some(SCAN_CADENCE_MINUTES),
                 cron_expression: None,
@@ -802,9 +865,15 @@ fn apply_heartbeat_timezone_fallback(
 }
 
 fn load_disk_memory_auto_update_agents() -> Result<Vec<DiskMemoryAutoUpdateAgent>, String> {
-    Ok(collect_disk_memory_auto_update_agents(
-        crate::im::read_agent_configs_from_disk(),
-    ))
+    let mut agents = crate::im::read_agent_configs_from_disk();
+    for agent in &mut agents {
+        if crate::im::is_agent_workspace_archived(agent) {
+            // Keep the managed task record converged to disabled while the
+            // Project lifecycle gate is closed. Do not mutate config.json.
+            agent.enabled = false;
+        }
+    }
+    Ok(collect_disk_memory_auto_update_agents(agents))
 }
 
 fn collect_disk_memory_auto_update_agents(
@@ -1188,13 +1257,17 @@ async fn update_successful_completion<R: Runtime>(
     }
 }
 
-fn enabled_memory_auto_update_agent_by_id(
+fn enabled_memory_auto_update_agent_by_id_with_archive_gate(
     agent_id: &str,
     agents: Vec<crate::im::types::AgentConfigRust>,
+    is_archived: impl Fn(&crate::im::types::AgentConfigRust) -> bool,
 ) -> Option<(String, MemoryAutoUpdateConfig, Option<HeartbeatConfig>)> {
     let agent = agents
         .into_iter()
         .find(|agent| agent.id == agent_id && agent.enabled)?;
+    if is_archived(&agent) {
+        return None;
+    }
     let memory_auto_update = agent.memory_auto_update.filter(|config| config.enabled)?;
     Some((
         agent.resolved_workspace_path,
@@ -1206,9 +1279,10 @@ fn enabled_memory_auto_update_agent_by_id(
 fn load_enabled_memory_auto_update_agent_by_id(
     agent_id: &str,
 ) -> Result<Option<(String, MemoryAutoUpdateConfig, Option<HeartbeatConfig>)>, String> {
-    Ok(enabled_memory_auto_update_agent_by_id(
+    Ok(enabled_memory_auto_update_agent_by_id_with_archive_gate(
         agent_id,
         crate::im::read_agent_configs_from_disk(),
+        crate::im::is_agent_workspace_archived,
     ))
 }
 
@@ -1365,7 +1439,7 @@ mod tests {
             "workspaceId": agent_id,
             "workspacePath": workspace,
             "executionMode": "recurring",
-            "runMode": "single-session",
+            "runMode": "new-session",
             "sessionIds": [],
             "status": "running",
             "tags": ["system", "memory"],
@@ -1376,6 +1450,69 @@ mod tests {
             "managedKind": crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH
         }))
         .expect("valid managed Memory Task fixture")
+    }
+
+    #[test]
+    fn managed_batch_dispatcher_has_no_persistent_session_binding() {
+        let current = managed_memory_task("agent-current", "/repo/current");
+        assert_eq!(
+            MANAGED_AUTO_UPDATE_RUN_MODE,
+            crate::task::TaskRunMode::NewSession
+        );
+        assert!(!managed_task_session_shape_drifted(&current));
+        assert!(current.preselected_session_id.is_none());
+        assert!(!crate::task_execution::uses_session_engine(&current));
+
+        let mut legacy = current;
+        legacy.run_mode = Some(crate::task::TaskRunMode::SingleSession);
+        assert!(managed_task_session_shape_drifted(&legacy));
+
+        legacy.preselected_session_id = Some("legacy-session".to_string());
+        assert!(managed_task_session_shape_drifted(&legacy));
+    }
+
+    #[tokio::test]
+    async fn inactive_reconcile_normalizes_historical_dispatcher_rows_in_place() {
+        for (suffix, binding) in [("unbound", None), ("bound", Some("legacy-session"))] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let data_dir = dir.path().join(suffix);
+            std::fs::create_dir_all(&data_dir).expect("create Task data dir");
+
+            let mut legacy = managed_memory_task("agent-legacy", "/repo/legacy");
+            legacy.status = crate::task::TaskStatus::Stopped;
+            legacy.run_mode = Some(crate::task::TaskRunMode::SingleSession);
+            legacy.preselected_session_id = binding.map(str::to_string);
+            let serialized = format!(
+                "{}\n",
+                serde_json::to_string(&legacy).expect("serialize legacy Task")
+            );
+            std::fs::write(data_dir.join("tasks.jsonl"), serialized)
+                .expect("seed legacy Task store");
+
+            let store = std::sync::Arc::new(crate::task::TaskStore::new(data_dir.clone()));
+            let loaded = store.get(&legacy.id).await.expect("load legacy Task");
+            let normalized = normalize_managed_task_session_shape(&store, &loaded)
+                .await
+                .expect("normalize inactive historical dispatcher");
+
+            assert_eq!(normalized.id, legacy.id);
+            assert_eq!(
+                normalized.run_mode,
+                Some(crate::task::TaskRunMode::NewSession)
+            );
+            assert!(normalized.preselected_session_id.is_none());
+
+            drop(store);
+            let persisted = crate::task::TaskStore::new(data_dir)
+                .get(&legacy.id)
+                .await
+                .expect("reload normalized Task");
+            assert_eq!(
+                persisted.run_mode,
+                Some(crate::task::TaskRunMode::NewSession)
+            );
+            assert!(persisted.preselected_session_id.is_none());
+        }
     }
     use crate::workspace_files::memory_rules::ensure_update_memory_file_at as ensure_update_memory_file;
 
@@ -1647,9 +1784,9 @@ mod tests {
         };
         {
             let mut sidecars = manager.lock().expect("sidecar manager lock");
-            assert_eq!(
-                sidecars.remove_session_owner(session_id, &tab_owner),
-                (true, false),
+            let release = sidecars.remove_session_owner(session_id, &tab_owner);
+            assert!(
+                release.summary() == (true, false),
                 "the memory-update owner must keep the Sidecar alive"
             );
             assert!(sidecars.session_has_owners(session_id));
@@ -1932,25 +2069,38 @@ mod tests {
         let mut exact_config = base_config();
         exact_config.interval_hours = 24;
 
-        let resolved = enabled_memory_auto_update_agent_by_id(
+        let resolved = enabled_memory_auto_update_agent_by_id_with_archive_gate(
             "agent-exact",
             vec![
                 runtime_agent("agent-first", "/repo/shared", Some(first_config)),
                 runtime_agent("agent-exact", "/repo/shared", Some(exact_config)),
             ],
+            |_| false,
         )
         .expect("exact Agent is eligible");
 
         assert_eq!(resolved.0, "/repo/shared");
         assert_eq!(resolved.1.interval_hours, 24);
 
-        assert!(enabled_memory_auto_update_agent_by_id(
+        assert!(enabled_memory_auto_update_agent_by_id_with_archive_gate(
             "agent-exact",
             vec![paused_runtime_agent(
                 "agent-exact",
                 "/repo/shared",
                 Some(base_config()),
             )],
+            |_| false,
+        )
+        .is_none());
+
+        assert!(enabled_memory_auto_update_agent_by_id_with_archive_gate(
+            "agent-exact",
+            vec![runtime_agent(
+                "agent-exact",
+                "/repo/shared",
+                Some(base_config()),
+            )],
+            |_| true,
         )
         .is_none());
     }

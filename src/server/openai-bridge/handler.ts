@@ -140,7 +140,7 @@ function isUnsupportedPromptCacheKeyError(status: number, body: string): boolean
   ].filter(Boolean).join(' ');
 
   if (structured?.param === 'prompt_cache_key') {
-    return isUnsupportedPromptCacheKeyDescriptor(descriptor);
+    return isUnsupportedSchemaFieldDescriptor(descriptor);
   }
 
   return isUnsupportedPromptCacheKeyDescriptor(body)
@@ -151,6 +151,92 @@ function isUnsupportedPromptCacheKeyDescriptor(value: string): boolean {
   return /\b(?:unknown|unsupported|unrecognized|unexpected)\b.*\b(?:parameter|field|argument|property)?\b.*\bprompt_cache_key\b/i.test(value)
     || /\bprompt_cache_key\b.*\b(?:unknown|unsupported|unrecognized|unexpected|not supported)\b/i.test(value)
     || /\b(?:additional|extra)\b.*\b(?:parameter|field|argument|property)\b.*\bprompt_cache_key\b/i.test(value);
+}
+
+type PromptCacheBreakpointRejection =
+  | { kind: 'field' }
+  | { kind: 'developer_role' }
+  | { kind: 'content_shape'; path: string };
+
+function classifyPromptCacheBreakpointRejection(
+  status: number,
+  body: string,
+): PromptCacheBreakpointRejection | undefined {
+  if (status !== 400 && status !== 422) return undefined;
+  const structured = extractUpstreamErrorFields(body);
+  const descriptor = [
+    structured?.message,
+    structured?.code,
+    structured?.type,
+  ].filter(Boolean).join(' ');
+  const param = structured?.param ?? '';
+
+  if (/prompt_cache_breakpoint/i.test(param)) {
+    return isUnsupportedSchemaFieldDescriptor(descriptor) ? { kind: 'field' } : undefined;
+  }
+
+  if (/prompt_cache_breakpoint/i.test(body)
+      && isUnsupportedPromptCacheBreakpointDescriptor(body)) {
+    return { kind: 'field' };
+  }
+
+  // These two request-shape changes exist only while explicit breakpoint
+  // projection is enabled. Keep the match narrow so unrelated 4xx responses
+  // never become retries.
+  const shapeDescriptor = descriptor || body;
+  const roleParam = /(?:^|[.\]])role$/i.test(param);
+  const rejectsDeveloperRole = (
+    roleParam
+      && /\bdeveloper\b/i.test(shapeDescriptor)
+      && isUnsupportedSchemaFieldDescriptor(shapeDescriptor)
+  ) || /\b(?:unsupported|unrecognized|unknown|unexpected)\s+(?:message\s+)?role\s*[:=]?\s*['"]?developer\b/i.test(shapeDescriptor)
+    || /\brole\s*[:=]?\s*['"]?developer\b.*\b(?:unsupported|unrecognized|unknown|unexpected|not allowed)\b/i.test(shapeDescriptor)
+    || /\binvalid\s+value\s*:\s*['"]developer['"]/i.test(shapeDescriptor);
+  const contentPath = /\b(messages|input)(?:\[(\d+)\]|\.(\d+))\.content(?:$|\.|\[)/i;
+  const contentMatch = contentPath.exec(param) ?? contentPath.exec(shapeDescriptor);
+  const rejectsStructuredContent = Boolean(contentMatch)
+    && (/\b(?:expected|must be|should be)\b.*\b(?:valid\s+)?string\b/i.test(shapeDescriptor)
+      || /\bstring\b.*\b(?:expected|required)\b/i.test(shapeDescriptor));
+  if (rejectsDeveloperRole) return { kind: 'developer_role' };
+  if (rejectsStructuredContent && contentMatch) {
+    return {
+      kind: 'content_shape',
+      path: `${contentMatch[1].toLowerCase()}[${contentMatch[2] ?? contentMatch[3]}].content`,
+    };
+  }
+  return undefined;
+}
+
+function legacyFallbackChangesRejectedContent(
+  current: OpenAIRequest | ResponsesRequest,
+  legacy: OpenAIRequest | ResponsesRequest,
+  path: string,
+): boolean {
+  const match = /^(messages|input)\[(\d+)]\.content$/.exec(path);
+  if (!match) return false;
+  const index = Number(match[2]);
+  const currentItems = (current as unknown as Record<string, unknown>)[match[1]];
+  const legacyItems = (legacy as unknown as Record<string, unknown>)[match[1]];
+  if (!Array.isArray(currentItems) || !Array.isArray(legacyItems)) return false;
+  const currentItem = currentItems[index];
+  const legacyItem = legacyItems[index];
+  if (!isRecord(currentItem)) return false;
+  if (currentItem.role === 'developer' && (!isRecord(legacyItem) || legacyItem.role !== 'developer')) {
+    return true;
+  }
+  return Array.isArray(currentItem.content)
+    && isRecord(legacyItem)
+    && typeof legacyItem.content === 'string';
+}
+
+function isUnsupportedPromptCacheBreakpointDescriptor(value: string): boolean {
+  return /\b(?:unknown|unsupported|unrecognized|unexpected)\b.*\b(?:parameter|field|argument|property)?\b.*\bprompt_cache_breakpoint\b/i.test(value)
+    || /\bprompt_cache_breakpoint\b.*\b(?:unknown|unsupported|unrecognized|unexpected|not supported|not allowed)\b/i.test(value)
+    || /\b(?:additional|extra)\b.*\b(?:parameter|field|argument|property)\b.*\bprompt_cache_breakpoint\b/i.test(value);
+}
+
+function isUnsupportedSchemaFieldDescriptor(value: string): boolean {
+  return /\b(?:unknown|unsupported|unrecognized|unexpected|not supported|not allowed|additional|extra)\b/i.test(value);
 }
 
 function extractUpstreamErrorFields(body: string): { message?: string; param?: string; code?: string; type?: string } | undefined {
@@ -178,15 +264,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function stringifyWithoutPromptCacheKey(req: OpenAIRequest | ResponsesRequest): string {
-  if (!('prompt_cache_key' in req)) return JSON.stringify(req);
-  const rest = { ...req };
-  delete (rest as { prompt_cache_key?: string }).prompt_cache_key;
-  return JSON.stringify(rest);
-}
-
 const PROMPT_CACHE_KEY_VALUE_RE = /myagents:(?:chat_completions|responses):[a-f0-9]{32}/g;
-const PROMPT_CACHE_KEY_VALUE_TEST_RE = /myagents:(?:chat_completions|responses):[a-f0-9]{32}/;
 const ERROR_REQUEST_ECHO_KEYS = new Set([
   'content',
   'input',
@@ -209,27 +287,11 @@ function sanitizeUpstreamErrorBody(body: string): string {
     return redactedBody;
   }
 
-  const redactingRequestEcho = containsPromptCacheKeyReference(parsed);
-  return JSON.stringify(sanitizeErrorValue(parsed, redactingRequestEcho));
+  return JSON.stringify(sanitizeErrorValue(parsed, true));
 }
 
 function redactPromptCacheKeyValues(value: string): string {
   return value.replace(PROMPT_CACHE_KEY_VALUE_RE, '[redacted-prompt-cache-key]');
-}
-
-function containsPromptCacheKeyReference(value: unknown): boolean {
-  if (typeof value === 'string') {
-    return /\bprompt_cache_key\b/.test(value) || PROMPT_CACHE_KEY_VALUE_TEST_RE.test(value);
-  }
-  if (Array.isArray(value)) {
-    return value.some(containsPromptCacheKeyReference);
-  }
-  if (isRecord(value)) {
-    return Object.entries(value).some(([key, nested]) => (
-      key === 'prompt_cache_key' || containsPromptCacheKeyReference(nested)
-    ));
-  }
-  return false;
 }
 
 function sanitizeErrorValue(value: unknown, redactingRequestEcho: boolean): unknown {
@@ -264,13 +326,11 @@ function sanitizeErrorValue(value: unknown, redactingRequestEcho: boolean): unkn
 
 function looksLikeEchoedRequestText(value: string): boolean {
   const lower = value.toLowerCase();
-  return lower.includes('prompt_cache_key')
-    && (
-      lower.includes('"input"')
-      || lower.includes('"messages"')
-      || lower.includes('"instructions"')
-      || lower.includes('"content"')
-    );
+  return lower.includes('"input"')
+    || lower.includes('"messages"')
+    || lower.includes('"instructions"')
+    || lower.includes('"content"')
+    || /(?:^|[\s,{])(?:input|messages|instructions|content|prompt|system)\s*[:=]/i.test(value);
 }
 
 export interface BridgeHandler {
@@ -342,97 +402,117 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
     // coexist without cross-pollination.
     const effectiveModelMapping = upstream.modelMapping ?? config.modelMapping;
     const upstreamFormat = isResponses ? 'responses' : 'chat_completions';
-    const promptCacheKey = resolvePromptCacheKey(upstream, anthropicReq.model, upstreamFormat);
-    const translatedReq = isResponses
-      ? translateRequestToResponses(anthropicReq, {
-          modelOverride: upstream.model,
-          modelMapping: effectiveModelMapping,
-          imageSaver,
-          reasoningEffort: upstream.reasoningEffort,
-          promptCacheKey,
-        })
-      : translateRequest(anthropicReq, {
-          modelMapping: effectiveModelMapping,
-          modelOverride: upstream.model,
-          imageSaver,
-          reasoningEffort: upstream.reasoningEffort,
-          promptCacheKey,
-        });
-    const translatedModel = (translatedReq as { model: string }).model;
-    if (upstream.reasoningEffort
-        && !shouldSendProviderReasoningEffort(
-          upstream.providerId,
-          translatedModel,
-          upstream.reasoningEffort,
-        )) {
-      if (isResponses) {
-        delete (translatedReq as ResponsesRequest).reasoning;
-      } else {
-        delete (translatedReq as OpenAIRequest & { reasoning_effort?: string }).reasoning_effort;
+    let effectivePromptCacheKey = resolvePromptCacheKey(upstream, anthropicReq.model, upstreamFormat);
+    let promptCacheBreakpointsEnabled = upstream.cacheAffinity?.promptCacheKeyMode === 'session'
+      && Boolean(upstream.cacheAffinity.sessionId?.trim())
+      && !upstream.cacheAffinity.promptCacheBreakpointsDisabled;
+    const maxOutputTokensCap = upstream.maxOutputTokens ?? config.maxOutputTokens;
+    const savedToolImages: Array<{
+      base64: string;
+      mimeType: string;
+      path: string;
+    }> = [];
+    const translateForAttempt = (): OpenAIRequest | ResponsesRequest => {
+      let imageIndex = 0;
+      const attemptImageSaver: ToolImageSaver | undefined = imageSaver
+        ? (base64, mimeType) => {
+            const index = imageIndex++;
+            const saved = savedToolImages[index];
+            if (saved?.base64 === base64 && saved.mimeType === mimeType) return saved.path;
+            const path = imageSaver(base64, mimeType);
+            savedToolImages[index] = { base64, mimeType, path };
+            return path;
+          }
+        : undefined;
+      const translated = isResponses
+        ? translateRequestToResponses(anthropicReq, {
+            modelOverride: upstream.model,
+            modelMapping: effectiveModelMapping,
+            imageSaver: attemptImageSaver,
+            reasoningEffort: upstream.reasoningEffort,
+            promptCacheKey: effectivePromptCacheKey,
+            promptCacheBreakpoints: promptCacheBreakpointsEnabled,
+          })
+        : translateRequest(anthropicReq, {
+            modelMapping: effectiveModelMapping,
+            modelOverride: upstream.model,
+            imageSaver: attemptImageSaver,
+            reasoningEffort: upstream.reasoningEffort,
+            promptCacheKey: effectivePromptCacheKey,
+            promptCacheBreakpoints: promptCacheBreakpointsEnabled,
+          });
+      const translatedModel = translated.model;
+      if (upstream.reasoningEffort
+          && !shouldSendProviderReasoningEffort(
+            upstream.providerId,
+            translatedModel,
+            upstream.reasoningEffort,
+          )) {
+        if (isResponses) {
+          delete (translated as ResponsesRequest).reasoning;
+        } else {
+          delete (translated as OpenAIRequest & { reasoning_effort?: string }).reasoning_effort;
+        }
       }
-    }
 
-    // 4a. Normalize thought_signatures on tool_calls (Gemini thinking models).
-    // Gemini requires thought_signature on tool_calls in conversation history.
-    // In OpenAI-compat format, Gemini expects it at extra_content.google.thought_signature.
-    // The Claude Agent SDK strips non-standard fields, so we re-inject from cache.
-    // We normalize ALL tool_calls to have BOTH locations (direct + extra_content):
-    //   - Sig exists at one location → copy to the other (normalization)
-    //   - No sig at either → inject from cache or Google-documented dummy fallback
-    if (!isResponses) {
-      const chatReq = translatedReq as OpenAIRequest;
-      let injectedCached = 0;
-      let injectedDummy = 0;
-      let normalized = 0;
-      for (const msg of chatReq.messages) {
-        if (msg.role === 'assistant' && 'tool_calls' in msg && msg.tool_calls) {
-          for (const tc of msg.tool_calls) {
-            const existingSig = tc.thought_signature
-              || tc.extra_content?.google?.thought_signature;
-            if (existingSig) {
-              // Normalize: ensure both locations have the sig
-              if (!tc.thought_signature || !tc.extra_content?.google?.thought_signature) {
-                tc.thought_signature = existingSig;
-                tc.extra_content = { ...tc.extra_content, google: { ...tc.extra_content?.google, thought_signature: existingSig } };
-                normalized++;
+      // Normalize thought_signatures after every translation. A compatibility
+      // retry retranslates from the source request instead of mutating a prior
+      // target projection, so all target-only normalization belongs here too.
+      if (!isResponses) {
+        const chatReq = translated as OpenAIRequest;
+        let injectedCached = 0;
+        let injectedDummy = 0;
+        let normalized = 0;
+        for (const msg of chatReq.messages) {
+          if (msg.role === 'assistant' && 'tool_calls' in msg && msg.tool_calls) {
+            for (const tc of msg.tool_calls) {
+              const existingSig = tc.thought_signature
+                || tc.extra_content?.google?.thought_signature;
+              if (existingSig) {
+                if (!tc.thought_signature || !tc.extra_content?.google?.thought_signature) {
+                  tc.thought_signature = existingSig;
+                  tc.extra_content = { ...tc.extra_content, google: { ...tc.extra_content?.google, thought_signature: existingSig } };
+                  normalized++;
+                }
+              } else {
+                const cached = thoughtSignatureCache.get(tc.id);
+                const sig = cached || THOUGHT_SIG_SKIP_VALIDATOR;
+                tc.thought_signature = sig;
+                tc.extra_content = { ...tc.extra_content, google: { ...tc.extra_content?.google, thought_signature: sig } };
+                if (cached) injectedCached++;
+                else injectedDummy++;
               }
-            } else {
-              // No sig anywhere — inject from cache or dummy
-              const cached = thoughtSignatureCache.get(tc.id);
-              const sig = cached || THOUGHT_SIG_SKIP_VALIDATOR;
-              tc.thought_signature = sig;
-              tc.extra_content = { ...tc.extra_content, google: { ...tc.extra_content?.google, thought_signature: sig } };
-              if (cached) injectedCached++;
-              else injectedDummy++;
             }
           }
         }
+        if (injectedCached > 0 || injectedDummy > 0 || normalized > 0) {
+          log(`[bridge] thought_signatures: ${injectedCached} cached, ${injectedDummy} dummy, ${normalized} normalized`);
+        }
       }
-      if (injectedCached > 0 || injectedDummy > 0 || normalized > 0) {
-        log(`[bridge] thought_signatures: ${injectedCached} cached, ${injectedDummy} dummy, ${normalized} normalized`);
-      }
-    }
 
-    // 4b. Inject token limit if configured.
-    // Request translators intentionally omit token limits (SDK sends Claude-scale values
-    // that are meaningless for other providers). Only inject when the user explicitly
-    // configured a cap via maxOutputTokens in provider settings.
-    const maxOutputTokensCap = upstream.maxOutputTokens ?? config.maxOutputTokens;
+      // Request translators omit token limits. Only an explicit provider cap
+      // is projected, using the format-specific field.
+      if (maxOutputTokensCap) {
+        if (isResponses) {
+          (translated as ResponsesRequest).max_output_tokens = maxOutputTokensCap;
+        } else {
+          const paramName = upstream.maxOutputTokensParamName ?? 'max_tokens';
+          (translated as OpenAIRequest & { [key: string]: unknown })[paramName] = maxOutputTokensCap;
+        }
+      }
+      return translated;
+    };
+
+    let translatedReq = translateForAttempt();
+
     if (maxOutputTokensCap) {
-      if (isResponses) {
-        // Responses API always uses max_output_tokens
-        (translatedReq as { max_output_tokens?: number }).max_output_tokens = maxOutputTokensCap;
-        log(`[bridge] Injecting max_output_tokens=${maxOutputTokensCap}`);
-      } else {
-        // Chat Completions: use user-configured param name (default max_tokens for widest compatibility)
-        const paramName = upstream.maxOutputTokensParamName ?? 'max_tokens';
-        const chatReq = translatedReq as OpenAIRequest & { [key: string]: unknown };
-        chatReq[paramName] = maxOutputTokensCap;
-        log(`[bridge] Injecting ${paramName}=${maxOutputTokensCap}`);
-      }
+      const paramName = isResponses
+        ? 'max_output_tokens'
+        : (upstream.maxOutputTokensParamName ?? 'max_tokens');
+      log(`[bridge] Injecting ${paramName}=${maxOutputTokensCap}`);
     }
 
-    const logModel = (translatedReq as { model: string }).model;
+    const logModel = translatedReq.model;
     log(`[bridge] ${anthropicReq.model} → ${logModel} stream=${!!anthropicReq.stream} tools=${anthropicReq.tools?.length ?? 0} format=${isResponses ? 'responses' : 'chat_completions'}`);
 
     // 5. Forward to upstream
@@ -542,7 +622,8 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
 
     let requestBody = JSON.stringify(translatedReq);
     let authRecoveryAttempted = false;
-    let promptCacheRetryAttempted = false;
+    let promptCacheKeyRetryAttempted = false;
+    let promptCacheBreakpointsRetryAttempted = false;
     const finalAttempt = await (async (): Promise<UpstreamAttemptResult> => {
       while (true) {
         const attemptResult = await fetchUpstreamAttempt(requestBody, effectiveApiKey);
@@ -589,15 +670,49 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
         }
 
         const canRetryWithoutPromptCacheKey =
-          !promptCacheRetryAttempted
+          !promptCacheKeyRetryAttempted
           && Boolean((translatedReq as { prompt_cache_key?: string }).prompt_cache_key)
           && Boolean(upstream.cacheAffinity?.disablePromptCacheKey)
           && isUnsupportedPromptCacheKeyError(status, errBody);
         if (canRetryWithoutPromptCacheKey) {
-          promptCacheRetryAttempted = true;
+          promptCacheKeyRetryAttempted = true;
+          effectivePromptCacheKey = undefined;
           upstream.cacheAffinity?.disablePromptCacheKey?.();
-          requestBody = stringifyWithoutPromptCacheKey(translatedReq);
-          log(`[bridge] ${upstreamFormat} prompt_cache_key unsupported for provider=${upstream.providerId} endpoint=${hashForLog(upstreamUrl)}; disabled for this bridge`);
+          translatedReq = translateForAttempt();
+          requestBody = JSON.stringify(translatedReq);
+          log(`[bridge] ${upstreamFormat} prompt_cache_key unsupported for provider=${upstream.providerId} model=${logModel} endpoint=${hashForLog(upstreamUrl)}; disabled for this bridge`);
+          continue;
+        }
+
+        const breakpointRejection = !promptCacheBreakpointsRetryAttempted
+          && promptCacheBreakpointsEnabled
+          && Boolean(upstream.cacheAffinity?.disablePromptCacheBreakpoints)
+          ? classifyPromptCacheBreakpointRejection(status, errBody)
+          : undefined;
+        let legacyBreakpointRequest: OpenAIRequest | ResponsesRequest | undefined;
+        if (breakpointRejection?.kind === 'content_shape') {
+          promptCacheBreakpointsEnabled = false;
+          const candidate = translateForAttempt();
+          promptCacheBreakpointsEnabled = true;
+          if (legacyFallbackChangesRejectedContent(
+            translatedReq,
+            candidate,
+            breakpointRejection.path,
+          )) {
+            legacyBreakpointRequest = candidate;
+          }
+        }
+        const canRetryWithoutPromptCacheBreakpoints = Boolean(
+          breakpointRejection
+          && (breakpointRejection.kind !== 'content_shape' || legacyBreakpointRequest),
+        );
+        if (canRetryWithoutPromptCacheBreakpoints) {
+          promptCacheBreakpointsRetryAttempted = true;
+          promptCacheBreakpointsEnabled = false;
+          upstream.cacheAffinity?.disablePromptCacheBreakpoints?.();
+          translatedReq = legacyBreakpointRequest ?? translateForAttempt();
+          requestBody = JSON.stringify(translatedReq);
+          log(`[bridge] ${upstreamFormat} explicit prompt-cache breakpoints unsupported for provider=${upstream.providerId} model=${logModel} endpoint=${hashForLog(upstreamUrl)}; disabled for this bridge`);
           continue;
         }
 
@@ -635,9 +750,9 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
     const isSSEResponse = contentType.includes('text/event-stream');
 
     // 8. Translate response
-    if (anthropicReq.stream || isSSEResponse) {
+    if (isSSEResponse) {
       // Stream response (or non-stream request that got SSE back — auto-fallback)
-      if (isSSEResponse && !anthropicReq.stream) {
+      if (!anthropicReq.stream) {
         log('[bridge] Non-stream request received SSE response — auto-falling back to stream processing');
       }
       // Hand off lifecycle ownership to the stream handler — it owns:
@@ -649,6 +764,12 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
         ? handleResponsesStreamResponse(upstreamResp, anthropicReq.model, log, controller, request.signal, onDownstreamAbort)
         : handleStreamResponse(upstreamResp, anthropicReq.model, translateReasoning, log, thoughtSignatureCache, controller, request.signal, onDownstreamAbort);
     } else {
+      // A few OpenAI-compatible providers ignore stream=true and return a
+      // regular JSON completion. Translate it as non-stream so the caller
+      // still receives the assistant text instead of an empty SSE body.
+      if (anthropicReq.stream) {
+        log('[bridge] Stream request received JSON response — using non-stream translation');
+      }
       // Non-stream branch: response body is read with a single await; the
       // request.signal listener can be detached now (controller lives only
       // through the body read, which translateXxxResponse owns).
@@ -696,7 +817,7 @@ async function handleNonStreamResponse(
     cacheThoughtSignatures(openaiResp.choices?.[0]?.message?.tool_calls, thoughtSignatureCache);
   }
 
-  const anthropicResp = translateResponse(openaiResp, requestModel, translateReasoning);
+  const anthropicResp = translateResponse(openaiResp, requestModel, translateReasoning, log);
   return new Response(JSON.stringify(anthropicResp), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
@@ -729,7 +850,7 @@ export function handleStreamResponse(
   //
   // Cancellation: downstream cancel propagates via the readable's cancel(),
   // which we wire to abort the upstream fetch.
-  const translator = new StreamTranslator(requestModel, translateReasoning);
+  const translator = new StreamTranslator(requestModel, translateReasoning, log);
   const sseParser = new SSEParser();
   const logStreamEnd = createStreamEndLogger('chat_completions', log);
   if (!upstreamResp.body) {
@@ -944,15 +1065,17 @@ async function handleResponsesNonStreamResponse(
   }
 
   try {
-    const anthropicResp = translateResponsesResponse(responsesResp, requestModel);
+    const anthropicResp = translateResponsesResponse(responsesResp, requestModel, log);
     return new Response(JSON.stringify(anthropicResp), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
   } catch (err) {
     if (err instanceof ResponsesApiError) {
-      log(`[bridge] Responses API failed: [${err.code}] ${err.message}`);
-      return jsonError(502, err.code, err.message);
+      const safeCode = sanitizeUpstreamErrorBody(err.code);
+      const safeMessage = sanitizeUpstreamErrorBody(err.message);
+      log(`[bridge] Responses API failed: [${safeCode}] ${safeMessage}`);
+      return jsonError(502, safeCode, safeMessage);
     }
     throw err;
   }
@@ -969,7 +1092,7 @@ export function handleResponsesStreamResponse(
   onDownstreamAbort: () => void,
 ): Response {
   // Pattern 2 §2.3.3 — TransformStream pipeline (mirror of handleStreamResponse).
-  const translator = new ResponsesStreamTranslator(requestModel);
+  const translator = new ResponsesStreamTranslator(requestModel, log);
   const sseParser = new SSEParser();
   const logStreamEnd = createStreamEndLogger('responses', log);
   if (!upstreamResp.body) {
@@ -1013,7 +1136,19 @@ export function handleResponsesStreamResponse(
   const encoder = new TextEncoder();
   const translateTransform = new TransformStream<ResponsesStreamEvent, Uint8Array>({
     transform(event, controller) {
-      const anthropicEvents = translator.feed(event);
+      const safeEvent = event.type === 'response.failed' && event.response.error
+        ? {
+            ...event,
+            response: {
+              ...event.response,
+              error: {
+                code: sanitizeUpstreamErrorBody(event.response.error.code),
+                message: sanitizeUpstreamErrorBody(event.response.error.message),
+              },
+            },
+          }
+        : event;
+      const anthropicEvents = translator.feed(safeEvent);
       for (const ae of anthropicEvents) {
         controller.enqueue(encoder.encode(formatSSE(ae)));
       }

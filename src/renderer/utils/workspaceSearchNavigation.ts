@@ -1,4 +1,4 @@
-import type { FileSearchHit } from '@/api/searchClient';
+import type { FileSearchHit, FolderSearchHit } from '@/api/searchClient';
 
 export type ActiveSearchTarget =
   | { kind: 'file'; path: string }
@@ -9,6 +9,13 @@ export function normalizeWorkspaceSearchPath(path: string): string {
 }
 
 export function normalizeFileSearchHits(hits: readonly FileSearchHit[]): FileSearchHit[] {
+  return hits.map((hit) => {
+    const normalizedPath = normalizeWorkspaceSearchPath(hit.path);
+    return normalizedPath === hit.path ? hit : { ...hit, path: normalizedPath };
+  });
+}
+
+export function normalizeFolderSearchHits(hits: readonly FolderSearchHit[]): FolderSearchHit[] {
   return hits.map((hit) => {
     const normalizedPath = normalizeWorkspaceSearchPath(hit.path);
     return normalizedPath === hit.path ? hit : { ...hit, path: normalizedPath };
@@ -41,7 +48,8 @@ export function allHitPaths(hits: readonly FileSearchHit[]): Set<string> {
 }
 
 export function defaultExpandedFilesForHits(hits: readonly FileSearchHit[]): Set<string> {
-  return allHitPaths(hits);
+  void hits;
+  return new Set();
 }
 
 export function mergeExpandedFilesAfterRefresh(
@@ -49,12 +57,12 @@ export function mergeExpandedFilesAfterRefresh(
   previousHits: readonly FileSearchHit[],
   nextHits: readonly FileSearchHit[],
 ): Set<string> {
-  const previousHitPaths = allHitPaths(previousHits);
+  void previousHits;
   const nextHitPaths = allHitPaths(nextHits);
   const next = new Set<string>();
 
-  for (const path of nextHitPaths) {
-    if (!previousHitPaths.has(path) || previous.has(path)) {
+  for (const path of previous) {
+    if (nextHitPaths.has(path)) {
       next.add(path);
     }
   }

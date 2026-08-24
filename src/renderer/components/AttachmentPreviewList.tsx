@@ -1,6 +1,7 @@
-import { Paperclip, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
+import { FileIcon } from '@/components/file-icon';
 import { formatFileSize } from '@/utils/formatFileSize';
 
 export interface AttachmentPreviewItem {
@@ -99,8 +100,8 @@ export default function AttachmentPreviewList({
               </div>
             ) : (
               <div className="flex min-w-[14rem] items-center gap-3 px-3 py-2">
-                <div className="rounded-full bg-[var(--paper-inset)] p-2 text-[var(--ink)]">
-                  <Paperclip className="h-4 w-4" />
+                <div className="flex size-8 shrink-0 items-center justify-center">
+                  <FileIcon name={attachment.name} size="regular" />
                 </div>
                 <div className="min-w-0">
                   <p className="truncate text-xs font-medium text-[var(--ink)]">

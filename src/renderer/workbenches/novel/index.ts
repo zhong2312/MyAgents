@@ -4,7 +4,7 @@ const novelWorkbenchDefinition = defineWorkbench(
   {
     manifestVersion: 1,
     id: "io.myagents.novel",
-    name: "小说工作台",
+    name: "My Novel Studio",
     description: "面向长篇与短篇小说创作的本地工作台",
     version: "0.3.0",
     api: {
@@ -37,13 +37,7 @@ const novelWorkbenchDefinition = defineWorkbench(
       { id: "utilities", label: "辅助", icon: "boxes", order: 50 },
       { id: "knowledge", label: "知识库", parentId: "utilities", order: 10 },
       { id: "research", label: "资料", parentId: "utilities", order: 20 },
-      {
-        id: "simulation",
-        label: "世界推演",
-        icon: "orbit",
-        parentId: "utilities",
-        order: 30,
-      },
+      { id: "simulation", label: "世界推演", parentId: "utilities", order: 30 },
 
       { id: "settings", label: "设置", icon: "settings-2", order: 60 },
       { id: "ai-prompts", label: "提示词", parentId: "settings", order: 10 },

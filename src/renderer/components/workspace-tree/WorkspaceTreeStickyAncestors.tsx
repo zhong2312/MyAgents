@@ -1,7 +1,9 @@
-import { ChevronRight, FolderOpen } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { memo } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { useTranslation } from "react-i18next";
+
+import { FileIcon } from "@/components/file-icon";
 
 import { STICKY_DROP_PREFIX } from "./dropTarget";
 import { OverflowNameTooltip } from "./OverflowNameTooltip";
@@ -101,7 +103,7 @@ const StickyAncestorRow = memo(function StickyAncestorRow({
       >
         <ChevronRight className="h-3 w-3 rotate-90 transition-transform" />
       </button>
-      <FolderOpen className="h-3.5 w-3.5 flex-shrink-0 text-[var(--accent-warm)]/70" />
+      <FileIcon name={ancestor.name} nodeKind="directory" expanded />
       <OverflowNameTooltip
         label={ancestor.name}
         className="min-w-0 flex-1 truncate text-left"

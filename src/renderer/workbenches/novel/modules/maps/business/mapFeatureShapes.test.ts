@@ -43,9 +43,9 @@ describe("地图画笔触点重采样", () => {
     expect(points).toHaveLength(9);
     expect(points[0]).toEqual({ x: 0, y: 0 });
     expect(points.at(-1)).toEqual({ x: 200, y: 0 });
-    expect(Math.max(...points.map((point) => Math.abs(point.y)))).toBeGreaterThan(
-      24,
-    );
+    expect(
+      Math.max(...points.map((point) => Math.abs(point.y))),
+    ).toBeGreaterThan(24);
   });
 
   it("弧线模式对多个共线指针采样仍生成可见曲率", () => {
@@ -91,9 +91,9 @@ describe("地图画笔触点重采样", () => {
         y: expect.closeTo(1),
       }),
     );
-    expect(
-      points.slice(1, -1).some((point) => Math.abs(point.y) > 8),
-    ).toBe(true);
+    expect(points.slice(1, -1).some((point) => Math.abs(point.y) > 8)).toBe(
+      true,
+    );
   });
 
   it("渲染采样与保存采样共用弧线算法，闭合区域不会退化为原始多边形", () => {
@@ -137,5 +137,15 @@ describe("地图画笔触点重采样", () => {
         Math.hypot(point.x - spaced[index]!.x, point.y - spaced[index]!.y),
       );
     expect(Math.max(...distances) - Math.min(...distances)).toBeLessThan(0.01);
+  });
+
+  it("短开放弯线不会因为首尾接近而误判为闭合区域", () => {
+    const shortCurve = [
+      { x: 0, y: 0 },
+      { x: 4, y: 2 },
+      { x: 8, y: 0 },
+    ];
+
+    expect(isMapBrushPathClosed(shortCurve)).toBe(false);
   });
 });

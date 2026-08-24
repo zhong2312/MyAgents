@@ -32,6 +32,10 @@ import { getFolderName, type Tab } from "@/types/tab";
 import DraggableDialogFrame from "@/workbench-sdk/DraggableDialogFrame";
 import { workbenchRegistry } from "@/workbench-registry";
 
+export function workbenchAgentTaskDockHostId(sourceTabId: string): string {
+  return `workbench-agent-task-dock-${sourceTabId}`;
+}
+
 interface WorkbenchAgentSurfaceHostProps {
   readonly surfaces: readonly Tab[];
   readonly activeSourceTabId: string | null;
@@ -155,6 +159,29 @@ function useEmbeddedSurfaceTarget(
   return useSyncExternalStore(subscribe, getSnapshot, () => null);
 }
 
+function useTaskDockTarget(sourceTabId: string | null): HTMLElement | null {
+  const getSnapshot = useMemo(
+    () => () => {
+      if (!sourceTabId || typeof document === "undefined") return null;
+      return document.getElementById(workbenchAgentTaskDockHostId(sourceTabId));
+    },
+    [sourceTabId],
+  );
+  const subscribe = useMemo(
+    () => (notify: () => void) => {
+      if (!sourceTabId || typeof document === "undefined") {
+        return () => undefined;
+      }
+      const observer = new MutationObserver(notify);
+      observer.observe(document.body, { childList: true, subtree: true });
+      return () => observer.disconnect();
+    },
+    [sourceTabId],
+  );
+
+  return useSyncExternalStore(subscribe, getSnapshot, () => null);
+}
+
 function EmbeddedAgentSurface({
   tab,
   renderSurface,
@@ -170,8 +197,9 @@ function EmbeddedAgentSurface({
     "companion",
   );
   const companionRequest = surface?.companion;
-  const AgentCompanion = workbenchRegistry.get(surface?.workbenchId ?? "")
-    ?.AgentCompanion;
+  const AgentCompanion = workbenchRegistry.get(
+    surface?.workbenchId ?? "",
+  )?.AgentCompanion;
 
   if (!embeddedSurfaceId) return null;
 
@@ -269,48 +297,42 @@ export default function WorkbenchAgentSurfaceHost({
       ),
     [activeSourceTabId, surfaces],
   );
+  const taskDockTarget = useTaskDockTarget(activeSourceTabId);
 
   const dialog = useMemo(
     () =>
-      [...visibleSurfaces]
-        .reverse()
-        .find((tab) => {
-          const presentation = tab.workbenchAgentSurface?.presentation;
-          return (
-            !isEmbeddedReviewSurface(tab) &&
-            (presentation === "dialog" || presentation === "compact-review")
-          );
-        }),
+      [...visibleSurfaces].reverse().find((tab) => {
+        const presentation = tab.workbenchAgentSurface?.presentation;
+        return (
+          !isEmbeddedReviewSurface(tab) &&
+          (presentation === "dialog" || presentation === "compact-review")
+        );
+      }),
     [visibleSurfaces],
   );
-  const embeddedSurfaces = useMemo(
-    () => {
-      // A mount target is a single-slot surface. Lifecycle cleanup normally
-      // removes prior runs before a replacement starts; selecting the newest
-      // surface here also prevents a stale session from splitting the same
-      // conversation/output regions during any asynchronous overlap.
-      const mountedSurfaceIds = new Set<string>();
-      return [...visibleSurfaces]
-        .reverse()
-        .filter((tab) => {
-          const surfaceId = tab.workbenchAgentSurface?.embeddedSurfaceId;
-          if (!surfaceId || mountedSurfaceIds.has(surfaceId)) return false;
-          mountedSurfaceIds.add(surfaceId);
-          return true;
-        })
-        .reverse();
-    },
-    [visibleSurfaces],
-  );
+  const embeddedSurfaces = useMemo(() => {
+    // A mount target is a single-slot surface. Lifecycle cleanup normally
+    // removes prior runs before a replacement starts; selecting the newest
+    // surface here also prevents a stale session from splitting the same
+    // conversation/output regions during any asynchronous overlap.
+    const mountedSurfaceIds = new Set<string>();
+    return [...visibleSurfaces]
+      .reverse()
+      .filter((tab) => {
+        const surfaceId = tab.workbenchAgentSurface?.embeddedSurfaceId;
+        if (!surfaceId || mountedSurfaceIds.has(surfaceId)) return false;
+        mountedSurfaceIds.add(surfaceId);
+        return true;
+      })
+      .reverse();
+  }, [visibleSurfaces]);
   const taskSurfaces = useMemo(
     () =>
-      surfaces.filter(
-        (tab) => {
-          const presentation = tab.workbenchAgentSurface?.presentation;
-          return presentation !== "hidden" && !isEmbeddedReviewSurface(tab);
-        },
-      ),
-    [surfaces],
+      visibleSurfaces.filter((tab) => {
+        const presentation = tab.workbenchAgentSurface?.presentation;
+        return presentation !== "hidden" && !isEmbeddedReviewSurface(tab);
+      }),
+    [visibleSurfaces],
   );
   const orderedTaskSurfaces = useMemo(
     () => [...taskSurfaces].reverse(),
@@ -561,8 +583,14 @@ export default function WorkbenchAgentSurfaceHost({
                     <GripVertical className="h-3 w-3 max-[899px]:rotate-90" />
                   </span>
                 </Separator>
-                <Panel id="workbench-review" minSize={compactVertical ? "220px" : "420px"}>
-                  <section aria-label="正文差异审阅" className="h-full min-h-0 overflow-hidden">
+                <Panel
+                  id="workbench-review"
+                  minSize={compactVertical ? "220px" : "420px"}
+                >
+                  <section
+                    aria-label="正文差异审阅"
+                    className="h-full min-h-0 overflow-hidden"
+                  >
                     {AgentCompanion && companionRequest ? (
                       <Suspense
                         fallback={
@@ -573,8 +601,12 @@ export default function WorkbenchAgentSurfaceHost({
                         }
                       >
                         <AgentCompanion
-                          workspacePath={dialog.workbenchAgentSurface?.workspacePath ?? ""}
-                          conversationKey={dialog.workbenchAgentSurface?.conversationKey ?? ""}
+                          workspacePath={
+                            dialog.workbenchAgentSurface?.workspacePath ?? ""
+                          }
+                          conversationKey={
+                            dialog.workbenchAgentSurface?.conversationKey ?? ""
+                          }
                           companionId={companionRequest.id}
                           context={companionRequest.context ?? {}}
                           isAgentRunning={dialog.isGenerating === true}
@@ -609,11 +641,7 @@ export default function WorkbenchAgentSurfaceHost({
       ))}
 
       {surfaces
-        .filter(
-          (tab) =>
-            tab.id !== dialog?.id &&
-            !isEmbeddedReviewSurface(tab),
-        )
+        .filter((tab) => tab.id !== dialog?.id && !isEmbeddedReviewSurface(tab))
         .map((tab) => (
           <div
             key={`mounted-${tab.id}`}
@@ -629,159 +657,162 @@ export default function WorkbenchAgentSurfaceHost({
           </div>
         ))}
 
-      {taskSurfaces.length > 0 && (
-        <aside
-          ref={dockRef}
-          aria-label="AI 任务坞"
-          style={{
-            transform: `translate3d(${dockOffset.x}px, ${dockOffset.y}px, 0)`,
-          }}
-          className="absolute bottom-5 right-5 z-[190] w-96 max-w-[calc(100%-2rem)] overflow-hidden rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] shadow-xl"
-        >
-          <header
-            aria-label="拖动 AI 任务坞"
-            title="拖动任务坞"
-            onPointerDown={handleDockPointerDown}
-            onPointerMove={handleDockPointerMove}
-            onPointerUp={finishDockDrag}
-            onPointerCancel={finishDockDrag}
-            className={`flex min-h-12 touch-none select-none items-center gap-2 border-b border-[var(--line)] px-3 py-2 [&_button]:cursor-pointer ${
-              isDockDragging ? "cursor-grabbing" : "cursor-grab"
-            }`}
+      {taskDockTarget &&
+        taskSurfaces.length > 0 &&
+        createPortal(
+          <aside
+            ref={dockRef}
+            aria-label="AI 任务坞"
+            style={{
+              transform: `translate3d(${dockOffset.x}px, ${dockOffset.y}px, 0)`,
+            }}
+            className="absolute bottom-5 right-5 z-[190] w-96 max-w-[calc(100%-2rem)] overflow-hidden rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] shadow-xl"
           >
-            <span
-              aria-hidden="true"
-              className="flex h-4 w-3 shrink-0 items-center justify-center text-[var(--ink-subtle)]"
+            <header
+              aria-label="拖动 AI 任务坞"
+              title="拖动任务坞"
+              onPointerDown={handleDockPointerDown}
+              onPointerMove={handleDockPointerMove}
+              onPointerUp={finishDockDrag}
+              onPointerCancel={finishDockDrag}
+              className={`flex min-h-12 touch-none select-none items-center gap-2 border-b border-[var(--line)] px-3 py-2 [&_button]:cursor-pointer ${
+                isDockDragging ? "cursor-grabbing" : "cursor-grab"
+              }`}
             >
-              <GripVertical className="h-4 w-4" />
-            </span>
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--accent-cool)] text-white">
-              {runningTaskCount > 0 ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Bot className="h-3.5 w-3.5" />
-              )}
-            </span>
-            <button
-              type="button"
-              aria-expanded={!isDockCollapsed}
-              onClick={() => setIsDockCollapsed((current) => !current)}
-              className="min-w-0 flex-1 text-left"
-            >
-              <strong className="block truncate text-xs font-semibold">
-                AI 任务
-              </strong>
-              <span className="block truncate text-xs text-[var(--ink-muted)]">
-                {taskSummary}
+              <span
+                aria-hidden="true"
+                className="flex h-4 w-3 shrink-0 items-center justify-center text-[var(--ink-subtle)]"
+              >
+                <GripVertical className="h-4 w-4" />
               </span>
-            </button>
-            <span
-              aria-label={`共 ${taskSurfaces.length} 个任务`}
-              className="flex h-6 min-w-6 items-center justify-center rounded-full bg-[var(--paper-inset)] px-1.5 text-xs font-medium text-[var(--ink-muted)]"
-            >
-              {taskSurfaces.length}
-            </span>
-            <button
-              type="button"
-              aria-label={isDockCollapsed ? "展开 AI 任务" : "收起 AI 任务"}
-              title={isDockCollapsed ? "展开" : "收起"}
-              onClick={() => setIsDockCollapsed((current) => !current)}
-              className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-            >
-              {isDockCollapsed ? (
-                <ChevronUp className="h-4 w-4" />
-              ) : (
-                <ChevronDown className="h-4 w-4" />
-              )}
-            </button>
-          </header>
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--accent-cool)] text-white">
+                {runningTaskCount > 0 ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Bot className="h-3.5 w-3.5" />
+                )}
+              </span>
+              <button
+                type="button"
+                aria-expanded={!isDockCollapsed}
+                onClick={() => setIsDockCollapsed((current) => !current)}
+                className="min-w-0 flex-1 text-left"
+              >
+                <strong className="block truncate text-xs font-semibold">
+                  AI 任务
+                </strong>
+                <span className="block truncate text-xs text-[var(--ink-muted)]">
+                  {taskSummary}
+                </span>
+              </button>
+              <span
+                aria-label={`共 ${taskSurfaces.length} 个任务`}
+                className="flex h-6 min-w-6 items-center justify-center rounded-full bg-[var(--paper-inset)] px-1.5 text-xs font-medium text-[var(--ink-muted)]"
+              >
+                {taskSurfaces.length}
+              </span>
+              <button
+                type="button"
+                aria-label={isDockCollapsed ? "展开 AI 任务" : "收起 AI 任务"}
+                title={isDockCollapsed ? "展开" : "收起"}
+                onClick={() => setIsDockCollapsed((current) => !current)}
+                className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+              >
+                {isDockCollapsed ? (
+                  <ChevronUp className="h-4 w-4" />
+                ) : (
+                  <ChevronDown className="h-4 w-4" />
+                )}
+              </button>
+            </header>
 
-          {!isDockCollapsed && (
-            <div className="max-h-[min(52vh,28rem)] overflow-y-auto">
-              {orderedTaskSurfaces.map((tab) => (
-                <section
-                  key={tab.id}
-                  className={`flex min-h-14 items-center gap-2 border-b border-[var(--line-subtle)] px-3 py-2 last:border-b-0 ${
-                    tab.id === dialog?.id
-                      ? "bg-[var(--accent-cool-subtle)]"
-                      : tab.hasUnread
-                        ? "bg-[var(--success-bg)]"
-                        : ""
-                  }`}
-                >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center text-[var(--ink-muted)]">
-                    {tab.isGenerating ? (
-                      <Loader2 className="h-4 w-4 animate-spin text-[var(--accent-cool)]" />
-                    ) : tab.hasUnread ? (
-                      <CheckCircle2 className="h-4 w-4 text-[var(--success)]" />
-                    ) : (
-                      <Bot className="h-4 w-4" />
-                    )}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => onRestore(tab.id)}
-                    className="min-w-0 flex-1 text-left"
+            {!isDockCollapsed && (
+              <div className="max-h-[min(52vh,28rem)] overflow-y-auto">
+                {orderedTaskSurfaces.map((tab) => (
+                  <section
+                    key={tab.id}
+                    className={`flex min-h-14 items-center gap-2 border-b border-[var(--line-subtle)] px-3 py-2 last:border-b-0 ${
+                      tab.id === dialog?.id
+                        ? "bg-[var(--accent-cool-subtle)]"
+                        : tab.hasUnread
+                          ? "bg-[var(--success-bg)]"
+                          : ""
+                    }`}
                   >
-                    <strong className="block truncate text-xs font-semibold">
-                      {tab.title}
-                    </strong>
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <SurfaceStatus tab={tab} />
-                      <span className="truncate text-xs text-[var(--ink-subtle)]">
-                        ·{" "}
-                        {getFolderName(
-                          tab.workbenchAgentSurface?.workspacePath ?? "",
-                        )}
-                      </span>
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center text-[var(--ink-muted)]">
+                      {tab.isGenerating ? (
+                        <Loader2 className="h-4 w-4 animate-spin text-[var(--accent-cool)]" />
+                      ) : tab.hasUnread ? (
+                        <CheckCircle2 className="h-4 w-4 text-[var(--success)]" />
+                      ) : (
+                        <Bot className="h-4 w-4" />
+                      )}
                     </span>
-                  </button>
-                  {tab.workbenchAgentSurface?.bootstrap && (
                     <button
                       type="button"
-                      aria-label={`重新开始 ${tab.title}`}
-                      title="重新开始"
-                      onClick={() => setPendingRestart(tab)}
-                      className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                      onClick={() => onRestore(tab.id)}
+                      className="min-w-0 flex-1 text-left"
                     >
-                      <RotateCcw className="h-4 w-4" />
+                      <strong className="block truncate text-xs font-semibold">
+                        {tab.title}
+                      </strong>
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <SurfaceStatus tab={tab} />
+                        <span className="truncate text-xs text-[var(--ink-subtle)]">
+                          ·{" "}
+                          {getFolderName(
+                            tab.workbenchAgentSurface?.workspacePath ?? "",
+                          )}
+                        </span>
+                      </span>
                     </button>
-                  )}
-                  {supportsProposalReview(tab) && (
+                    {tab.workbenchAgentSurface?.bootstrap && (
+                      <button
+                        type="button"
+                        aria-label={`重新开始 ${tab.title}`}
+                        title="重新开始"
+                        onClick={() => setPendingRestart(tab)}
+                        className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                      >
+                        <RotateCcw className="h-4 w-4" />
+                      </button>
+                    )}
+                    {supportsProposalReview(tab) && (
+                      <button
+                        type="button"
+                        aria-label={`审阅 ${tab.title} 提案`}
+                        title="审阅提案"
+                        onClick={() => onReview(tab.id)}
+                        className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                      >
+                        <GitCompareArrows className="h-4 w-4" />
+                      </button>
+                    )}
                     <button
                       type="button"
-                      aria-label={`审阅 ${tab.title} 提案`}
-                      title="审阅提案"
-                      onClick={() => onReview(tab.id)}
+                      aria-label={`展开 ${tab.title}`}
+                      title="展开"
+                      onClick={() => onRestore(tab.id)}
                       className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                     >
-                      <GitCompareArrows className="h-4 w-4" />
+                      <ExternalLink className="h-4 w-4" />
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    aria-label={`展开 ${tab.title}`}
-                    title="展开"
-                    onClick={() => onRestore(tab.id)}
-                    className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`关闭 ${tab.title}窗口`}
-                    title="关闭窗口"
-                    onClick={() => onClose(tab.id)}
-                    className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </section>
-              ))}
-            </div>
-          )}
-        </aside>
-      )}
+                    <button
+                      type="button"
+                      aria-label={`关闭 ${tab.title}窗口`}
+                      title="关闭窗口"
+                      onClick={() => onClose(tab.id)}
+                      className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </section>
+                ))}
+              </div>
+            )}
+          </aside>,
+          taskDockTarget,
+        )}
 
       {visiblePendingRestart && (
         <ConfirmDialog

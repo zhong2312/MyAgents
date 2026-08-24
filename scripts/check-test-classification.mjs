@@ -17,6 +17,12 @@ const CHILD_PROCESS_ALLOWLIST = new Set([
   // separate Node processes. Keep the exception narrow so future integration
   // tests cannot spawn arbitrary network-capable subprocesses unnoticed.
   'src/server/__tests__/admin-config-lock.integration.test.ts',
+  // Proves dead-PID lock recovery with process.execPath running only
+  // `process.exit(0)`; the child receives no URL, secret, or network input.
+  'src/server/__tests__/file-lock.integration.test.ts',
+  // Composes that same short-lived local child with a temp-HOME SessionStore
+  // bootstrap. The child exits immediately and cannot perform network I/O.
+  'src/server/__tests__/session-lock-bootstrap.integration.test.ts',
   // Boots the real Sidecar against temp HOME/workspace directories and a
   // loopback-only HTTP port to verify the required-system-skill API contract.
   'src/server/__tests__/skills-required.integration.test.ts',

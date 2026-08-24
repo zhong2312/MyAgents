@@ -23,6 +23,7 @@ import { FileActionProvider } from '@/context/FileActionContext';
 import { useImagePreview } from '@/context/ImagePreviewContext';
 import { useToast } from '@/components/Toast';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
+import { useWorkspaceChangeSignal } from '@/hooks/useWorkspaceChangeSignal';
 import { useTauriFileDrop } from '@/hooks/useTauriFileDrop';
 import { track } from '@/analytics';
 import { loadAppConfig, mergePresetCustomModels } from '@/config/services/appConfigService';
@@ -32,7 +33,12 @@ import { ALLOWED_IMAGE_MIME_TYPES, USER_IMAGE_ATTACHMENT_MAX_BYTES, isChatImageF
 import { resolveAttachmentUrl } from '@/utils/attachmentUrl';
 import { renameIfBareClipboardImage } from '@/utils/clipboardImage';
 import { formatDuration, getToolBadgeConfig, getToolLabel, getToolMainLabel, getToolSummaryNode, isSubagentContainerTool } from '@/components/tools/toolBadgeConfig';
-import { isBackgroundSubagentTool, isSubagentContainerRunning } from '@/components/tools/subagentActivity';
+import {
+    getSubagentContainerDurationMs,
+    getSubagentContainerLifecycleStatus,
+    isBackgroundSubagentTool,
+    isSubagentContainerRunning,
+} from '@/components/tools/subagentActivity';
 import { groupContentBlocksForDisplay } from '@/utils/contentBlockDisplay';
 import type { ContentBlock } from '@/types/chat';
 import { isNearBottom } from './convoAutoFollow';
@@ -100,8 +106,9 @@ function ActivityRow({ block, isStreaming, tick }: { block: ContentBlock; isStre
     const tool = isTool ? block.tool : undefined;
     const isTaskTool = !!tool?.name && isSubagentContainerTool(tool.name);
     const isThinkingActive = isThinking && block.isComplete !== true && isStreaming;
-    const isToolActive = !!tool?.isLoading;
     const isTaskRunning = isTaskTool && isSubagentContainerRunning(tool);
+    const lifecycleStatus = isTaskTool ? getSubagentContainerLifecycleStatus(tool) : null;
+    const isToolActive = !!tool?.isLoading && (!isTaskTool || isTaskRunning);
     const isRunning = isThinkingActive || isToolActive || isTaskRunning;
 
     let icon: ReactNode = null;
@@ -138,8 +145,13 @@ function ActivityRow({ block, isStreaming, tick }: { block: ContentBlock; isStre
         const toolLabel = getToolLabel(tool);
         mainLabel = getToolMainLabel(tool);
         subLabel = toolLabel !== mainLabel ? toolLabel : '';
-        if (isTaskRunning && tool.taskStartTime) {
-            taskDuration = formatDuration(tick - tool.taskStartTime);
+        if (isTaskRunning) {
+            const duration = getSubagentContainerDurationMs(tool, tick)
+                ?? (tool.taskStartTime ? tick - tool.taskStartTime : null);
+            if (duration !== null) taskDuration = formatDuration(duration);
+        } else if (lifecycleStatus) {
+            const duration = getSubagentContainerDurationMs(tool, tick);
+            if (duration !== null) taskDuration = formatDuration(duration);
         } else if (isTaskTool && tool.result) {
             try {
                 const parsed = JSON.parse(tool.result) as { totalDurationMs?: number };
@@ -150,9 +162,9 @@ function ActivityRow({ block, isStreaming, tick }: { block: ContentBlock; isStre
         }
         if (isToolActive || isTaskRunning) {
             icon = <Loader2 className="size-4 animate-spin" />;
-        } else if (tool.isFailed) {
+        } else if (lifecycleStatus === 'failed' || tool.isFailed) {
             icon = <XCircle className="size-4 text-[var(--error)]" />;
-        } else if (tool.isStopped) {
+        } else if (lifecycleStatus === 'interrupted' || tool.isStopped) {
             icon = <StopCircle className="size-4 text-[var(--warning)]" />;
         } else if (tool.isError) {
             icon = <AlertCircle className="size-4 text-[var(--error)]" />;
@@ -275,6 +287,10 @@ export default function CompanionWindow() {
 
     const session = useFloatingSession(modeRef);
     const fileService = useWorkspaceFileService(session.workspacePath);
+    const workspaceChangeSignal = useWorkspaceChangeSignal(
+        session.workspacePath,
+        fileService.isAvailable,
+    );
     const toast = useToast();
     const { openPreview } = useImagePreview();
     // ⚠️ 稳定性纪律（review critical）：`session` 是每渲染新对象——监听 effect
@@ -1335,6 +1351,7 @@ export default function CompanionWindow() {
             <FileActionProvider
                 workspacePath={session.workspacePath}
                 onInsertReference={insertReferencePaths}
+                refreshTrigger={workspaceChangeSignal}
                 menuProfile="floatingBall"
                 onOpenMyAgentsPreview={onOpenMyAgentsPreview}
             >

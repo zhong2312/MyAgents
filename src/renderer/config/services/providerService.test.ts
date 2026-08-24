@@ -10,6 +10,7 @@ import {
 } from '../types';
 import {
     getFirstAvailableProvider,
+    isImageUnderstandingSelectionAvailable,
     isProviderAvailable,
     resolveBuiltinSelection,
     resolveProvider,
@@ -189,5 +190,53 @@ describe('provider availability with enablement', () => {
             { deepseek: 'deepseek-key' },
             {},
         )).toBeUndefined();
+    });
+});
+
+describe('image-understanding selection availability', () => {
+    it('keeps a configured model selectable when input modalities are unknown', () => {
+        const provider = makeProvider('custom-vision');
+
+        expect(isImageUnderstandingSelectionAvailable(
+            [provider],
+            { 'custom-vision': 'configured-key' },
+            {},
+            { imageUnderstanding: { providerId: 'custom-vision', model: 'custom-vision-model' } },
+        )).toBe(true);
+    });
+
+    it('rejects only an explicit text-only model declaration', () => {
+        const provider: Provider = {
+            ...makeProvider('custom-text'),
+            models: [{
+                model: 'custom-text-model',
+                modelName: 'Custom Text Model',
+                modelSeries: 'test',
+                inputModalities: ['text'],
+            }],
+        };
+
+        expect(isImageUnderstandingSelectionAvailable(
+            [provider],
+            { 'custom-text': 'configured-key' },
+            {},
+            { imageUnderstanding: { providerId: 'custom-text', model: 'custom-text-model' } },
+        )).toBe(false);
+    });
+
+    it('rejects missing model rows and unavailable providers', () => {
+        const provider = makeProvider('custom-vision');
+        expect(isImageUnderstandingSelectionAvailable(
+            [provider],
+            { 'custom-vision': 'configured-key' },
+            {},
+            { imageUnderstanding: { providerId: 'custom-vision', model: 'missing-model' } },
+        )).toBe(false);
+        expect(isImageUnderstandingSelectionAvailable(
+            [provider],
+            {},
+            {},
+            { imageUnderstanding: { providerId: 'custom-vision', model: 'custom-vision-model' } },
+        )).toBe(false);
     });
 });

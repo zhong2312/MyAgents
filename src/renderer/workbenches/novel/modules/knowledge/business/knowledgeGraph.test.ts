@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildKnowledgeGraph,
   buildKnowledgeGraphFromStorage,
+  getCachedKnowledgeGraph,
   readKnowledgeDocuments,
   searchKnowledgeGraph,
   type KnowledgeDocument,
@@ -399,6 +400,7 @@ describe("buildKnowledgeGraph（设定页 Markdown 派生）", () => {
     expect(second.sourceHash).toBe(first.sourceHash);
     expect(second.nodes).toEqual(first.nodes);
     expect(second).toBe(first);
+    expect(getCachedKnowledgeGraph(storage)).toBe(first);
   });
 
   it("reports malformed JSON instead of silently dropping the source", () => {

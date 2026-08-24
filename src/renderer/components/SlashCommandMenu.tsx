@@ -57,7 +57,7 @@ export default function SlashCommandMenu({
         <div className="w-80 max-h-64 overflow-auto">
             {commands.map((cmd, index) => (
                 <div
-                    key={`${cmd.source}-${cmd.name}`}
+                    key={`${cmd.source}-${commandIdentity(cmd)}`}
                     ref={index === selectedIndex ? selectedItemRef : null}
                     className={`flex items-center gap-3 px-3 py-2 cursor-pointer text-sm ${index === selectedIndex
                         ? 'bg-[var(--accent)]/10 text-[var(--ink)]'
@@ -101,9 +101,11 @@ export function filterAndSortCommands(commands: SlashCommand[], query: string): 
     );
     const matches = (cmd: SlashCommand) => {
         const name = cmd.name.toLowerCase();
+        const invocationName = (cmd.invocationName ?? cmd.name).toLowerCase();
         const description = cmd.description.toLowerCase();
         const aliases = cmd.aliases ?? [];
         return name.includes(q) ||
+            invocationName.includes(q) ||
             description.includes(q) ||
             aliases.some((alias) => alias.toLowerCase().includes(q));
     };
@@ -137,39 +139,63 @@ export function filterAndSortCommands(commands: SlashCommand[], query: string): 
 }
 
 function commandIdentity(command: SlashCommand): string {
-    return command.name.trim().replace(/^\/+/, '').toLowerCase();
+    return (command.invocationName ?? command.name).trim().replace(/^\/+/, '').toLowerCase();
 }
 
-/**
- * Merge the workspace scan with the SDK's live command snapshot.
- *
- * Workspace commands win on name collisions because they are the local source
- * of truth for builtins, renderer client actions, and disk-backed commands.
- * SDK commands are still valuable for plugin skills/commands that only exist
- * after the SDK resolves enabled plugins.
- */
-export function mergeSlashCommands(
-    workspaceCommands: SlashCommand[],
-    sdkCommands: SlashCommand[],
+function appendUniqueSlashCommands(
+    primaryCommands: SlashCommand[],
+    supplementalCommands: SlashCommand[],
+    sourceOverride?: SlashCommand['source'],
 ): SlashCommand[] {
-    if (sdkCommands.length === 0) return workspaceCommands;
+    if (supplementalCommands.length === 0) return primaryCommands;
 
-    const seen = new Set(workspaceCommands.map(commandIdentity));
-    let merged = workspaceCommands;
+    const seen = new Set(primaryCommands.map(commandIdentity));
+    let merged = primaryCommands;
 
-    for (const command of sdkCommands) {
-        const name = command.name.trim().replace(/^\/+/, '');
-        if (!name) continue;
+    for (const command of supplementalCommands) {
+        const invocationName = (command.invocationName ?? command.name).trim().replace(/^\/+/, '');
+        if (!invocationName) continue;
 
-        const key = name.toLowerCase();
+        const key = invocationName.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
 
-        if (merged === workspaceCommands) {
-            merged = [...workspaceCommands];
+        if (merged === primaryCommands) {
+            merged = [...primaryCommands];
         }
-        merged.push({ ...command, name, source: 'sdk' });
+        merged.push({
+            ...command,
+            ...(command.invocationName
+                ? { invocationName }
+                : { name: invocationName }),
+            ...(sourceOverride ? { source: sourceOverride } : {}),
+        });
     }
 
     return merged;
+}
+
+/**
+ * Merge product builtins with effective project/global capabilities while
+ * preserving the capability snapshot's skill/custom provenance.
+ */
+export function mergeLocalSlashCommands(
+    productCommands: SlashCommand[],
+    localCommands: SlashCommand[],
+): SlashCommand[] {
+    return appendUniqueSlashCommands(productCommands, localCommands);
+}
+
+/**
+ * Merge the local menu with the builtin SDK's live command snapshot.
+ *
+ * Local commands win on name collisions. Only this dynamic source is stamped
+ * as SDK-provided because it contains plugin skills/commands resolved by the
+ * builtin SDK.
+ */
+export function mergeSdkSlashCommands(
+    localCommands: SlashCommand[],
+    sdkCommands: SlashCommand[],
+): SlashCommand[] {
+    return appendUniqueSlashCommands(localCommands, sdkCommands, 'sdk');
 }

@@ -7,6 +7,10 @@ import { useTranslation } from 'react-i18next';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import type { CronEndConditions, CronRunMode, CronTaskConfig, CronSchedule, ScheduledTaskKind } from '@/types/cronTask';
 import { MIN_CRON_INTERVAL } from '@/types/cronTask';
+import {
+  DEFAULT_SESSION_GOAL_END_CONDITIONS,
+  DEFAULT_SESSION_GOAL_NOTIFY_ENABLED,
+} from '@/utils/sessionGoalDraft';
 import ScheduleTypeTabs from '@/components/scheduled-tasks/ScheduleTypeTabs';
 import CustomSelect from '@/components/CustomSelect';
 import { useDeliveryChannels } from '@/hooks/useDeliveryChannels';
@@ -69,8 +73,7 @@ export type CronSettingsResult = Omit<CronTaskConfig, 'workspacePath' | 'session
   executionTarget: ExecutionTarget;
 };
 
-/** Configuration that can be passed to restore previous settings or preset a
- *  fresh open (e.g. `/goal` opens the modal preset to Goal mode). */
+/** Configuration that can restore settings or open Goal's optional editor. */
 export type CronInitialConfig = {
   taskKind: ScheduledTaskKind;
   prompt: string;
@@ -83,15 +86,14 @@ export type CronInitialConfig = {
   delivery?: import('@/types/cronTask').CronDelivery;
 };
 
-/** Shared preset for the `/goal` client action in Chat and Launcher.
- *  The objective is entered in the composer after this modal is confirmed. */
+/** Shared preset for Goal's optional settings editor and Launcher handoff. */
 export const GOAL_SLASH_PRESET: CronInitialConfig = {
   taskKind: 'goal',
   prompt: '',
   intervalMinutes: 30,
-  endConditions: { aiCanExit: true },
+  endConditions: { ...DEFAULT_SESSION_GOAL_END_CONDITIONS },
   runMode: 'single_session',
-  notifyEnabled: true,
+  notifyEnabled: DEFAULT_SESSION_GOAL_NOTIFY_ENABLED,
   schedule: { kind: 'loop' },
   executionTarget: 'current_session',
 };

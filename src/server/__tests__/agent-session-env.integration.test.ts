@@ -24,11 +24,18 @@ describe('buildClaudeSessionEnv npm prefix isolation', () => {
       ? resolve(home, '.myagents', 'npm-global')
       : `${home}/.myagents/npm-global`;
     const binDir = process.platform === 'win32' ? prefix : `${prefix}/bin`;
+    const appBinDir = process.platform === 'win32'
+      ? resolve(home, '.myagents', 'bin')
+      : `${home}/.myagents/bin`;
 
     vi.stubEnv(process.platform === 'win32' ? 'USERPROFILE' : 'HOME', home);
     vi.stubEnv('npm_config_prefix', prefix);
     vi.stubEnv('NPM_CONFIG_PREFIX', prefix);
     vi.stubEnv('PREFIX', prefix);
+    vi.stubEnv(
+      process.platform === 'win32' ? 'Path' : 'PATH',
+      [binDir, appBinDir].join(delimiter),
+    );
 
     const env = buildClaudeSessionEnv();
     const pathValue = env[process.platform === 'win32' ? 'Path' : 'PATH'] ?? '';
@@ -37,7 +44,10 @@ describe('buildClaudeSessionEnv npm prefix isolation', () => {
     expect(env.NPM_CONFIG_PREFIX).toBeUndefined();
     expect(env.PREFIX).toBeUndefined();
     expect(env.MYAGENTS_NPM_GLOBAL_PREFIX).toBe(prefix);
-    expect(pathValue.split(delimiter)).toContain(binDir);
+    const pathEntries = pathValue.split(delimiter);
+    expect(pathEntries).toContain(binDir);
+    expect(pathEntries).toContain(appBinDir);
+    expect(pathEntries.indexOf(appBinDir)).toBeLessThan(pathEntries.indexOf(binDir));
   });
 });
 

@@ -39,6 +39,11 @@ export async function handleSessionOperationRoute(
     }
   }
 
+  if (pathname === '/api/session/compact' && request.method === 'POST') {
+    const result = await getSessionEngine().compactContext();
+    return operationResponse(result);
+  }
+
   if (pathname === '/chat/rewind' && request.method === 'POST') {
     const body = await parseJsonObject(request);
     const userMessageId = typeof body.userMessageId === 'string' ? body.userMessageId : '';
@@ -69,22 +74,37 @@ export async function handleSessionOperationRoute(
     return operationResponse(result);
   }
 
-  if (pathname === '/api/im/session/new' && request.method === 'POST') {
+  if (pathname === '/api/session/surface-migration' && request.method === 'POST') {
     try {
       const body = await parseJsonObject(request);
-      const resetOptions: { metadataBirthPending: boolean; metadataIndexed?: boolean } = {
+      const targetSessionId = typeof body.targetSessionId === 'string' ? body.targetSessionId : '';
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(targetSessionId)) {
+        return jsonResponse({ success: false, error: 'Missing or invalid targetSessionId' }, 400);
+      }
+      const migrationOptions: {
+        targetSessionId: string;
+        metadataBirthPending: boolean;
+        metadataIndexed?: boolean;
+      } = {
+        targetSessionId,
         metadataBirthPending: body.metadataBirthPending === true,
       };
       if (typeof body.metadataIndexed === 'boolean') {
-        resetOptions.metadataIndexed = body.metadataIndexed;
+        migrationOptions.metadataIndexed = body.metadataIndexed;
       }
-      const result = await getSessionEngine().resetForNewImSession(deps.workspacePath, resetOptions);
+      const result = await getSessionEngine().migrateBoundSurfaceSession(
+        deps.workspacePath,
+        migrationOptions,
+      );
       if (!result.success) {
         return jsonResponse(result, 500);
       }
+      if (result.sessionId !== targetSessionId) {
+        return jsonResponse({ success: false, error: 'Runtime adopted an unexpected Session identity' }, 500);
+      }
       return jsonResponse({ sessionId: result.sessionId });
     } catch (error) {
-      console.error('[im/session/new] Error:', error);
+      console.error('[session/surface-migration] Error:', error);
       return jsonResponse(
         { success: false, error: error instanceof Error ? error.message : 'Reset error' },
         500,

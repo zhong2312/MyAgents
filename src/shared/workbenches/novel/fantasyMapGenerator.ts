@@ -8,6 +8,12 @@ import {
   FANTASY_MAP_STYLE_ID,
   localizeFantasyMapFeatures,
 } from "./fantasyMapStyle";
+import type {
+  MapGenerationEntityRole,
+  MapGenerationPlan,
+  MapGenerationPlannedEntity,
+  MapGenerationZone,
+} from "./mapGenerationPlan";
 
 export type FantasyFeatureKind = "marker" | "label" | "area" | "route";
 
@@ -20,7 +26,16 @@ export interface FantasyFeature {
   readonly id: string;
   readonly kind: FantasyFeatureKind;
   readonly name: string;
-  readonly entityRef: null;
+  readonly entityRef: {
+    readonly kind:
+      | "character"
+      | "event"
+      | "location"
+      | "faction"
+      | "item"
+      | "setting";
+    readonly id: string;
+  } | null;
   readonly layerId: string;
   readonly points: readonly FantasyPoint[];
   readonly timeFrom: null;
@@ -41,6 +56,8 @@ export interface FantasyMapGenerationInput {
   readonly factionNames?: readonly string[];
   readonly spatialNames?: readonly string[];
   readonly terrainKeywords?: readonly string[];
+  /** Agent 对世界架构作出的完整空间规划；缺失时保留离线兼容生成行为。 */
+  readonly plan?: MapGenerationPlan;
 }
 
 export interface FantasyMapGenerationResult {
@@ -48,6 +65,36 @@ export interface FantasyMapGenerationResult {
   readonly title: string;
   readonly summary: string;
   readonly features: readonly FantasyFeature[];
+}
+
+export function bindFantasyPlanToFeatures(input: {
+  readonly features: readonly FantasyFeature[];
+  readonly plan: MapGenerationPlan;
+  readonly width: number;
+  readonly height: number;
+  readonly layerId: string;
+}): FantasyFeature[] {
+  const coast = input.features
+    .filter((feature) => feature.kind === "area" && feature.points.length >= 3)
+    .sort((left, right) => right.points.length - left.points.length)[0]
+    ?.points ?? [
+    { x: 12, y: 12 },
+    { x: input.width - 12, y: 12 },
+    { x: input.width - 12, y: input.height - 12 },
+    { x: 12, y: input.height - 12 },
+  ];
+  return applyGenerationPlan(
+    {
+      seed: `plan:${input.plan.worldSourceHash}`,
+      width: input.width,
+      height: input.height,
+      layerId: input.layerId,
+      plan: input.plan,
+    },
+    [...input.features],
+    coast,
+    seededRandom(`plan:${input.plan.worldSourceHash}`),
+  );
 }
 
 type FantasyBiomeMaterial =
@@ -489,7 +536,9 @@ function feature(
     points,
     timeFrom: null,
     timeTo: null,
-    props: { generator: "fantasy-map-tool", ...props },
+    // 基础地形先以可识别的占位名生成，正式规划会在样式适配阶段用
+    // naming 目录替换。标记不会被持久化进最终 MapDocument。
+    props: { generator: "fantasy-map-tool", generatedName: "true", ...props },
     description,
   };
 }
@@ -500,6 +549,961 @@ function nameAt(
   fallback: string,
 ): string {
   return values?.[index % values.length] ?? fallback;
+}
+
+function featureCenter(points: readonly FantasyPoint[]): FantasyPoint {
+  if (points.length === 0) return { x: 0, y: 0 };
+  return points.reduce(
+    (center, candidate) => ({
+      x: center.x + candidate.x / points.length,
+      y: center.y + candidate.y / points.length,
+    }),
+    { x: 0, y: 0 },
+  );
+}
+
+function roleFeatureMatch(
+  feature: FantasyFeature,
+  role: MapGenerationEntityRole,
+): boolean {
+  const terrain = feature.props.terrain;
+  if (["realm", "region"].includes(role)) {
+    return feature.kind === "area" && terrain === "region";
+  }
+  if (["mountain", "vein"].includes(role)) {
+    return feature.kind === "route" && terrain === "mountain";
+  }
+  if (role === "waterway") {
+    return (
+      feature.kind === "route" &&
+      (terrain === "river" || terrain === "tributary")
+    );
+  }
+  if (role === "lake") {
+    return feature.kind === "area" && terrain === "lake";
+  }
+  if (role === "biome") {
+    return feature.kind === "area" && terrain === "biome";
+  }
+  return feature.kind === "marker";
+}
+
+export function artworkComponentForRole(
+  role: MapGenerationEntityRole,
+): string | null {
+  switch (role) {
+    case "sect":
+      return "faction-seat";
+    case "holy-land":
+      return "temple";
+    case "secret-realm":
+      return "secret-realm";
+    case "forbidden-land":
+      return "magic-rift";
+    case "ruin":
+      return "ruins";
+    case "demon-den":
+      return "cave";
+    case "portal":
+      return "portal";
+    case "battlefield":
+      return "battlefield";
+    case "pass":
+      return "watchtower";
+    case "capital":
+      return "capital";
+    case "port":
+      return "port";
+    case "city":
+      return "city";
+    case "settlement":
+      return "town-district";
+    // These roles already have structural geometry or terrain materials. A
+    // point stamp would duplicate the fact and make the area look like a
+    // landmark, so they deliberately have no artwork component.
+    case "realm":
+    case "region":
+    case "lake":
+    case "waterway":
+    case "biome":
+      return null;
+    default:
+      return null;
+  }
+}
+
+function plannedEntityAreaTerrain(
+  role: MapGenerationEntityRole,
+): "region" | "lake" | "biome" | null {
+  if (role === "realm" || role === "region") return "region";
+  if (role === "lake") return "lake";
+  if (role === "biome") return "biome";
+  return null;
+}
+
+function plannedEntityRouteTerrain(
+  role: MapGenerationEntityRole,
+): "mountain" | "river" | null {
+  if (role === "mountain" || role === "vein") return "mountain";
+  if (role === "waterway") return "river";
+  return null;
+}
+
+/** 没有可复用的 Azgaar 几何时，仍为山脉保留可编辑的连续路径。 */
+function plannedMountainPath(
+  source: FantasyPoint,
+  random: () => number,
+  coast: readonly FantasyPoint[],
+): FantasyPoint[] {
+  const angle = random() * Math.PI * 2;
+  const direction = { x: Math.cos(angle), y: Math.sin(angle) };
+  const normal = { x: -direction.y, y: direction.x };
+  const length = Math.min(260, Math.max(120, coast.length * 4));
+  return Array.from({ length: 5 }, (_, index) => {
+    const progress = index / 4 - 0.5;
+    const bend = Math.sin(index * 1.7) * Math.min(44, length * 0.16);
+    return projectInsidePolygon(
+      point(
+        source.x + direction.x * progress * length + normal.x * bend,
+        source.y + direction.y * progress * length + normal.y * bend,
+      ),
+      source,
+      coast,
+    );
+  });
+}
+
+/** 将规划锚点投影至主大陆，避免计划坐标落海时破坏要素几何。 */
+function plannedAnchorPoint(
+  anchor: { readonly x: number; readonly y: number } | null,
+  zone: MapGenerationZone,
+  input: FantasyMapGenerationInput,
+  coast: readonly FantasyPoint[],
+  random: () => number,
+): FantasyPoint {
+  if (anchor) {
+    return projectInsidePolygon(
+      point(anchor.x * input.width, anchor.y * input.height),
+      featureCenter(coast),
+      coast,
+    );
+  }
+  const zoneAnchors: Readonly<
+    Record<Exclude<MapGenerationZone, "unknown">, FantasyPoint>
+  > = {
+    north: { x: 0.5, y: 0.18 },
+    south: { x: 0.5, y: 0.82 },
+    east: { x: 0.82, y: 0.5 },
+    west: { x: 0.18, y: 0.5 },
+    center: { x: 0.5, y: 0.5 },
+    coast: { x: 0.8, y: 0.5 },
+    island: { x: 0.78, y: 0.28 },
+    highland: { x: 0.48, y: 0.24 },
+    lowland: { x: 0.5, y: 0.7 },
+  };
+  const zoneAnchor = zone === "unknown" ? null : zoneAnchors[zone];
+  if (zoneAnchor) {
+    // 语义区域只决定大致方位，保留小幅确定性扰动以避免同一区域的
+    // 多个空间层完全重叠；最终仍由主大陆边界约束。
+    const spread = zone === "coast" || zone === "island" ? 0.08 : 0.12;
+    const candidate = point(
+      (zoneAnchor.x + (random() - 0.5) * spread) * input.width,
+      (zoneAnchor.y + (random() - 0.5) * spread) * input.height,
+    );
+    return projectInsidePolygon(candidate, featureCenter(coast), coast);
+  }
+  return randomLandPoint(random, coast, featureCenter(coast));
+}
+
+function plannedEntityPoint(
+  entity: MapGenerationPlannedEntity,
+  input: FantasyMapGenerationInput,
+  coast: readonly FantasyPoint[],
+  random: () => number,
+  zone: MapGenerationZone,
+): FantasyPoint {
+  return plannedAnchorPoint(entity.anchor, zone, input, coast, random);
+}
+
+function polygonInteriorPoint(polygon: readonly FantasyPoint[]): FantasyPoint {
+  const center = featureCenter(polygon);
+  if (pointInPolygon(center, polygon)) return center;
+  const bounds = polygonBounds(polygon);
+  let closest: FantasyPoint | null = null;
+  for (let row = 0; row < 16; row += 1) {
+    for (let column = 0; column < 16; column += 1) {
+      const candidate = point(
+        bounds.left + ((column + 0.5) / 16) * (bounds.right - bounds.left),
+        bounds.top + ((row + 0.5) / 16) * (bounds.bottom - bounds.top),
+      );
+      if (
+        pointInPolygon(candidate, polygon) &&
+        (!closest ||
+          distanceSquared(candidate, center) < distanceSquared(closest, center))
+      ) {
+        closest = candidate;
+      }
+    }
+  }
+  return closest ?? polygon[0] ?? center;
+}
+
+function constrainToSpatialParent(
+  anchor: FantasyPoint,
+  parent: FantasyFeature | undefined,
+): FantasyPoint {
+  if (!parent || parent.points.length < 3) return anchor;
+  return projectInsidePolygon(
+    anchor,
+    polygonInteriorPoint(parent.points),
+    parent.points,
+  );
+}
+
+function orderedSpatialLayers(
+  plan: MapGenerationPlan,
+): readonly (typeof plan.spatialLayers)[number][] {
+  const layersById = new Map(
+    plan.spatialLayers.map((layer) => [layer.id, layer]),
+  );
+  const resolved = new Set<string>();
+  const visiting = new Set<string>();
+  const ordered: (typeof plan.spatialLayers)[number][] = [];
+  const visit = (layer: (typeof plan.spatialLayers)[number]) => {
+    if (resolved.has(layer.id) || visiting.has(layer.id)) return;
+    visiting.add(layer.id);
+    if (layer.parentId) {
+      const parent = layersById.get(layer.parentId);
+      if (parent) visit(parent);
+    }
+    visiting.delete(layer.id);
+    resolved.add(layer.id);
+    ordered.push(layer);
+  };
+  plan.spatialLayers.forEach(visit);
+  return ordered;
+}
+
+/** 保留候选要素的形状，只将其几何中心平移到规划锚点。 */
+function relocateFeatureToAnchor(
+  feature: FantasyFeature,
+  anchor: FantasyPoint,
+  coast: readonly FantasyPoint[],
+  spatialParent?: FantasyFeature,
+): readonly FantasyPoint[] {
+  if (feature.kind === "marker") return [anchor];
+  const center = featureCenter(feature.points);
+  const coastContained = feature.points.map((candidate) =>
+    projectInsidePolygon(
+      point(
+        candidate.x + anchor.x - center.x,
+        candidate.y + anchor.y - center.y,
+      ),
+      anchor,
+      coast,
+    ),
+  );
+  if (!spatialParent || spatialParent.points.length < 3) return coastContained;
+  const parentAnchor = polygonInteriorPoint(spatialParent.points);
+  return coastContained.map((candidate) =>
+    projectInsidePolygon(candidate, parentAnchor, spatialParent.points),
+  );
+}
+
+/** 关系投影使用实际保存的控制点，而非未约束的原始规划坐标。 */
+function featureAnchor(feature: FantasyFeature): FantasyPoint | null {
+  if (feature.points.length === 0) return null;
+  if (feature.kind === "marker") return feature.points[0]!;
+  const center = featureCenter(feature.points);
+  return point(center.x, center.y);
+}
+
+function isPlannedWaterway(feature: FantasyFeature): boolean {
+  return feature.kind === "route" && feature.props.entityRole === "waterway";
+}
+
+/** Azgaar 未返回对应河流时，仍生成可编辑的河道，不能退化成单点标记。 */
+function plannedWaterwayPath(
+  source: FantasyPoint,
+  coast: readonly FantasyPoint[],
+): FantasyPoint[] {
+  const mouth = coast.reduce(
+    (nearest, candidate) =>
+      distanceSquared(candidate, source) < distanceSquared(nearest, source)
+        ? candidate
+        : nearest,
+    coast[0] ?? source,
+  );
+  const deltaX = mouth.x - source.x;
+  const deltaY = mouth.y - source.y;
+  const distance = Math.max(1, Math.hypot(deltaX, deltaY));
+  const normal = { x: -deltaY / distance, y: deltaX / distance };
+  return Array.from({ length: 6 }, (_, index) => {
+    const progress = index / 5;
+    if (index === 0) return source;
+    if (index === 5) return mouth;
+    const bend = Math.sin(progress * Math.PI) * Math.min(42, distance * 0.12);
+    return projectInsidePolygon(
+      point(
+        source.x + deltaX * progress + normal.x * bend,
+        source.y + deltaY * progress + normal.y * bend,
+      ),
+      source,
+      coast,
+    );
+  });
+}
+
+function projectWaterwayRelations(
+  features: readonly FantasyFeature[],
+  plan: MapGenerationPlan,
+): FantasyFeature[] {
+  const featureByPlanId = new Map<string, FantasyFeature>();
+  features.forEach((feature) => {
+    for (const planId of [
+      feature.props.planEntityId,
+      feature.props.planTerritoryId,
+    ]) {
+      if (typeof planId === "string" && planId.length > 0) {
+        featureByPlanId.set(planId, feature);
+      }
+    }
+  });
+  let projected = [...features];
+  const replaceWaterwayPoints = (
+    relation: (typeof plan.relations)[number],
+    transform: (
+      source: FantasyFeature,
+      target: FantasyPoint,
+    ) => readonly FantasyPoint[],
+  ) => {
+    const source = featureByPlanId.get(relation.fromId);
+    const target = featureByPlanId.get(relation.toId);
+    const targetAnchor = target ? featureAnchor(target) : null;
+    if (!source || !targetAnchor || !isPlannedWaterway(source)) return;
+    const points = transform(source, targetAnchor);
+    const replacement = { ...source, points };
+    featureByPlanId.set(relation.fromId, replacement);
+    projected = projected.map((feature) =>
+      feature.id === replacement.id ? replacement : feature,
+    );
+  };
+
+  // 先固定河源，再投影途经点；输入关系的排列不应改变地图事实。
+  plan.relations
+    .filter((relation) => relation.type === "originates-at")
+    .forEach((relation) => {
+      replaceWaterwayPoints(relation, (source, target) => [
+        target,
+        ...source.points.slice(1),
+      ]);
+    });
+  plan.relations
+    .filter((relation) => relation.type === "flows-through")
+    .forEach((relation) => {
+      replaceWaterwayPoints(relation, (source, target) => {
+        const insertAt = clamp(
+          nearestPathPointIndex(source.points, target),
+          1,
+          source.points.length - 1,
+        );
+        return withoutAdjacentDuplicates([
+          ...source.points.slice(0, insertAt),
+          target,
+          ...source.points.slice(insertAt),
+        ]);
+      });
+    });
+  return projected;
+}
+
+function relationTargetPoint(
+  target: FantasyFeature,
+  relationType: MapGenerationPlan["relations"][number]["type"],
+): FantasyPoint | null {
+  if (
+    (relationType === "hidden-in" || relationType === "contains") &&
+    target.kind === "area" &&
+    target.points.length >= 3
+  ) {
+    return polygonInteriorPoint(target.points);
+  }
+  return featureAnchor(target);
+}
+
+function relationUsesContainment(
+  relationType: MapGenerationPlan["relations"][number]["type"],
+): boolean {
+  return relationType === "hidden-in" || relationType === "contains";
+}
+
+/** 为不改变端点位置的拓扑关系生成独立可编辑路线。 */
+function projectNonPositionalRelations(
+  features: readonly FantasyFeature[],
+  plan: MapGenerationPlan,
+): FantasyFeature[] {
+  const featureByPlanId = new Map<string, FantasyFeature>();
+  for (const feature of features) {
+    for (const planId of [
+      feature.props.planEntityId,
+      feature.props.planTerritoryId,
+    ]) {
+      if (typeof planId === "string" && planId.length > 0) {
+        featureByPlanId.set(planId, feature);
+      }
+    }
+    if (
+      typeof feature.props.spatialLayerId === "string" &&
+      typeof feature.props.spatialRole === "string"
+    ) {
+      featureByPlanId.set(feature.props.spatialLayerId, feature);
+    }
+  }
+
+  return plan.relations.reduce<FantasyFeature[]>(
+    (projected, relation, index) => {
+      if (!["connected-to", "separated-by"].includes(relation.type)) {
+        return projected;
+      }
+      const source = featureByPlanId.get(relation.fromId);
+      const target = featureByPlanId.get(relation.toId);
+      const sourceAnchor = source ? featureAnchor(source) : null;
+      const targetAnchor = target ? featureAnchor(target) : null;
+      if (!source || !target || !sourceAnchor || !targetAnchor)
+        return projected;
+
+      const relationId =
+        relation.type +
+        ":" +
+        relation.fromId +
+        ":" +
+        relation.toId +
+        ":" +
+        index;
+      const midpoint = point(
+        (sourceAnchor.x + targetAnchor.x) / 2,
+        (sourceAnchor.y + targetAnchor.y) / 2,
+      );
+      const routeStyle =
+        relation.type === "connected-to" ? "ley-line" : "barrier";
+      projected.push({
+        id: safeId("plan-relation", relationId),
+        kind: "route",
+        name: relation.type === "connected-to" ? "灵脉连接" : "隔绝结界",
+        entityRef: null,
+        layerId: source.layerId,
+        points: [sourceAnchor, midpoint, targetAnchor],
+        timeFrom: null,
+        timeTo: null,
+        props: {
+          generator: "fantasy-map-tool",
+          planRelationId: relationId,
+          planRelationType: relation.type,
+          planRelationFromId: relation.fromId,
+          planRelationToId: relation.toId,
+          routeStyle,
+          terrain: routeStyle,
+          color: relation.type === "connected-to" ? "#9c65bd" : "#7f72c2",
+          lineWidth: relation.type === "connected-to" ? "3" : "4",
+          showLabel: "true",
+        },
+        description: relation.description,
+      });
+      return projected;
+    },
+    [...features],
+  );
+}
+
+/** 将可定位的实体按关系移动，区域本身和领地边界不因关系被整体拖走。 */
+function projectSpatialRelations(
+  features: readonly FantasyFeature[],
+  plan: MapGenerationPlan,
+  coast: readonly FantasyPoint[],
+  spatialLayerFeatures: ReadonlyMap<string, FantasyFeature>,
+  width: number,
+  height: number,
+): FantasyFeature[] {
+  const featureByPlanId = new Map<string, FantasyFeature>();
+  features.forEach((feature) => {
+    for (const planId of [
+      feature.props.planEntityId,
+      feature.props.planTerritoryId,
+    ]) {
+      if (typeof planId === "string" && planId.length > 0) {
+        featureByPlanId.set(planId, feature);
+      }
+    }
+    if (
+      typeof feature.props.spatialLayerId === "string" &&
+      typeof feature.props.spatialRole === "string"
+    ) {
+      featureByPlanId.set(feature.props.spatialLayerId, feature);
+    }
+  });
+
+  let projected = [...features];
+  const relationDistance = Math.max(12, Math.min(width, height) * 0.018);
+  const supportedRelations = new Set([
+    "located-near",
+    "guards",
+    "hidden-in",
+    "contains",
+  ]);
+  for (const relation of plan.relations) {
+    if (!supportedRelations.has(relation.type)) continue;
+    const source = featureByPlanId.get(relation.fromId);
+    const target = featureByPlanId.get(relation.toId);
+    if (
+      !source ||
+      !target ||
+      source.id === target.id ||
+      source.points.length === 0 ||
+      source.kind === "area" ||
+      source.props.entityRole === "territory"
+    ) {
+      continue;
+    }
+    const targetPoint = relationTargetPoint(target, relation.type);
+    if (!targetPoint) continue;
+    const containment = relationUsesContainment(relation.type);
+    const angle =
+      ((hashSeed(`${relation.fromId}:${relation.toId}`) % 360) * Math.PI) / 180;
+    const desired = containment
+      ? targetPoint
+      : point(
+          targetPoint.x + Math.cos(angle) * relationDistance,
+          targetPoint.y + Math.sin(angle) * relationDistance,
+        );
+    const spatialParentId = source.props.spatialLayerId;
+    const spatialParent =
+      typeof spatialParentId === "string"
+        ? spatialLayerFeatures.get(spatialParentId)
+        : undefined;
+    const anchor = constrainToSpatialParent(
+      projectInsidePolygon(desired, featureCenter(coast), coast),
+      spatialParent,
+    );
+    const replacement: FantasyFeature = {
+      ...source,
+      points: relocateFeatureToAnchor(source, anchor, coast, spatialParent),
+    };
+    projected = projected.map((feature) =>
+      feature.id === replacement.id ? replacement : feature,
+    );
+    featureByPlanId.set(relation.fromId, replacement);
+  }
+  return projected;
+}
+
+/**
+ * 将 Agent 的空间规划投影到同一批可编辑要素上。
+ *
+ * 规划不是描述性元数据：区域、山脉、水系和玄幻地点都会绑定稳定实体
+ * 引用，未被基础生成器命中的实体则补成可编辑标记，保证审阅时不会出现
+ * “计划里有、地图上没有”的事实断层。
+ */
+function applyGenerationPlan(
+  input: FantasyMapGenerationInput,
+  features: FantasyFeature[],
+  coast: readonly FantasyPoint[],
+  random: () => number,
+): FantasyFeature[] {
+  const plan = input.plan;
+  if (!plan) return features;
+
+  const usedFeatureIds = new Set<string>();
+  const spatialLayersById = new Map(
+    plan.spatialLayers.map((layer) => [layer.id, layer]),
+  );
+  const spatialLayerMaterialById = new Map<string, FantasyBiomeMaterial>();
+  const materialForSpatialLayer = (
+    layer: (typeof plan.spatialLayers)[number],
+  ): FantasyBiomeMaterial => {
+    const cached = spatialLayerMaterialById.get(layer.id);
+    if (cached) return cached;
+    const terms = [...layer.climate, ...layer.terrain];
+    const parent = layer.parentId
+      ? spatialLayersById.get(layer.parentId)
+      : undefined;
+    const material =
+      terms.length > 0
+        ? fantasyBiomeMaterialFor(terms)
+        : parent
+          ? materialForSpatialLayer(parent)
+          : "grassland";
+    spatialLayerMaterialById.set(layer.id, material);
+    return material;
+  };
+  const relationIdsByTarget = new Map<string, string[]>();
+  plan.relations.forEach((relation, index) => {
+    const relationId = `${relation.type}:${relation.fromId}:${relation.toId}:${index}`;
+    for (const target of [relation.fromId, relation.toId]) {
+      const ids = relationIdsByTarget.get(target) ?? [];
+      ids.push(relationId);
+      relationIdsByTarget.set(target, ids);
+    }
+  });
+
+  let projected = features.map((feature) => ({ ...feature }));
+  const spatialLayerFeatures = new Map<string, FantasyFeature>();
+  orderedSpatialLayers(plan).forEach((layer, index) => {
+    const spatialParent = layer.parentId
+      ? spatialLayerFeatures.get(layer.parentId)
+      : undefined;
+    const candidate = projected.find(
+      (feature) =>
+        !usedFeatureIds.has(feature.id) &&
+        feature.kind === "area" &&
+        feature.props.terrain === "region",
+    );
+    if (!candidate) {
+      const anchor = constrainToSpatialParent(
+        plannedAnchorPoint(layer.anchor, layer.zone, input, coast, random),
+        spatialParent,
+      );
+      const radius = Math.min(input.width, input.height) * 0.1;
+      const generatedRegion: FantasyFeature = {
+        id: safeId("planned-region", layer.id),
+        kind: "area",
+        name: layer.name,
+        entityRef: { kind: "setting", id: layer.worldNodeId },
+        layerId: input.layerId,
+        points: coastline(
+          random,
+          input.width,
+          input.height,
+          anchor.x,
+          anchor.y,
+          radius,
+          radius * 0.7,
+          index,
+          18,
+        ),
+        timeFrom: null,
+        timeTo: null,
+        props: {},
+        description: layer.notes || "依据世界架构空间层级规划补充的区域。",
+      };
+      const points = relocateFeatureToAnchor(
+        generatedRegion,
+        anchor,
+        coast,
+        spatialParent,
+      );
+      const id = safeId("planned-region", layer.id);
+      const feature: FantasyFeature = {
+        ...generatedRegion,
+        id,
+        points,
+        // 空间层来自世界架构节点，必须保留可导航的正式实体身份。
+        props: {
+          generator: "fantasy-map-tool",
+          generatedName: "false",
+          terrain: "region",
+          spatialLayerId: layer.id,
+          worldNodeId: layer.worldNodeId,
+          entityRefKind: "setting",
+          entityRefId: layer.worldNodeId,
+          spatialRole: layer.role,
+          zone: layer.zone,
+          climate: layer.climate.join(","),
+          terrainContext: layer.terrain.join(","),
+          terrainMaterial: materialForSpatialLayer(layer),
+          planRelations: JSON.stringify(
+            relationIdsByTarget.get(layer.id) ?? [],
+          ),
+          fill: "#b28b6650",
+          color: "#806348",
+          lineWidth: "1.2",
+          showLabel: "true",
+        },
+      };
+      projected.push(feature);
+      spatialLayerFeatures.set(layer.id, feature);
+      usedFeatureIds.add(id);
+      return;
+    }
+    usedFeatureIds.add(candidate.id);
+    const anchor = plannedAnchorPoint(
+      layer.anchor,
+      layer.zone,
+      input,
+      coast,
+      random,
+    );
+    const points = relocateFeatureToAnchor(
+      candidate,
+      constrainToSpatialParent(anchor, spatialParent),
+      coast,
+      spatialParent,
+    );
+    const replacement: FantasyFeature = {
+      ...candidate,
+      name: layer.name,
+      entityRef: { kind: "setting", id: layer.worldNodeId },
+      points,
+      props: {
+        ...candidate.props,
+        generatedName: "false",
+        worldNodeId: layer.worldNodeId,
+        spatialLayerId: layer.id,
+        entityRefKind: "setting",
+        entityRefId: layer.worldNodeId,
+        spatialRole: layer.role,
+        zone: layer.zone,
+        climate: layer.climate.join(","),
+        terrainContext: layer.terrain.join(","),
+        terrainMaterial: materialForSpatialLayer(layer),
+        planRelations: JSON.stringify(relationIdsByTarget.get(layer.id) ?? []),
+      },
+      description: layer.notes || "依据世界架构空间层级规划的区域。",
+    };
+    projected = projected.map((feature) =>
+      feature.id !== candidate.id ? feature : replacement,
+    );
+    spatialLayerFeatures.set(layer.id, replacement);
+  });
+
+  (plan.territories ?? []).forEach((territory, index) => {
+    const spatialLayer = territory.spatialLayerId
+      ? spatialLayersById.get(territory.spatialLayerId)
+      : undefined;
+    const anchor = constrainToSpatialParent(
+      plannedAnchorPoint(
+        territory.anchor,
+        spatialLayer?.zone ?? "unknown",
+        input,
+        coast,
+        random,
+      ),
+      territory.spatialLayerId
+        ? spatialLayerFeatures.get(territory.spatialLayerId)
+        : undefined,
+    );
+    const radius =
+      Math.min(input.width, input.height) * territory.extent * 0.42;
+    const territoryFeature: FantasyFeature = {
+      id: safeId("territory", territory.id),
+      kind: "area",
+      name: territory.name,
+      entityRef: territory.factionRef,
+      layerId: input.layerId,
+      points: coastline(
+        random,
+        input.width,
+        input.height,
+        anchor.x,
+        anchor.y,
+        radius,
+        radius * 0.72,
+        index + 31,
+        16,
+      ).map((candidate) =>
+        constrainToSpatialParent(
+          projectInsidePolygon(candidate, anchor, coast),
+          territory.spatialLayerId
+            ? spatialLayerFeatures.get(territory.spatialLayerId)
+            : undefined,
+        ),
+      ),
+      timeFrom: null,
+      timeTo: null,
+      props: {
+        generator: "fantasy-map-tool",
+        generatedName: "false",
+        planTerritoryId: territory.id,
+        entityRole: "territory",
+        entityRefKind: "faction",
+        entityRefId: territory.factionRef.id,
+        spatialLayerId: territory.spatialLayerId ?? "",
+        planRelations: JSON.stringify(
+          relationIdsByTarget.get(territory.id) ?? [],
+        ),
+        terrain: "territory",
+        component:
+          territory.boundaryStyle === "hatch"
+            ? "territory-hatch"
+            : "territory-fill",
+        boundaryStyle: territory.boundaryStyle,
+        fill: "#9b6f5b30",
+        color: "#806348",
+        lineWidth: "1.4",
+        showLabel: "true",
+        importance: String(territory.importance),
+      },
+      description: territory.description || "依据势力规划生成的领地边界。",
+    };
+    projected.push(territoryFeature);
+  });
+
+  plan.entities.forEach((entity) => {
+    const candidateIndex = projected.findIndex(
+      (feature) =>
+        !usedFeatureIds.has(feature.id) &&
+        roleFeatureMatch(feature, entity.role),
+    );
+    const candidate = candidateIndex >= 0 ? projected[candidateIndex] : null;
+    const relationIds = relationIdsByTarget.get(entity.id) ?? [];
+    const component = artworkComponentForRole(entity.role);
+    const spatialLayer = entity.spatialLayerId
+      ? spatialLayersById.get(entity.spatialLayerId)
+      : undefined;
+    const spatialParent = entity.spatialLayerId
+      ? spatialLayerFeatures.get(entity.spatialLayerId)
+      : undefined;
+    if (candidate) {
+      usedFeatureIds.add(candidate.id);
+      const anchor = constrainToSpatialParent(
+        plannedEntityPoint(
+          entity,
+          input,
+          coast,
+          random,
+          spatialLayer?.zone ?? "unknown",
+        ),
+        spatialParent,
+      );
+      const points =
+        entity.anchor || spatialParent || spatialLayer
+          ? relocateFeatureToAnchor(candidate, anchor, coast, spatialParent)
+          : candidate.points;
+      projected = projected.map((feature) =>
+        feature.id !== candidate.id
+          ? feature
+          : {
+              ...feature,
+              name: entity.name,
+              entityRef: entity.entityRef,
+              points,
+              props: {
+                ...(() => {
+                  const { component: _component, ...baseProps } = feature.props;
+                  return baseProps;
+                })(),
+                generatedName: "false",
+                planEntityId: entity.id,
+                entityRole: entity.role,
+                spatialLayerId: entity.spatialLayerId ?? "",
+                ...(entity.entityRef
+                  ? {
+                      entityRefKind: entity.entityRef.kind,
+                      entityRefId: entity.entityRef.id,
+                    }
+                  : {}),
+                planRelations: JSON.stringify(relationIds),
+                preferredTerrain: entity.preferredTerrain.join(","),
+                ...(component ? { component } : {}),
+              },
+              description: entity.description || feature.description,
+            },
+      );
+      return;
+    }
+
+    const anchor = constrainToSpatialParent(
+      plannedEntityPoint(
+        entity,
+        input,
+        coast,
+        random,
+        spatialLayer?.zone ?? "unknown",
+      ),
+      spatialParent,
+    );
+    const id = safeId("plan", entity.id);
+    const areaTerrain = plannedEntityAreaTerrain(entity.role);
+    const routeTerrain = plannedEntityRouteTerrain(entity.role);
+    const isArea = areaTerrain !== null;
+    const isRoute = routeTerrain !== null;
+    const points = isArea
+      ? coastline(
+          random,
+          input.width,
+          input.height,
+          anchor.x,
+          anchor.y,
+          Math.min(input.width, input.height) *
+            (areaTerrain === "lake" ? 0.045 : 0.1),
+          Math.min(input.width, input.height) *
+            (areaTerrain === "lake" ? 0.03 : 0.07),
+          random() * Math.PI * 2,
+          areaTerrain === "lake" ? 18 : 20,
+        ).map((candidate) =>
+          constrainToSpatialParent(
+            projectInsidePolygon(candidate, anchor, coast),
+            spatialParent,
+          ),
+        )
+      : isRoute
+        ? (routeTerrain === "river"
+            ? plannedWaterwayPath(anchor, coast)
+            : plannedMountainPath(anchor, random, coast)
+          ).map((candidate) =>
+            constrainToSpatialParent(candidate, spatialParent),
+          )
+        : [anchor];
+    projected.push({
+      id,
+      kind: isArea ? "area" : isRoute ? "route" : "marker",
+      name: entity.name,
+      entityRef: entity.entityRef,
+      layerId: input.layerId,
+      points,
+      timeFrom: null,
+      timeTo: null,
+      props: {
+        generator: "fantasy-map-tool",
+        generatedName: "false",
+        planEntityId: entity.id,
+        entityRole: entity.role,
+        spatialLayerId: entity.spatialLayerId ?? "",
+        ...(isArea
+          ? {
+              terrain: areaTerrain,
+              ...(areaTerrain === "biome"
+                ? {
+                    terrainMaterial: fantasyBiomeMaterialFor(
+                      entity.preferredTerrain,
+                    ),
+                  }
+                : {}),
+            }
+          : isRoute
+            ? {
+                terrain: routeTerrain,
+                lineWidth: routeTerrain === "river" ? "2.4" : "3",
+              }
+            : { symbol: entity.role }),
+        ...(component ? { component } : {}),
+        showLabel: "true",
+        importance: String(entity.importance),
+        ...(entity.entityRef
+          ? {
+              entityRefKind: entity.entityRef.kind,
+              entityRefId: entity.entityRef.id,
+            }
+          : {}),
+        planRelations: JSON.stringify(relationIds),
+        preferredTerrain: entity.preferredTerrain.join(","),
+      },
+      description: entity.description || "依据地图规划补充的玄幻地点候选。",
+    });
+  });
+  return projectNonPositionalRelations(
+    projectWaterwayRelations(
+      projectSpatialRelations(
+        projected,
+        plan,
+        coast,
+        spatialLayerFeatures,
+        input.width,
+        input.height,
+      ),
+      plan,
+    ),
+    plan,
+  );
 }
 
 /** 将世界设定中的气候词映射到编辑器已有的可重建地貌材质。 */
@@ -520,6 +1524,37 @@ function biomeMaterialsFor(
   addWhenMatched("swamp", /沼泽|湿地|泥沼|swamp|wetland|marsh/iu);
   addWhenMatched("volcanic", /火山|熔岩|岩浆|volcanic|lava/iu);
   return materials;
+}
+
+/** 将空间层或实体的气候、地貌词解析为单一主材质，供场景区域使用。 */
+export function fantasyBiomeMaterialFor(
+  terrainKeywords: readonly string[],
+): FantasyBiomeMaterial {
+  const terms = terrainKeywords.join(" ");
+  if (/冰原|雪原|冰川|雪岭|冰封|snow|glacier|ice/iu.test(terms)) {
+    return "snow";
+  }
+  if (/火山|熔岩|岩浆|volcanic|lava/iu.test(terms)) {
+    return "volcanic";
+  }
+  if (/沼泽|湿地|泥沼|swamp|wetland|marsh/iu.test(terms)) {
+    return "swamp";
+  }
+  if (/沙漠|荒漠|旱地|desert|arid/iu.test(terms)) {
+    return "desert";
+  }
+  if (/赤地|红土|峡谷|badlands|canyon/iu.test(terms)) {
+    return "badlands";
+  }
+  if (/冻土|苔原|tundra/iu.test(terms)) {
+    return "tundra";
+  }
+  if (
+    /森林|林地|雨林|丛林|竹海|forest|woodland|rainforest|jungle/iu.test(terms)
+  ) {
+    return "forest";
+  }
+  return "grassland";
 }
 
 type FantasyReliefMarker = {
@@ -731,7 +1766,14 @@ export function generateFantasyMapCandidate(
 
   // 先确定高地骨架，再由它决定湖泊与河源。这样山脉不再只是最后叠加的
   // 装饰线，而是整张地图水文和文明分布的空间起点。
-  const terrainTerms = input.terrainKeywords ?? [];
+  // 视觉规划中的材质是正式生成约束，不应只作为 metadata 留在
+  // generationPlan。与世界正文、空间层地貌共同输入同一套材质推导，
+  // 让兼容候选和 Runtime 降级候选都能生成对应的可编辑地貌要素。
+  const terrainTerms = [
+    ...(input.terrainKeywords ?? []),
+    ...(input.plan?.visual.terrainMaterials ?? []),
+    ...(input.plan?.spatialLayers.flatMap((layer) => layer.terrain) ?? []),
+  ];
   const mountainName =
     terrainTerms.find((term) => /山|峰|岭|mountain|ridge/iu.test(term)) ??
     "山脉";
@@ -1280,10 +2322,20 @@ export function generateFantasyMapCandidate(
     }
   }
 
-  const styledFeatures = localizeFantasyMapFeatures(features, seed);
+  const plannedFeatures = applyGenerationPlan(
+    input,
+    features,
+    mainCoast,
+    random,
+  );
+  const styledFeatures = localizeFantasyMapFeatures(
+    plannedFeatures,
+    seed,
+    input.plan?.naming,
+  );
   return {
     seed,
-    title: names[0] ?? "九州玄幻地图候选",
+    title: input.plan?.spatialLayers[0]?.name ?? names[0] ?? "九州玄幻地图候选",
     summary: `生成中文玄幻地图：1 个主大陆、${landmassCount - 1} 个外岛、${regionCount} 个区域、${lakes.length} 个湖泊、${riverCount} 条主河、${tributaryCount} 条支流、${biomeCount} 个地貌区、${settlementCount} 个分级聚落、${Math.max(0, settlementCount - 1)} 条道路和 ${bridgeCount} 座桥梁；已按${FANTASY_MAP_STYLE_ID}风格读取世界架构上下文，包含山脉、河流、灵脉、秘境、势力与聚落候选。`,
     features: styledFeatures,
   };

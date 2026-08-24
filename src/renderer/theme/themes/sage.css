@@ -23,6 +23,7 @@ html[data-theme-id='sage'][data-color-scheme='light'] {
   --ink-faint: #b6beb0;
   --paper: #f3f7ef;
   --global-sidebar-bg: #edf3e8;
+  --global-sidebar-bg-a0: rgb(237 243 232 / 0);
   --paper-elevated: #fbfff8;
   --message-user-bg: #fdfff9;
   --paper-inset: #dce8d6;
@@ -133,6 +134,7 @@ html[data-theme-id='sage'][data-color-scheme='dark'] {
   --ink-faint: #475142;
   --paper: #121912;
   --global-sidebar-bg: #111711;
+  --global-sidebar-bg-a0: rgb(17 23 17 / 0);
   --paper-elevated: #1a241a;
   --message-user-bg: #202c20;
   --paper-inset: #0d120d;

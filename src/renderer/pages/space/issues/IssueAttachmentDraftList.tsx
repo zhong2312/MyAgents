@@ -1,6 +1,7 @@
 import { X } from 'lucide-react';
 
 import type { SpaceAttachmentDraft } from '@/api/spaceCloud';
+import { FileIcon } from '@/components/file-icon';
 import { formatBytes } from '@/pages/space/spaceUi';
 
 export function IssueAttachmentDraftList({
@@ -19,7 +20,8 @@ export function IssueAttachmentDraftList({
     <div className={`divide-y divide-[var(--line-subtle)] ${className}`}>
       {drafts.map((draft) => (
         <div key={draft.path} className="group grid min-h-8 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 text-sm">
-          <span className="flex min-w-0 items-baseline gap-2">
+          <span className="flex min-w-0 items-center gap-2">
+            <FileIcon name={draft.name} />
             <span className="truncate font-medium text-[var(--ink-secondary)]">{draft.name}</span>
             <small className="shrink-0 text-xs text-[var(--ink-subtle)]">{formatBytes(draft.sizeBytes)}</small>
           </span>

@@ -16,10 +16,15 @@ export interface AnthropicRequest {
   metadata?: Record<string, unknown>;
 }
 
+export type AnthropicCacheControl = {
+  type: 'ephemeral';
+  ttl?: '5m' | '1h';
+};
+
 export type AnthropicSystemBlock = {
   type: 'text';
   text: string;
-  cache_control?: { type: string };
+  cache_control?: AnthropicCacheControl | null;
 };
 
 export type AnthropicMessage = {
@@ -37,6 +42,7 @@ export type AnthropicContentBlock =
 export interface AnthropicTextBlock {
   type: 'text';
   text: string;
+  cache_control?: AnthropicCacheControl | null;
 }
 
 export interface AnthropicImageBlock {
@@ -47,6 +53,7 @@ export interface AnthropicImageBlock {
     data?: string;
     url?: string;
   };
+  cache_control?: AnthropicCacheControl | null;
 }
 
 export interface AnthropicToolUseBlock {
@@ -54,6 +61,7 @@ export interface AnthropicToolUseBlock {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  cache_control?: AnthropicCacheControl | null;
   // Note: thought_signature is intentionally NOT included here.
   // It's a Gemini-specific field that lives only on the OpenAI side (handler.ts cache).
   // Including it in Anthropic-format blocks pollutes the SDK transcript → API rejection. See: #68
@@ -64,6 +72,7 @@ export interface AnthropicToolResultBlock {
   tool_use_id: string;
   content?: string | AnthropicToolResultContent[];
   is_error?: boolean;
+  cache_control?: AnthropicCacheControl | null;
 }
 
 export type AnthropicToolResultContent = {
@@ -84,7 +93,7 @@ export interface AnthropicToolDefinition {
   name: string;
   description?: string;
   input_schema: Record<string, unknown>;
-  cache_control?: { type: string };
+  cache_control?: AnthropicCacheControl | null;
 }
 
 export type AnthropicToolChoice =

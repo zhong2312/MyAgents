@@ -155,6 +155,9 @@ function Initialize-TestProfileEnv {
     $env:LOCALAPPDATA = $local
     $env:MYAGENTS_TEST_ROOT = $script:TestRoot
     $env:MYAGENTS_BROWSER_DEV_STORAGE = '1'
+    # Vite's browser-mode proxy must target the same backend port selected
+    # for this isolated development session.
+    $env:MYAGENTS_DEV_BACKEND_PORT = "$Port"
     # Windows treats environment-variable names case-insensitively, but the
     # current process can still inherit both `Path` and `PATH`. PowerShell 5.1
     # Start-Process then fails while copying that environment into a child.
@@ -303,6 +306,9 @@ function Start-WebDev {
         '--import', 'tsx/esm',
         '--watch',
         (Join-Path $script:RepoRoot 'src\server\index.ts'),
+        # Browser development hosts a single local Sidecar, so it must expose
+        # both session and global routes that production splits by process.
+        '--dev-union',
         '--agent-dir', $ResolvedAgentDir,
         '--port', "$Port"
     )

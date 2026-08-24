@@ -135,6 +135,15 @@ echo -e "${BLUE}[准备] 准备 Rust toolchain / components...${NC}"
 echo -e "${GREEN}✓ Rust toolchain ready${NC}"
 echo ""
 
+DEV_DOCUMENT_TARGET="x86_64-apple-darwin"
+if [[ "$(uname -m)" == "arm64" || "$(uname -m)" == "aarch64" ]]; then
+    DEV_DOCUMENT_TARGET="aarch64-apple-darwin"
+fi
+echo -e "${BLUE}[准备] 准备离线文档转换资源 (${DEV_DOCUMENT_TARGET})...${NC}"
+node "${PROJECT_DIR}/scripts/prepare-document-processing.mjs" "$DEV_DOCUMENT_TARGET"
+echo -e "${GREEN}✓ 文档转换资源 ready${NC}"
+echo ""
+
 # TypeScript 检查
 echo -e "${BLUE}[1/3] TypeScript 类型检查...${NC}"
 cd "${PROJECT_DIR}"
@@ -205,9 +214,9 @@ fi
 echo -e "  ${GREEN}✓ claude (${SDK_TRIPLE}) 已就绪${NC}"
 
 # myagents CLI 的打包不在这里——`npm run tauri:build` 的 beforeBuildCommand
-# (tauri.conf.json) 已包含 `npm run build:cli`，由 `scripts/esbuild-bundle.mjs`
-# 的 post-build hook 同步把 myagents.cmd 拷贝到 resources/cli/。dev 脚本只需
-# 保证目录存在，避免 Tauri bundle 阶段的 resource 校验报错。
+# (tauri.conf.json) 已包含 `npm run build:cli`。该 target 会清理 CLI staging
+# 并只生成 bundle authority `myagents.cjs`；dev 脚本只需保证目录存在，避免
+# Tauri bundle 阶段的 resource 校验报错。
 mkdir -p "${PROJECT_DIR}/src-tauri/resources/cli"
 
 # Debug 模式签名 (optional — build_macos.sh per-TARGET loop 已处理 Node + Claude)

@@ -363,12 +363,15 @@
     "search": {
       "searching": "搜索中...",
       "searchInWorkspace": "在当前工作区中搜索",
-      "fileNameAndContent": "文件名和文件内容",
+      "fileNameAndContent": "文件夹、文件名和文件内容",
       "zeroResults": "0 个结果",
       "refreshingSuffix": " · 正在更新索引...",
-      "summary": "{{files}} 个文件中找到 {{matches}} 个结果",
-      "collapseResults": "折叠结果",
-      "expandResults": "展开结果",
+      "summary": "找到 {{folders}} 个文件夹、{{files}} 个文件",
+      "folderSection": "文件夹（{{count}}）",
+      "fileSection": "文件（{{count}}）",
+      "contentMatchCount": "{{count}} 条正文命中",
+      "collapseResults": "收起",
+      "expandResults": "展开",
       "moreResults": "... 还有 {{count}} 个结果"
     }
   },
@@ -395,7 +398,7 @@
       "exportMarkdown": "导出为 md 文件",
       "tokenStats": "会话 Token 消耗统计",
       "contextUsage": "上下文 Token 使用详情",
-      "bindBot": "绑定聊天机器人",
+      "continueInBot": "在聊天机器人继续此对话",
       "deleteBlockedByOwner": "该对话仍在使用中。请先完成、归档或删除关联任务/目标，等待后台回复结束，或解绑聊天机器人后再删除",
       "deleteTransitionInProgress": "该对话正在打开或切换，请稍后再删除",
       "deleteActivityUnavailable": "暂时无法确认该对话是否仍在运行，已保留对话，请稍后重试",
@@ -526,16 +529,11 @@
     "runtimeDiagnostics": {
       "problems": {
         "needsCodexLogin": "需要登录 Codex（点账户头像或运行 codex login）",
-        "authQueryFailed": "auth 查询失败：{{error}}",
-        "appListFailed": "app 列表失败：{{error}}",
-        "mcpStatusFailed": "MCP 状态查询失败：{{error}}",
-        "featureFlagFailed": "feature flag 查询失败：{{error}}",
-        "appsInaccessible": "{{count}} 个 app 启用但不可达：{{names}}",
-        "mcpServersFailed": "MCP server 失败：{{names}}"
+        "extensionComponent": "扩展 {{component}}{{id}} 为 {{state}}：{{reason}}"
       },
       "headlines": {
         "needsCodexLogin": "需要登录 Codex 才能继续使用",
-        "allDiagnosticsFailed": "Codex 自诊断全部失败，runtime 可能未启动"
+        "extensionsFailed": "Managed Codex 扩展应用失败"
       },
       "status": {
         "unsupported": "不支持",
@@ -548,7 +546,8 @@
         "featureFlags": "Feature flags",
         "mcpServers": "MCP servers",
         "apps": "Apps",
-        "effectiveEnv": "Effective env"
+        "effectiveEnv": "Effective env",
+        "extensions": "MyAgents 扩展"
       },
       "requiresLoginSuffix": " • 需登录",
       "appAccessible": "可访问 ",
@@ -748,6 +747,7 @@
         "statusCompleted": "完成",
         "statusError": "错误",
         "statusRunning": "运行中",
+        "statusStopped": "已停止",
         "backgroundCompleted": "后台完成",
         "backgroundFailed": "后台失败",
         "backgroundRunning": "后台运行中",
@@ -946,6 +946,8 @@
       "syncFailed": "同步失败",
       "syncFailedRetry": "同步失败，请重试",
       "configPartiallySaved": "配置未能完全保存，重启后可能恢复旧值",
+      "extensionsDeferred": "扩展变更将在当前回合结束后应用",
+      "extensionsUnsupported": "部分所选扩展能力暂不受 Managed Codex 支持",
       "searchUnsupported": "当前环境不支持页内搜索（缺少 CSS Highlight API）",
       "codexSubscriptionNeedsSession": "Codex 订阅需要新开 Codex 会话后使用，请先在模型选择器中切换并确认创建新会话。",
       "queueLimit": "最多排队 5 条消息",
@@ -962,7 +964,7 @@
       "providerSwitchChannelTransferFailed": "新会话已打开，但 Channel 绑定未迁移",
       "createNewSessionFailed": "创建新会话失败",
       "imagesNotTransferred": "图片附件无法带入新会话，请重新添加",
-      "channelRebindFailedReset": "Channel 重绑失败，已就地重置",
+      "channelRebindFailedNewCancelled": "Channel 重绑失败，已取消新对话",
       "channelRebindFailedDeleteCancelled": "Channel 重绑失败，已取消删除",
       "reselectModelFirst": "请先在模型选择器里重新选择一次模型",
       "submitFailedRetry": "提交失败，请重试",
@@ -1018,8 +1020,8 @@
           "detail": "供应商返回 rate limit / quota 命中。请检查供应商后台配额或等待重置。"
         },
         "rapid_refill_breaker": {
-          "label": "请求过于频繁，已自动退避",
-          "detail": "SDK 触发快速补发熔断器，正在自动退避重试。稍后会自行恢复。"
+          "label": "上下文反复填满，本轮已停止",
+          "detail": "自动压缩后，上下文仍在短时间内多次达到上限。请缩小文件或工具输出后重试；若仍失败，可新开会话继续。"
         },
         "aborted_tools": {
           "label": "工具执行被中断",

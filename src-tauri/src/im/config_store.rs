@@ -35,6 +35,7 @@ struct ArchivedAgentWorkspaces {
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PartialProjectEntry {
+    id: Option<String>,
     agent_id: Option<String>,
     path: Option<String>,
     archived_at: Option<String>,
@@ -58,6 +59,26 @@ fn read_projects_for_agent_projection() -> Vec<PartialProjectEntry> {
             Vec::new()
         }
     }
+}
+
+pub(super) fn project_id_for_agent(agent_id: &str) -> Option<String> {
+    let mut matches = read_projects_for_agent_projection()
+        .into_iter()
+        .filter(|project| project.agent_id.as_deref() == Some(agent_id))
+        .filter_map(|project| project.id)
+        .filter(|id| !id.is_empty());
+    let project_id = matches.next()?;
+    matches.next().is_none().then_some(project_id)
+}
+
+pub(crate) fn agent_id_for_project(project_id: &str) -> Option<String> {
+    let mut matches = read_projects_for_agent_projection()
+        .into_iter()
+        .filter(|project| project.id.as_deref() == Some(project_id))
+        .filter_map(|project| project.agent_id)
+        .filter(|id| !id.is_empty());
+    let agent_id = matches.next()?;
+    matches.next().is_none().then_some(agent_id)
 }
 
 /// The only Rust compatibility reader for historical agents[].workspacePath.
@@ -305,7 +326,7 @@ pub(super) fn current_agent_channel_start_config(
 ) -> Option<(AgentConfigRust, ChannelConfigRust, ImConfig)> {
     let agent = read_agent_configs_from_disk()
         .into_iter()
-        .find(|agent| agent.id == agent_id && agent.enabled)?;
+        .find(|agent| agent.id == agent_id)?;
     if is_agent_workspace_archived(&agent) {
         return None;
     }
@@ -538,9 +559,7 @@ pub(super) fn should_report_missing_configured_channel(
     agent_cfg: &types::AgentConfigRust,
     channel_cfg: &types::ChannelConfigRust,
 ) -> bool {
-    agent_cfg.enabled
-        && channel_cfg.enabled
-        && agent_channel_has_start_credentials(agent_cfg, channel_cfg)
+    channel_cfg.enabled && agent_channel_has_start_credentials(agent_cfg, channel_cfg)
 }
 
 fn find_missing_startable_agent_channels(
@@ -551,7 +570,7 @@ fn find_missing_startable_agent_channels(
 ) -> Vec<(String, String)> {
     let mut missing = Vec::new();
     for agent_cfg in agent_configs {
-        if !agent_cfg.enabled || is_agent_workspace_archived_with(agent_cfg, archived_workspaces) {
+        if is_agent_workspace_archived_with(agent_cfg, archived_workspaces) {
             continue;
         }
         for channel_cfg in &agent_cfg.channels {
@@ -595,6 +614,7 @@ mod workspace_projection_tests {
             .expect("projects array")
             .iter()
             .map(|project| PartialProjectEntry {
+                id: project["id"].as_str().map(str::to_owned),
                 agent_id: project["agentId"].as_str().map(str::to_owned),
                 path: project["path"].as_str().map(str::to_owned),
                 archived_at: None,
@@ -634,6 +654,7 @@ mod workspace_projection_tests {
             ]
         });
         let projects = vec![PartialProjectEntry {
+            id: None,
             agent_id: Some("selected".to_string()),
             path: Some("/repo/current".to_string()),
             archived_at: None,
@@ -659,11 +680,13 @@ mod workspace_projection_tests {
         });
         let projects = vec![
             PartialProjectEntry {
+                id: None,
                 agent_id: Some("conflict".to_string()),
                 path: Some("/repo/a".to_string()),
                 archived_at: None,
             },
             PartialProjectEntry {
+                id: None,
                 agent_id: Some("conflict".to_string()),
                 path: Some("/repo/b".to_string()),
                 archived_at: None,
@@ -688,16 +711,19 @@ mod workspace_projection_tests {
         });
         let projects = vec![
             PartialProjectEntry {
+                id: None,
                 agent_id: Some("conflict-a".to_string()),
                 path: Some("C:\\Repo".to_string()),
                 archived_at: None,
             },
             PartialProjectEntry {
+                id: None,
                 agent_id: Some("conflict-b".to_string()),
                 path: Some("c:/repo/".to_string()),
                 archived_at: None,
             },
             PartialProjectEntry {
+                id: None,
                 agent_id: Some("healthy".to_string()),
                 path: Some("/repo/healthy".to_string()),
                 archived_at: None,
@@ -717,6 +743,7 @@ mod workspace_projection_tests {
             "agents": [{ "id": "new", "name": "New", "enabled": true }]
         });
         let projects = vec![PartialProjectEntry {
+            id: None,
             agent_id: Some("new".to_string()),
             path: Some("/repo/new".to_string()),
             archived_at: None,
@@ -730,6 +757,102 @@ mod workspace_projection_tests {
 #[cfg(test)]
 mod agent_monitor_tests {
     use super::*;
+
+    #[test]
+    fn channel_independence_migration_projects_disabled_master_once() {
+        let mut config = serde_json::json!({
+            "agents": [{
+                "id": "disabled-agent",
+                "name": "Disabled",
+                "enabled": false,
+                "heartbeat": { "enabled": true, "intervalMinutes": 48 },
+                "memoryAutoUpdate": {
+                    "enabled": true,
+                    "intervalHours": 72,
+                    "queryThreshold": 9,
+                    "updateWindowStart": "20:00",
+                    "updateWindowEnd": "08:00",
+                    "lastBatchSessionCount": 7
+                },
+                "memoryEvolution": {
+                    "enabled": true,
+                    "lastGardenerStatus": "completed"
+                },
+                "channels": [{
+                    "id": "channel-1",
+                    "type": "telegram",
+                    "enabled": true,
+                    "botToken": "secret-is-preserved"
+                }]
+            }]
+        });
+
+        assert!(migrate_agent_channel_independence_value(&mut config).unwrap());
+        assert_eq!(config[AGENT_CHANNEL_INDEPENDENCE_MIGRATION_V1], true);
+        assert_eq!(config["agents"][0]["heartbeat"]["enabled"], false);
+        assert_eq!(config["agents"][0]["heartbeat"]["intervalMinutes"], 48);
+        assert_eq!(
+            config["agents"][0]["memoryAutoUpdate"]["lastBatchSessionCount"],
+            7
+        );
+        assert_eq!(
+            config["agents"][0]["memoryEvolution"]["lastGardenerStatus"],
+            "completed"
+        );
+        assert_eq!(config["agents"][0]["channels"][0]["enabled"], false);
+        assert_eq!(
+            config["agents"][0]["channels"][0]["botToken"],
+            "secret-is-preserved"
+        );
+
+        let migrated = config.clone();
+        assert!(!migrate_agent_channel_independence_value(&mut config).unwrap());
+        assert_eq!(config, migrated);
+    }
+
+    #[test]
+    fn channel_independence_migration_enables_children_and_preserves_channels() {
+        let mut config = serde_json::json!({
+            "agents": [{
+                "id": "enabled-agent",
+                "name": "Enabled",
+                "enabled": true,
+                "memoryEvolution": { "enabled": false, "lastMoltStatus": "error" },
+                "channels": [
+                    { "id": "on", "type": "telegram", "enabled": true },
+                    { "id": "off", "type": "telegram", "enabled": false }
+                ]
+            }]
+        });
+
+        assert!(migrate_agent_channel_independence_value(&mut config).unwrap());
+        assert_eq!(config["agents"][0]["heartbeat"]["enabled"], true);
+        assert_eq!(config["agents"][0]["memoryAutoUpdate"]["enabled"], true);
+        assert_eq!(config["agents"][0]["memoryEvolution"]["enabled"], true);
+        assert_eq!(
+            config["agents"][0]["memoryEvolution"]["lastMoltStatus"],
+            "error"
+        );
+        assert_eq!(config["agents"][0]["channels"][0]["enabled"], true);
+        assert_eq!(config["agents"][0]["channels"][1]["enabled"], false);
+    }
+
+    #[test]
+    fn channel_independence_migration_is_transactional_for_malformed_agents() {
+        let mut config = serde_json::json!({
+            "agents": [
+                { "id": "healthy", "name": "Healthy", "enabled": false, "channels": [] },
+                { "id": "malformed", "enabled": "yes" }
+            ]
+        });
+        let original = config.clone();
+
+        assert!(migrate_agent_channel_independence_value(&mut config).is_err());
+        assert_eq!(config, original);
+        assert!(config
+            .get(AGENT_CHANNEL_INDEPENDENCE_MIGRATION_V1)
+            .is_none());
+    }
 
     #[test]
     fn model_command_updates_the_existing_channel_override_owner() {
@@ -1147,6 +1270,94 @@ mod agent_monitor_tests {
     }
 
     #[test]
+    fn channel_independence_read_heal_persists_marker_and_backup_once() {
+        let path = temp_config_path("channel-independence-heal");
+        let dir = path.parent().unwrap().to_path_buf();
+        let original = serde_json::json!({
+            "agents": [{
+                "id": "agent-1",
+                "name": "Agent",
+                "enabled": false,
+                "workspacePath": "/tmp/project",
+                "heartbeat": { "enabled": true, "intervalMinutes": 30 },
+                "memoryAutoUpdate": { "enabled": true },
+                "memoryEvolution": { "enabled": true },
+                "channels": [{
+                    "id": "telegram-1",
+                    "type": "telegram",
+                    "enabled": true,
+                    "botToken": "preserved-secret"
+                }]
+            }]
+        })
+        .to_string();
+        std::fs::write(&path, &original).unwrap();
+
+        persist_agent_config_read_heal(&path, "test");
+        let healed = std::fs::read_to_string(&path).unwrap();
+        let healed_value: serde_json::Value = serde_json::from_str(&healed).unwrap();
+        assert_eq!(healed_value[AGENT_CHANNEL_INDEPENDENCE_MIGRATION_V1], true);
+        assert_eq!(healed_value["agents"][0]["heartbeat"]["enabled"], false);
+        assert_eq!(
+            healed_value["agents"][0]["memoryAutoUpdate"]["enabled"],
+            false
+        );
+        assert_eq!(
+            healed_value["agents"][0]["memoryEvolution"]["enabled"],
+            false
+        );
+        assert_eq!(healed_value["agents"][0]["channels"][0]["enabled"], false);
+        assert_eq!(
+            healed_value["agents"][0]["channels"][0]["botToken"],
+            "preserved-secret"
+        );
+        let backup_path = path.with_file_name("config.json.bak");
+        assert_eq!(std::fs::read_to_string(&backup_path).unwrap(), original);
+
+        persist_agent_config_read_heal(&path, "test");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), healed);
+        assert_eq!(std::fs::read_to_string(&backup_path).unwrap(), original);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn channel_independence_read_heal_failure_leaves_marker_uncommitted() {
+        let path = temp_config_path("channel-independence-heal-failure");
+        let dir = path.parent().unwrap().to_path_buf();
+        let original = serde_json::json!({
+            "agents": [{
+                "id": "agent-1",
+                "name": "Agent",
+                "enabled": true,
+                "channels": [{ "id": "channel-1", "type": "telegram", "enabled": true }]
+            }]
+        })
+        .to_string();
+        std::fs::write(&path, &original).unwrap();
+        // Block the atomic temp-file write without changing the source file.
+        std::fs::create_dir(path.with_file_name("config.json.tmp.rust")).unwrap();
+
+        persist_agent_config_read_heal(&path, "injected write failure");
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let persisted: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(!agent_channel_independence_migration_complete(&persisted));
+        assert_eq!(
+            std::fs::read_to_string(path.with_file_name("config.json.bak")).unwrap(),
+            original
+        );
+
+        let mut agents = salvage_agents_from_value(&persisted, &std::collections::HashMap::new())
+            .expect("valid Agent fixture");
+        fail_closed_agent_channels(&mut agents);
+        assert!(!agents[0].channels[0].enabled);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn agent_provider_env_read_heal_persists_once_for_usable_main_config() {
         let path = temp_config_path("provider-env-heal-ok");
         let dir = path.parent().unwrap().to_path_buf();
@@ -1330,6 +1541,25 @@ mod agent_monitor_tests {
         let missing = find_missing_startable_agent_channels(&agents, &running, &[], &archived);
 
         assert_eq!(missing, vec![("agent-1".to_string(), "weixin".to_string())]);
+    }
+
+    #[test]
+    fn monitor_reconcile_keeps_channels_startable_when_proactive_agent_is_off() {
+        let mut agents = agent_config_with_weixin_channel(true);
+        agents[0].enabled = false;
+
+        let missing = find_missing_startable_agent_channels(
+            &agents,
+            &std::collections::HashSet::new(),
+            &[],
+            &ArchivedAgentWorkspaces::default(),
+        );
+
+        assert_eq!(missing, vec![("agent-1".to_string(), "weixin".to_string())]);
+        assert!(should_report_missing_configured_channel(
+            &agents[0],
+            &agents[0].channels[0],
+        ));
     }
 
     #[test]
@@ -1537,6 +1767,7 @@ mod agent_monitor_tests {
             &agent,
             &channel,
             types::ImHealthState::default(),
+            false,
         )
         .expect("startable missing channel should be reported");
 
@@ -1555,7 +1786,8 @@ mod agent_monitor_tests {
         assert!(super::commands::configured_channel_status_from_state(
             &agent,
             &channel,
-            types::ImHealthState::default()
+            types::ImHealthState::default(),
+            false,
         )
         .is_none());
 
@@ -1564,7 +1796,8 @@ mod agent_monitor_tests {
         assert!(super::commands::configured_channel_status_from_state(
             &agent,
             &missing_plugin,
-            types::ImHealthState::default()
+            types::ImHealthState::default(),
+            false,
         )
         .is_none());
     }
@@ -1578,12 +1811,31 @@ mod agent_monitor_tests {
         health_state.status = types::ImStatus::Error;
         health_state.error_message = Some("bridge failed".to_string());
 
-        let status =
-            super::commands::configured_channel_status_from_state(&agent, &channel, health_state)
-                .expect("startable missing channel error should be reported");
+        let status = super::commands::configured_channel_status_from_state(
+            &agent,
+            &channel,
+            health_state,
+            false,
+        )
+        .expect("startable missing channel error should be reported");
 
         assert_eq!(status.status, types::ImStatus::Error);
         assert_eq!(status.error_message.as_deref(), Some("bridge failed"));
+    }
+
+    #[test]
+    fn configured_channel_status_does_not_synthesize_archived_channel() {
+        let mut agents = agent_config_with_weixin_channel(true);
+        let agent = agents.remove(0);
+        let channel = agent.channels[0].clone();
+
+        assert!(super::commands::configured_channel_status_from_state(
+            &agent,
+            &channel,
+            types::ImHealthState::default(),
+            true,
+        )
+        .is_none());
     }
 }
 
@@ -2308,6 +2560,118 @@ fn migrate_openclaw_lark_streaming_value(value: &mut serde_json::Value) -> Vec<S
     migrated_channel_ids
 }
 
+const AGENT_CHANNEL_INDEPENDENCE_MIGRATION_V1: &str = "agentChannelIndependenceMigrationV1";
+
+fn proactive_child_default(key: &str) -> serde_json::Value {
+    match key {
+        "heartbeat" => serde_json::to_value(types::HeartbeatConfig::default()),
+        "memoryAutoUpdate" => serde_json::to_value(types::MemoryAutoUpdateConfig::default()),
+        "memoryEvolution" => serde_json::to_value(types::MemoryEvolutionConfig::default()),
+        _ => unreachable!("unknown proactive child config"),
+    }
+    .expect("default proactive config must serialize")
+}
+
+/// One-shot compatibility migration for the split between Proactive Agent and
+/// Agent Channels. The old master switch used to gate both products, so the
+/// pre-migration master value is projected into every child switch and (only
+/// when disabled) every Channel. Once the marker is persisted, later user
+/// customisation is never touched again.
+fn migrate_agent_channel_independence_value(value: &mut serde_json::Value) -> Result<bool, String> {
+    let mut migrated = value.clone();
+    let changed = migrate_agent_channel_independence_value_in_place(&mut migrated)?;
+    if changed {
+        *value = migrated;
+    }
+    Ok(changed)
+}
+
+fn migrate_agent_channel_independence_value_in_place(
+    value: &mut serde_json::Value,
+) -> Result<bool, String> {
+    if value
+        .get(AGENT_CHANNEL_INDEPENDENCE_MIGRATION_V1)
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return Ok(false);
+    }
+
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| "config root is not an object".to_string())?;
+    let agents = match root.get_mut("agents") {
+        None => None,
+        Some(serde_json::Value::Array(agents)) => Some(agents),
+        Some(_) => return Err("agents is not an array".to_string()),
+    };
+
+    if let Some(agents) = agents {
+        for (agent_index, agent) in agents.iter_mut().enumerate() {
+            let agent = agent
+                .as_object_mut()
+                .ok_or_else(|| format!("agent[{agent_index}] is not an object"))?;
+            let enabled = agent
+                .get("enabled")
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| format!("agent[{agent_index}].enabled is not a boolean"))?;
+
+            for key in ["heartbeat", "memoryAutoUpdate", "memoryEvolution"] {
+                let child = agent
+                    .entry(key.to_string())
+                    .or_insert_with(|| proactive_child_default(key));
+                if child.is_null() {
+                    *child = proactive_child_default(key);
+                }
+                let child = child
+                    .as_object_mut()
+                    .ok_or_else(|| format!("agent[{agent_index}].{key} is not an object"))?;
+                child.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
+            }
+
+            if !enabled {
+                match agent.get_mut("channels") {
+                    None | Some(serde_json::Value::Null) => {}
+                    Some(serde_json::Value::Array(channels)) => {
+                        for (channel_index, channel) in channels.iter_mut().enumerate() {
+                            let channel = channel.as_object_mut().ok_or_else(|| {
+                                format!(
+                                    "agent[{agent_index}].channels[{channel_index}] is not an object"
+                                )
+                            })?;
+                            channel.insert("enabled".to_string(), serde_json::Value::Bool(false));
+                        }
+                    }
+                    Some(_) => {
+                        return Err(format!("agent[{agent_index}].channels is not an array"));
+                    }
+                }
+            }
+        }
+    }
+
+    root.insert(
+        AGENT_CHANNEL_INDEPENDENCE_MIGRATION_V1.to_string(),
+        serde_json::Value::Bool(true),
+    );
+    Ok(true)
+}
+
+fn agent_channel_independence_migration_complete(value: &serde_json::Value) -> bool {
+    value
+        .get(AGENT_CHANNEL_INDEPENDENCE_MIGRATION_V1)
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
+fn fail_closed_agent_channels(agents: &mut [AgentConfigRust]) {
+    for agent in agents {
+        for channel in &mut agent.channels {
+            channel.enabled = false;
+        }
+    }
+}
+
 fn persist_agent_config_read_heal(config_path: &Path, reason: &str) {
     let mut changed_under_lock = false;
     let mut migrated_lark_channel_ids = Vec::new();
@@ -2321,7 +2685,23 @@ fn persist_agent_config_read_heal(config_path: &Path, reason: &str) {
         let migrated_provider_env = migrate_agent_provider_env_value(&mut healed, &api_keys, false);
         let promoted_mcp = promote_agent_mcp_json_to_global_value(&mut healed);
         let lark_channel_ids = migrate_openclaw_lark_streaming_value(&mut healed);
-        if !(normalized || migrated_provider_env || promoted_mcp || !lark_channel_ids.is_empty()) {
+        let migrated_channel_independence =
+            match migrate_agent_channel_independence_value(&mut healed) {
+                Ok(changed) => changed,
+                Err(error) => {
+                    ulog_warn!(
+                        "[agent] Skipped Agent Channel independence migration: {}",
+                        error
+                    );
+                    false
+                }
+            };
+        if !(normalized
+            || migrated_provider_env
+            || promoted_mcp
+            || !lark_channel_ids.is_empty()
+            || migrated_channel_independence)
+        {
             return Ok(());
         }
 
@@ -2331,6 +2711,11 @@ fn persist_agent_config_read_heal(config_path: &Path, reason: &str) {
                 reason
             );
             return Ok(());
+        }
+
+        if migrated_channel_independence && config_path.exists() {
+            std::fs::copy(config_path, config_path.with_file_name("config.json.bak"))
+                .map_err(|error| format!("Agent Channel migration backup failed: {error}"))?;
         }
 
         *config = healed;
@@ -2404,15 +2789,28 @@ pub(crate) fn read_agent_configs_from_disk() -> Vec<AgentConfigRust> {
         let migrated_provider_env = migrate_agent_provider_env_value(&mut value, &api_keys, true);
         let promoted_mcp = promote_agent_mcp_json_to_global_value(&mut value);
         let migrated_lark_streaming = migrate_openclaw_lark_streaming_value(&mut value);
+        let migrated_channel_independence =
+            match migrate_agent_channel_independence_value(&mut value) {
+                Ok(changed) => changed,
+                Err(error) => {
+                    ulog_warn!(
+                    "[agent] Agent Channel independence migration unavailable for {} config: {}",
+                    label,
+                    error
+                );
+                    false
+                }
+            };
 
         match salvage_agents_from_value(&value, &api_keys) {
             Some(agents) => {
-                let agents = project_agent_workspaces(&value, agents);
+                let mut agents = project_agent_workspaces(&value, agents);
                 if i == 0
                     && (normalized
                         || migrated_provider_env
                         || promoted_mcp
-                        || !migrated_lark_streaming.is_empty())
+                        || !migrated_lark_streaming.is_empty()
+                        || migrated_channel_independence)
                 {
                     let mut reasons = Vec::new();
                     if normalized {
@@ -2427,8 +2825,26 @@ pub(crate) fn read_agent_configs_from_disk() -> Vec<AgentConfigRust> {
                     if !migrated_lark_streaming.is_empty() {
                         reasons.push("OpenClaw Lark typed streaming migration");
                     }
+                    if migrated_channel_independence {
+                        reasons.push("Agent Channel independence migration");
+                    }
                     let reason = reasons.join(" + ");
                     persist_agent_config_read_heal(&main_path, &reason);
+                }
+                let migration_persisted = std::fs::read_to_string(&main_path)
+                    .ok()
+                    .and_then(|content| {
+                        serde_json::from_str::<serde_json::Value>(strip_bom(&content)).ok()
+                    })
+                    .is_some_and(|config| agent_channel_independence_migration_complete(&config));
+                if !migration_persisted {
+                    // A migrated in-memory view is safe for status/config reads,
+                    // but no Channel may start until the one-shot disk commit
+                    // succeeds. Every subsequent read retries the same heal.
+                    fail_closed_agent_channels(&mut agents);
+                    ulog_warn!(
+                        "[agent] Agent Channels remain stopped until the compatibility migration is persisted"
+                    );
                 }
                 if i > 0 {
                     ulog_warn!("[agent] Recovered config from {} file", label);
@@ -2878,9 +3294,6 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
         let archived_workspaces = read_archived_agent_workspaces_from_disk();
 
         for agent_config in agents {
-            if !agent_config.enabled {
-                continue;
-            }
             if is_agent_workspace_archived_with(&agent_config, &archived_workspaces) {
                 ulog_info!(
                     "[agent] Skipping auto-start for archived agent workspace {}",
@@ -3028,7 +3441,7 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
             if !started_channel_ids.is_empty() {
                 let agent_config = started_agent_config
                     .expect("a successfully started channel records its fresh agent config");
-                let hb_config = agent_config.heartbeat.clone().unwrap_or_default();
+                let hb_config = agent_config.effective_heartbeat();
                 let agent_id = agent_config.id.clone();
                 let agent_label = agent_config.name.clone();
                 let agent_state_for_hb = Arc::clone(&*agent_state);
@@ -3157,7 +3570,7 @@ async fn ensure_agent_level_runners_started<R: Runtime>(
         return;
     }
 
-    let hb_config = agent_config.heartbeat.clone().unwrap_or_default();
+    let hb_config = agent_config.effective_heartbeat();
     let agent_id = agent_config.id.clone();
     let agent_label = agent_config.name.clone();
     let agent_state_for_hb = Arc::clone(&agent_state);
@@ -3390,9 +3803,6 @@ pub async fn monitor_agent_channels(
                 Some(c) => c,
                 None => continue,
             };
-            if !agent_cfg.enabled {
-                continue;
-            }
             if is_agent_workspace_archived_with(agent_cfg, &archived_workspaces) {
                 continue;
             }

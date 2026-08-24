@@ -1,6 +1,6 @@
 // Focused behavior tests for App's content slots. Restored persisted Sessions
-// are normal live Chat Tabs: active and inactive slots both mount TabProvider,
-// while only visibility/focus projection changes when the user switches tabs.
+// always mount TabProvider, while the heavy Chat child may stay deferred until
+// the active shell has painted.
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -138,6 +138,55 @@ describe('restored live chat tab', () => {
     expect(tabProviderSpy).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId('tab-provider')).toBeInTheDocument();
     expect(await screen.findByTestId('chat')).toBeInTheDocument();
+  });
+
+  it('keeps deferred restored tabs lifecycle-live without mounting Chat', () => {
+    tabProviderSpy.mockClear();
+    render(
+      <MemoizedTabContent
+        tab={restoredTab()}
+        isActive
+        {...noopProps}
+        isDeferredMount
+      />,
+    );
+    expect(tabProviderSpy).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('tab-provider')).toBeInTheDocument();
+    expect(screen.getByTestId('chat-boot-overlay')).toBeInTheDocument();
+    expect(screen.queryByTestId('chat')).not.toBeInTheDocument();
+  });
+
+  it('mounts Chat when deferral clears and keeps it mounted while inactive', async () => {
+    const liveTab = restoredTab();
+    const view = render(
+      <MemoizedTabContent
+        tab={liveTab}
+        isActive
+        {...noopProps}
+        isDeferredMount
+      />,
+    );
+    expect(screen.queryByTestId('chat')).not.toBeInTheDocument();
+
+    view.rerender(
+      <MemoizedTabContent
+        tab={liveTab}
+        isActive
+        {...noopProps}
+        isDeferredMount={false}
+      />,
+    );
+    expect(await screen.findByTestId('chat')).toBeInTheDocument();
+
+    view.rerender(
+      <MemoizedTabContent
+        tab={liveTab}
+        isActive={false}
+        {...noopProps}
+        isDeferredMount={false}
+      />,
+    );
+    expect(screen.getByTestId('chat')).toBeInTheDocument();
   });
 
   it('mounts TabProvider immediately for an inactive restored tab too', async () => {

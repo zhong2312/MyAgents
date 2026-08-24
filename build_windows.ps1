@@ -409,7 +409,9 @@ try {
     $requiredCspParts = @(
         "http://ipc.localhost",
         "asset:",
-        "https://download.myagents.io"
+        "https://download.myagents.io",
+        "https://github.com",
+        "https://objects.githubusercontent.com"
     )
 
     $missingParts = @()
@@ -559,9 +561,9 @@ try {
     Write-Host "[5/7] 构建前端和服务端..." -ForegroundColor Blue
 
     # Sidecar / Bridge / CLI 三件套统一通过 npm scripts，由
-    # `scripts/esbuild-bundle.mjs` 单一入口驱动。Driver 自带 post-build：
-    #   - cli: 复制 myagents.cmd 到 resources/cli/
-    #   - server: 校验产物不含硬编码 __dirname 路径
+    # `scripts/esbuild-bundle.mjs` 单一入口驱动。Driver 自带 target 生命周期职责：
+    #   - cli: 构建前清理 staging，随后只产出 bundle authority myagents.cjs
+    #   - server: 构建后校验产物不含硬编码 __dirname 路径
     # 实际上 tauri:build 的 beforeBuildCommand (tauri.conf.json) 也会
     # 跑同一组 npm 脚本——这里显式提前一步是为了 build 阶段提早暴露
     # 错误（避免等到 cargo 链接成功才发现 server-dist.js 有问题）。
@@ -600,11 +602,6 @@ try {
     New-Item -ItemType Directory -Path $sdkDest -Force | Out-Null
     Copy-Item $claudeSrc (Join-Path $sdkDest "claude.exe") -Force
     Write-Host "    OK - Claude native binary 就绪 ($sdkTriple)" -ForegroundColor Green
-
-    # NOTE: agent-browser CLI is no longer bundled. The skill at
-    # bundled-skills/agent-browser/SKILL.md teaches AI to self-install via
-    # `npm install -g agent-browser@<pinned>` (with `npx` fallback) on first
-    # use. Removing the bundle saves ~84MB installer size + build time.
 
     # 预装 sharp 图像处理（替代 jimp，libvips 原生）
     Write-Host "  预装 sharp 图像处理（libvips 原生）..." -ForegroundColor Cyan
@@ -665,6 +662,10 @@ try {
     Write-Host "[6/7] 构建 Tauri 应用 (Release)..." -ForegroundColor Blue
     Write-Host "  这可能需要几分钟，请耐心等待..." -ForegroundColor Yellow
 
+    Write-Host "  准备离线文档转换 Worker / OCR / PDFium 资源..." -ForegroundColor Cyan
+    & node "$ProjectDir\scripts\prepare-document-processing.mjs" "x86_64-pc-windows-msvc"
+    if ($LASTEXITCODE -ne 0) { throw "文档转换资源准备失败" }
+
     & npm run tauri:build -- --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
     if ($LASTEXITCODE -ne 0) {
         throw "Tauri 构建失败"
@@ -697,19 +698,45 @@ try {
             }
             New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
 
-            Copy-Item $exePath $portableDir -Force
+            # Tauri 将 Windows 资源直接暂存于 myagents.exe 同级目录，而非
+            # release\resources。便携包复用 NSIS 的资源映射，确保新增运行资源
+            # 时两个发布格式不会发生漂移。
+            $WindowsTauriConf = Get-Content "src-tauri\tauri.windows.conf.json" -Raw | ConvertFrom-Json
+            $portableEntries = [System.Collections.Generic.List[string]]::new()
+            $portableEntrySet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-            # Copy VC++ Runtime DLLs for portable version (app-local deployment)
-            foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll")) {
-                $dllSrc = Join-Path "src-tauri\resources" $dll
-                if (Test-Path $dllSrc) {
-                    Copy-Item $dllSrc $portableDir -Force
+            function Add-PortableEntry {
+                param([string]$Entry)
+
+                if (-not [string]::IsNullOrWhiteSpace($Entry) -and $portableEntrySet.Add($Entry)) {
+                    $portableEntries.Add($Entry)
                 }
             }
 
-            $resourcesSource = Join-Path $targetDir "resources"
-            if (Test-Path $resourcesSource) {
-                Copy-Item $resourcesSource $portableDir -Recurse -Force
+            Add-PortableEntry "myagents.exe"
+            foreach ($resourceMap in @($TauriConf.bundle.resources, $WindowsTauriConf.bundle.resources)) {
+                if ($null -eq $resourceMap) { continue }
+                foreach ($property in $resourceMap.PSObject.Properties) {
+                    Add-PortableEntry $property.Value
+                }
+            }
+            foreach ($externalBin in $TauriConf.bundle.externalBin) {
+                $externalBinName = Split-Path $externalBin -Leaf
+                Add-PortableEntry "$externalBinName.exe"
+            }
+
+            foreach ($entry in $portableEntries) {
+                $source = Join-Path $targetDir $entry
+                if (-not (Test-Path $source)) {
+                    throw "便携版缺少 Tauri 打包资源: $source"
+                }
+
+                $destination = Join-Path $portableDir $entry
+                $destinationParent = Split-Path -Parent $destination
+                if (-not (Test-Path $destinationParent)) {
+                    New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+                }
+                Copy-Item $source $destination -Recurse -Force
             }
 
             if (Test-Path $zipPath) {

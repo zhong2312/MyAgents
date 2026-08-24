@@ -549,7 +549,6 @@ fn load_narrative_projection_source(
         ("arcs", "arcs"),
         ("directories", "directories"),
         ("chapters", "chapters"),
-        ("simulationProposals", "simulation-proposals"),
     ] {
         let entries = index
             .get(collection)
@@ -1213,7 +1212,6 @@ mod tests {
                 "arcs":[{"id":"arc-main","path":"narrative/arcs/records/arc-main.json"}],
                 "directories":[],
                 "chapters":[{"id":"chapter-one","path":"narrative/chapters/records/chapter-one.json"}],
-                "simulationProposals":[],
                 "legacyArchivePath":null
             }"#,
         );

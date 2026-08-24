@@ -36,6 +36,15 @@ pub fn start_tab_sidecar<R: Runtime>(
     tab_id: &str,
     agent_dir: Option<PathBuf>,
 ) -> Result<u16, String> {
+    start_tab_sidecar_candidate(app_handle, manager, tab_id, agent_dir).map(|(port, _)| port)
+}
+
+fn start_tab_sidecar_candidate<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    manager: &ManagedSidecarManager,
+    tab_id: &str,
+    agent_dir: Option<PathBuf>,
+) -> Result<(u16, u64), String> {
     let process_role = resolve_sidecar_process_role(tab_id, agent_dir.is_some())?;
     let _lifecycle_spawn_permit = begin_lifecycle_spawn_permit()?;
 
@@ -46,7 +55,62 @@ pub fn start_tab_sidecar<R: Runtime>(
             .request_global_sidecar_running("start-request");
     }
 
-    start_tab_sidecar_admitted(app_handle, manager, tab_id, agent_dir, process_role)
+    start_tab_sidecar_admitted(app_handle, manager, tab_id, agent_dir, process_role, None)
+}
+
+fn cleanup_unowned_global_dir(is_global: bool, agent_dir: Option<&PathBuf>) {
+    if is_global {
+        if let Some(agent_dir) = agent_dir {
+            let _ = std::fs::remove_dir_all(agent_dir);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GlobalCandidateIdentity {
+    port: u16,
+    generation: u64,
+}
+
+fn retire_instance_handoff(
+    manager: &ManagedSidecarManager,
+    tab_id: &str,
+    replacement: DispatchReplacement,
+) {
+    replacement.wait_for_requests();
+    let mut retiring_process = manager
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take_instance_process_for_replacement(tab_id, &replacement));
+    if let Some(process) = retiring_process.as_mut() {
+        if let Err(error) = process.kill_and_wait() {
+            ulog_warn!(
+                "[sidecar] Failed to settle retired instance {}: {}",
+                tab_id,
+                error
+            );
+        }
+    }
+    drop(retiring_process);
+    // The closed generation remains the canonical manager entry while this
+    // projection is removed, so a newer Global cannot publish and then be
+    // erased by this retirement.
+    if tab_id == GLOBAL_SIDECAR_ID {
+        remove_global_port_file();
+    }
+    let retired = manager
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.abandon_instance_replacement(tab_id, &replacement));
+    // The old instance's Drop waits this same gate. Release the private
+    // replacement lease first, and release the process only outside manager.
+    drop(replacement);
+    drop(retired);
+}
+
+enum InstanceStop {
+    Owner(DispatchReplacement),
+    Waiter(DispatchDrain),
 }
 
 /// Spawn one candidate after lifecycle admission and role validation. Public
@@ -59,8 +123,14 @@ fn start_tab_sidecar_admitted<R: Runtime>(
     tab_id: &str,
     agent_dir: Option<PathBuf>,
     process_role: SidecarProcessRole,
-) -> Result<u16, String> {
+    expected_replacement: Option<GlobalCandidateIdentity>,
+) -> Result<(u16, u64), String> {
     let is_global = process_role == SidecarProcessRole::Global;
+
+    // Every Sidecar birth is an admission boundary for app-owned runtimes.
+    // Reconcile here as well as at app startup so a transient filesystem
+    // failure cannot leave a Session running with a stale HOME CLI payload.
+    crate::cli::ensure_launcher()?;
 
     // Ensure file descriptor limit is high enough for Bun
     ensure_high_file_descriptor_limit();
@@ -72,42 +142,71 @@ fn start_tab_sidecar_admitted<R: Runtime>(
     // bounded internally at ~3 s even with laggy processes.
     wait_for_startup_cleanup(Duration::from_secs(15))?;
 
-    let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
-
-    if is_global && !manager_guard.global_sidecar_is_desired() {
-        return Err("Global Sidecar start canceled because it is no longer desired".to_string());
-    }
-
-    // Check if already running for this tab
-    if let Some(instance) = manager_guard.get_instance_mut(tab_id) {
-        if instance.is_running() {
-            ulog_info!(
-                "[sidecar] Tab {} already has running instance on port {}",
-                tab_id,
-                instance.port
-            );
-            return Ok(instance.port);
-        }
-    }
-
-    // Remove stale instance if exists
-    let removed_instance = manager_guard.remove_instance(tab_id);
-    if is_global && removed_instance.is_some() {
-        // The CLI port file is only a projection of the current healthy
-        // generation. Once replacement retires that generation, the old port
-        // must not remain discoverable during readiness/backoff.
-        remove_global_port_file();
-    }
-    drop(removed_instance);
-
     // Find executables
     let node_path =
         find_node_executable(app_handle).ok_or_else(|| diagnose_node_not_found(app_handle))?;
     let script_path =
         find_server_script(app_handle).ok_or_else(|| "Server script not found".to_string())?;
 
-    // Allocate port
-    let port = manager_guard.allocate_port()?;
+    // Port probing is independent from lifecycle authority. Keep even this
+    // small OS operation outside the long-lived manager critical section.
+    let port_allocator = manager
+        .lock()
+        .map_err(|error| error.to_string())?
+        .port_allocator();
+    let port = allocate_sidecar_port(&port_allocator)?;
+
+    // A replacement owns one private lease on the old generation's gate. The
+    // old entry therefore remains the sole manager authority while request
+    // drain and process creation happen outside the manager mutex. Explicit
+    // stop closes/waits the same gate and cannot expose a singleton gap.
+    let (mut replacement, clear_global_port_projection) = {
+        let mut guard = manager.lock().map_err(|error| error.to_string())?;
+        if is_global && !guard.global_sidecar_is_desired() {
+            return Err(
+                "Global Sidecar start canceled because it is no longer desired".to_string(),
+            );
+        }
+
+        if let Some(instance) = guard.get_instance_mut(tab_id) {
+            if expected_replacement.is_some_and(|expected| {
+                expected.port != instance.port || expected.generation != instance.generation
+            }) {
+                return Err("Global Sidecar restart target is no longer current".to_string());
+            }
+            if instance.is_running() {
+                ulog_info!(
+                    "[sidecar] Tab {} already has running instance on port {}",
+                    tab_id,
+                    instance.port
+                );
+                return Ok((instance.port, instance.generation));
+            }
+            if !instance.dispatch_gate.is_accepting() {
+                return Err("Global Sidecar replacement is already in progress".to_string());
+            }
+            if expected_replacement.is_none() && instance.is_process_alive() {
+                return Err("Global Sidecar candidate is already starting".to_string());
+            }
+
+            let replacement = guard
+                .prepare_instance_replacement(tab_id)
+                .ok_or_else(|| "Sidecar replacement is already in progress".to_string())?;
+            (Some(replacement), is_global)
+        } else {
+            if expected_replacement.is_some() {
+                return Err("Global Sidecar restart target disappeared".to_string());
+            }
+            (None, false)
+        }
+    };
+
+    if let Some(replacement) = &replacement {
+        replacement.wait_for_requests();
+    }
+    if clear_global_port_projection {
+        remove_global_port_file();
+    }
 
     ulog_info!(
         "[sidecar] Starting for tab {} on port {}, agent_dir: {:?}",
@@ -134,22 +233,31 @@ fn start_tab_sidecar_admitted<R: Runtime>(
         Some(dir.clone())
     } else {
         // Global sidecar: use temp directory
-        let temp_dir = std::env::temp_dir().join(format!("myagents-global-{}", std::process::id()));
+        // A UUID keeps directory ownership generation-specific even after the
+        // bounded port allocator eventually reuses a port.
+        let temp_dir = std::env::temp_dir().join(format!(
+            "myagents-global-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
         ulog_info!("[sidecar] Creating temp agent directory: {:?}", temp_dir);
 
         // Create directory and fail early if unable to create
-        std::fs::create_dir_all(&temp_dir).map_err(|e| {
-            let err = format!(
+        if let Err(error) = std::fs::create_dir_all(&temp_dir) {
+            let error = format!(
                 "[sidecar] Failed to create temp directory {:?}: {}. \
                  Check permissions on TEMP directory ({}). \
                  This directory is required for Global Sidecar to store runtime data.",
                 temp_dir,
-                e,
+                error,
                 std::env::temp_dir().display()
             );
-            ulog_error!("{}", err);
-            err
-        })?;
+            ulog_error!("{}", error);
+            if let Some(replacement) = replacement.take() {
+                retire_instance_handoff(manager, tab_id, replacement);
+            }
+            return Err(error);
+        }
 
         cmd.arg("--agent-dir").arg(&temp_dir);
         Some(temp_dir)
@@ -170,10 +278,99 @@ fn start_tab_sidecar_admitted<R: Runtime>(
     if mgmt_port > 0 {
         cmd.env("MYAGENTS_MANAGEMENT_PORT", mgmt_port.to_string());
     }
-    // Global and legacy instance Sidecars consume the same Management API as
-    // Session Sidecars. Reserve a process-global generation before spawn and
-    // inject the manager key instead of fabricating a Session identity.
-    let sidecar_generation = manager_guard.next_generation(tab_id);
+    // Reserve generation identity only after all fallible filesystem setup.
+    // Replacement keeps its old manager entry fenced by the private lease.
+    // Initial creation inserts a process-less reservation into the same
+    // canonical map and holds one lease on its gate while spawning outside the
+    // manager mutex; no second lifecycle owner or table is introduced.
+    let mut initial_birth: Option<(Arc<DispatchGate>, DispatchLease)> = None;
+    let mut retiring_process = None;
+    let sidecar_generation = if let Some(current_replacement) = replacement.as_ref() {
+        let mut guard = manager.lock().map_err(|error| error.to_string())?;
+        if is_global && !guard.global_sidecar_is_desired() {
+            drop(guard);
+            retire_instance_handoff(manager, tab_id, replacement.take().unwrap());
+            cleanup_unowned_global_dir(is_global, effective_agent_dir.as_ref());
+            return Err(
+                "Global Sidecar start canceled because it is no longer desired".to_string(),
+            );
+        }
+        if !guard.instance_matches_replacement(tab_id, current_replacement) {
+            drop(guard);
+            drop(replacement.take());
+            cleanup_unowned_global_dir(is_global, effective_agent_dir.as_ref());
+            return Err("Sidecar replacement target is no longer current".to_string());
+        }
+        retiring_process = guard.take_instance_process_for_replacement(tab_id, current_replacement);
+        let generation = guard.next_instance_generation();
+        drop(guard);
+        generation
+    } else {
+        let mut guard = manager.lock().map_err(|error| error.to_string())?;
+        if is_global && !guard.global_sidecar_is_desired() {
+            drop(guard);
+            cleanup_unowned_global_dir(is_global, effective_agent_dir.as_ref());
+            return Err(
+                "Global Sidecar start canceled because it is no longer desired".to_string(),
+            );
+        }
+        if let Some(instance) = guard.get_instance_mut(tab_id) {
+            let existing_port = instance.port;
+            let existing_generation = instance.generation;
+            let running = instance.is_running();
+            drop(guard);
+            cleanup_unowned_global_dir(is_global, effective_agent_dir.as_ref());
+            return if running {
+                Ok((existing_port, existing_generation))
+            } else {
+                Err("Global Sidecar candidate or replacement is already in progress".to_string())
+            };
+        }
+        let generation = guard.next_instance_generation();
+        let gate = DispatchGate::new();
+        let birth_lease = DispatchGate::try_acquire(&gate)
+            .expect("a newly created instance gate accepts its birth lease");
+        guard.insert_instance(
+            tab_id.to_string(),
+            SidecarInstance {
+                process: None,
+                generation,
+                port,
+                agent_dir: effective_agent_dir.clone(),
+                healthy: false,
+                is_global,
+                session_delete_authority: session_delete_authority.clone(),
+                dispatch_gate: Arc::clone(&gate),
+                created_at: std::time::Instant::now(),
+            },
+        );
+        initial_birth = Some((gate, birth_lease));
+        drop(guard);
+        generation
+    };
+    if let Some(mut process) = retiring_process {
+        if let Err(error) = process.kill_and_wait() {
+            let retired_port = expected_replacement
+                .map(|identity| identity.port)
+                .unwrap_or(port);
+            ulog_error!(
+                "[sidecar] Failed to settle retirement for tab {} on port {}: {}",
+                tab_id,
+                retired_port,
+                error
+            );
+            drop(process);
+            if let Some(replacement) = replacement.take() {
+                retire_instance_handoff(manager, tab_id, replacement);
+            }
+            cleanup_unowned_global_dir(is_global, effective_agent_dir.as_ref());
+            return Err(format!(
+                "Sidecar replacement target on port {} did not stop: {}",
+                retired_port, error
+            ));
+        }
+        drop(process);
+    }
     if is_global {
         ulog_info!(
             "[sidecar-global] action=candidate-reserved generation={} port={}",
@@ -215,17 +412,115 @@ fn start_tab_sidecar_admitted<R: Runtime>(
         is_global
     );
 
-    // Spawn
-    let mut child = crate::process_cmd::spawn_tree(&mut cmd).map_err(|e| {
-        manager_guard.clear_generation(tab_id);
-        ulog_error!("[sidecar] Failed to spawn: {}", e);
-        format!("Failed to spawn sidecar: {}", e)
-    })?;
+    // Both initial and replacement process creation run outside SidecarManager.
+    // Their canonical gate lease carries lifecycle authority across this call.
+    let mut child = match crate::process_cmd::spawn_tree(&mut cmd) {
+        Ok(child) => child,
+        Err(error) => {
+            ulog_error!("[sidecar] Failed to spawn: {}", error);
+            if let Some(replacement) = replacement.take() {
+                retire_instance_handoff(manager, tab_id, replacement);
+                cleanup_unowned_global_dir(is_global, effective_agent_dir.as_ref());
+            } else {
+                let retired_birth = initial_birth.as_ref().and_then(|(gate, _)| {
+                    manager.lock().ok().and_then(|mut guard| {
+                        guard.abandon_instance_birth(tab_id, sidecar_generation, gate)
+                    })
+                });
+                if let Some((_gate, birth_lease)) = initial_birth.take() {
+                    drop(birth_lease);
+                }
+                drop(retired_birth);
+            }
+            return Err(format!("Failed to spawn sidecar: {}", error));
+        }
+    };
 
     ulog_info!("[sidecar] Process spawned with pid: {:?}", child.id());
 
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let retired_instance = if let Some(current_replacement) = replacement.as_ref() {
+        let instance = SidecarInstance {
+            process: Some(child),
+            generation: sidecar_generation,
+            port,
+            agent_dir: effective_agent_dir,
+            healthy: false,
+            is_global,
+            session_delete_authority,
+            dispatch_gate: DispatchGate::new(),
+            created_at: std::time::Instant::now(),
+        };
+        let mut guard = manager.lock().map_err(|error| error.to_string())?;
+        let candidate_is_current = guard.instance_matches_replacement(tab_id, current_replacement)
+            && (!is_global || guard.global_sidecar_is_desired());
+        if !candidate_is_current {
+            let retired = if guard.instance_matches_replacement(tab_id, current_replacement) {
+                guard.abandon_instance_replacement(tab_id, current_replacement)
+            } else {
+                None
+            };
+            drop(guard);
+            // The replacement lease is also the stop-completion barrier for a
+            // locally owned candidate. Kill that unpublished candidate before
+            // waking stop; drop the old instance last because its Drop waits
+            // the replacement's old gate.
+            drop(instance);
+            drop(replacement.take());
+            drop(retired);
+            return Err("Global Sidecar candidate is no longer current or desired".to_string());
+        }
+        match guard.finish_instance_replacement(tab_id, current_replacement, instance) {
+            Ok(retired) => {
+                drop(guard);
+                Some(retired)
+            }
+            Err(candidate) => {
+                drop(guard);
+                drop(candidate);
+                drop(replacement.take());
+                return Err("Sidecar replacement target is no longer current".to_string());
+            }
+        }
+    } else {
+        let (gate, birth_lease) = initial_birth
+            .take()
+            .expect("initial creation retains its canonical birth lease");
+        let mut guard = manager.lock().map_err(|error| error.to_string())?;
+        let desired = !is_global || guard.global_sidecar_is_desired();
+        let install_result = if desired {
+            guard.finish_instance_birth(tab_id, sidecar_generation, &gate, child)
+        } else {
+            Err(child)
+        };
+        let retired_birth = if install_result.is_err() {
+            guard.abandon_instance_birth(tab_id, sidecar_generation, &gate)
+        } else {
+            None
+        };
+        drop(guard);
+        if let Err(candidate) = install_result {
+            // The unpublished process must die before releasing the lease that
+            // may wake a concurrent stop of the canonical placeholder.
+            drop(candidate);
+            drop(birth_lease);
+            drop(retired_birth);
+            return Err("Sidecar birth is no longer current or desired".to_string());
+        }
+        drop(birth_lease);
+        None
+    };
+
+    // Publish-before-release: the new entry is authoritative before the
+    // replacement lifecycle lease wakes any concurrent stop. Old process and
+    // directory cleanup remain outside SidecarManager.
+    drop(replacement.take());
+    drop(retired_instance);
+
     // 启动线程捕获 stdout → 写入统一日志（确保 Bun 输出在 unified log 可见）
-    if let Some(stdout) = child.stdout.take() {
+    if let Some(stdout) = stdout {
         let tab_id_clone = tab_id.to_string();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
@@ -241,13 +536,9 @@ fn start_tab_sidecar_admitted<R: Runtime>(
         });
     }
 
-    // 启动线程捕获 stderr → 写入统一日志。
-    //
-    // 不是所有 sidecar stderr 都是 ERROR：Node.js 的 `console.warn` /
-    // 直接 `process.stderr.write` 在 sidecar 里有几处合法的 informational
-    // 用法，盲目标 ERROR 会让 unified log 出现假阳性（grep ERROR 拿到无关
-    // 噪音）。识别已知 informational/warn 前缀，按真实严重度落级。
-    if let Some(stderr) = child.stderr.take() {
+    // 启动线程捕获 stderr → 写入统一日志。已知 informational / warn
+    // 前缀按真实严重度落级，避免 unified log 的假 ERROR。
+    if let Some(stderr) = stderr {
         let tab_id_clone = tab_id.to_string();
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
@@ -263,41 +554,6 @@ fn start_tab_sidecar_admitted<R: Runtime>(
         });
     }
 
-    // Check if the process already exited. `try_wait()` is a non-blocking
-    // poll — if the OS hasn't reaped the child yet, returns Ok(None). We no
-    // longer pre-sleep 50ms here; the health-loop's alive_check (every 20
-    // attempts) catches any crash that escapes this initial probe.
-    if let Ok(Some(status)) = child.try_wait() {
-        // Crash detected — give the stderr reader a brief window to flush.
-        thread::sleep(Duration::from_millis(100));
-        ulog_error!(
-            "[sidecar] Process exited immediately with status: {:?}",
-            status
-        );
-        #[cfg(target_os = "windows")]
-        maybe_mark_crashed_node(&status, &node_path);
-        let diag = diagnose_immediate_exit(&status, &node_path);
-        manager_guard.clear_generation(tab_id);
-        return Err(diag);
-    }
-
-    // Create instance (not yet healthy)
-    let instance = SidecarInstance {
-        process: child,
-        port,
-        agent_dir: effective_agent_dir,
-        healthy: false,
-        is_global,
-        session_delete_authority,
-        dispatch_gate: DispatchGate::new(),
-        created_at: std::time::Instant::now(),
-    };
-
-    manager_guard.insert_instance(tab_id.to_string(), instance);
-
-    // Drop lock before waiting for health
-    drop(manager_guard);
-
     // Build liveness check closure — detects process death during health check.
     // Critical for Windows VMs where Defender delays bun.exe execution by 20-30s,
     // causing the crash to happen well after the 50ms early exit check above.
@@ -310,14 +566,17 @@ fn start_tab_sidecar_admitted<R: Runtime>(
     let liveness_manager = manager.clone();
     let liveness_tab_id = tab_id.to_string();
     let expected_port = port;
+    let expected_generation = sidecar_generation;
     let alive_check: Box<dyn Fn() -> bool> = Box::new(move || {
         if let Ok(mut guard) = liveness_manager.lock() {
             if let Some(instance) = guard.get_instance_mut(&liveness_tab_id) {
-                // Reject if the instance was replaced (different port = different process)
-                if instance.port != expected_port {
+                if instance.port != expected_port || instance.generation != expected_generation {
                     return false;
                 }
-                matches!(instance.process.try_wait(), Ok(None))
+                instance
+                    .process
+                    .as_mut()
+                    .is_some_and(|process| matches!(process.try_wait(), Ok(None)))
             } else {
                 false
             }
@@ -332,15 +591,19 @@ fn start_tab_sidecar_admitted<R: Runtime>(
             // Mark as healthy
             let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
             if is_global {
-                let candidate_is_current = manager_guard.current_generation(tab_id)
-                    == sidecar_generation
-                    && manager_guard
-                        .get_instance(tab_id)
-                        .is_some_and(|instance| instance.port == port);
+                let candidate_is_current =
+                    manager_guard.get_instance(tab_id).is_some_and(|instance| {
+                        instance.generation == sidecar_generation && instance.port == port
+                    });
                 if !manager_guard.global_sidecar_is_desired() || !candidate_is_current {
-                    if candidate_is_current {
-                        manager_guard.remove_instance(tab_id);
-                        remove_global_port_file();
+                    let retirement = if candidate_is_current {
+                        manager_guard.prepare_instance_replacement(tab_id)
+                    } else {
+                        None
+                    };
+                    drop(manager_guard);
+                    if let Some(retirement) = retirement {
+                        retire_instance_handoff(manager, tab_id, retirement);
                     }
                     return Err(
                         "Global Sidecar candidate is no longer current or desired".to_string()
@@ -357,7 +620,7 @@ fn start_tab_sidecar_admitted<R: Runtime>(
                     port
                 );
             }
-            Ok(port)
+            Ok((port, sidecar_generation))
         }
         Err(e) => {
             // Health check failed — diagnostics go to unified log directly
@@ -366,29 +629,32 @@ fn start_tab_sidecar_admitted<R: Runtime>(
 
             let mut manager_guard = manager.lock().map_err(|_| e.clone())?;
             let candidate_is_current = manager_guard.get_instance(tab_id).is_some_and(|instance| {
-                !is_global
-                    || (manager_guard.current_generation(tab_id) == sidecar_generation
-                        && instance.port == port)
+                !is_global || (instance.generation == sidecar_generation && instance.port == port)
             });
             if candidate_is_current {
                 let instance = manager_guard
                     .get_instance_mut(tab_id)
                     .expect("current candidate remains present while manager is locked");
-                match instance.process.try_wait() {
-                    Ok(Some(status)) => {
+                match instance.process.as_mut().map(|process| process.try_wait()) {
+                    None => {
+                        let detail = " | process birth was not completed";
+                        ulog_error!("[sidecar]{}", detail);
+                        diag.push_str(detail);
+                    }
+                    Some(Ok(Some(status))) => {
                         #[cfg(target_os = "windows")]
                         maybe_mark_crashed_node(&status, &node_path);
                         let detail = format!(" | process exited: {:?}", status);
                         ulog_error!("[sidecar]{}", detail);
                         diag.push_str(&detail);
                     }
-                    Ok(None) => {
+                    Some(Ok(None)) => {
                         let detail = " | process alive but not listening. \
                             Possible causes: antivirus slow-scanning bun.exe, or port conflict";
                         ulog_error!("[sidecar]{}", detail);
                         diag.push_str(detail);
                     }
-                    Err(wait_err) => {
+                    Some(Err(wait_err)) => {
                         let detail = format!(" | try_wait error: {}", wait_err);
                         ulog_error!("[sidecar]{}", detail);
                         diag.push_str(&detail);
@@ -401,10 +667,9 @@ fn start_tab_sidecar_admitted<R: Runtime>(
 
             // Remove only the exact failed Global generation. A concurrent
             // legal start may already have installed a newer winner.
-            if candidate_is_current {
-                manager_guard.remove_instance(tab_id);
+            let retirement = if candidate_is_current {
+                let retirement = manager_guard.prepare_instance_replacement(tab_id);
                 if is_global {
-                    remove_global_port_file();
                     ulog_error!(
                         "[sidecar-global] action=candidate-readiness-failed generation={} port={} error={}",
                         sidecar_generation,
@@ -412,6 +677,13 @@ fn start_tab_sidecar_admitted<R: Runtime>(
                         diag
                     );
                 }
+                retirement
+            } else {
+                None
+            };
+            drop(manager_guard);
+            if let Some(retirement) = retirement {
+                retire_instance_handoff(manager, tab_id, retirement);
             }
 
             Err(diag)
@@ -422,25 +694,42 @@ fn start_tab_sidecar_admitted<R: Runtime>(
 /// Stop a Sidecar for a specific Tab
 /// Each Tab has its own Sidecar, so stopping is straightforward
 pub fn stop_tab_sidecar(manager: &ManagedSidecarManager, tab_id: &str) -> Result<(), String> {
-    let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
+    let clear_global_port_projection = tab_id == GLOBAL_SIDECAR_ID;
+    let retirement = {
+        let mut guard = manager.lock().map_err(|error| error.to_string())?;
+        if clear_global_port_projection {
+            guard.request_global_sidecar_stopped("explicit-tab-stop");
+        }
+        let retirement = if guard
+            .get_instance(tab_id)
+            .is_some_and(|instance| instance.dispatch_gate.is_accepting())
+        {
+            guard
+                .prepare_instance_replacement(tab_id)
+                .map(InstanceStop::Owner)
+        } else {
+            guard
+                .prepare_instance_retirement(tab_id)
+                .map(InstanceStop::Waiter)
+        };
+        if let Some(instance) = guard.get_instance(tab_id) {
+            ulog_info!(
+                "[sidecar] Stopping instance for tab {} on port {}",
+                tab_id,
+                instance.port
+            );
+        } else {
+            ulog_debug!("[sidecar] No instance found for tab {}", tab_id);
+        }
+        retirement
+    };
 
-    if tab_id == GLOBAL_SIDECAR_ID {
-        manager_guard.request_global_sidecar_stopped("explicit-tab-stop");
-    }
-
-    if let Some(instance) = manager_guard.remove_instance(tab_id) {
-        ulog_info!(
-            "[sidecar] Stopped instance for tab {} on port {}",
-            tab_id,
-            instance.port
-        );
-        // Instance is dropped here, killing the process
-    } else {
-        ulog_debug!("[sidecar] No instance found for tab {}", tab_id);
-    }
-
-    if tab_id == GLOBAL_SIDECAR_ID {
-        remove_global_port_file();
+    match retirement {
+        Some(InstanceStop::Owner(retirement)) => {
+            retire_instance_handoff(manager, tab_id, retirement)
+        }
+        Some(InstanceStop::Waiter(drain)) => drain.wait(),
+        None => {}
     }
 
     Ok(())
@@ -522,31 +811,40 @@ pub fn start_global_sidecar<R: Runtime>(
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,
 ) -> Result<u16, String> {
-    let port = start_tab_sidecar(app_handle, manager, GLOBAL_SIDECAR_ID, None)?;
-    publish_global_port_if_current(manager, port)?;
+    let (port, generation) =
+        start_tab_sidecar_candidate(app_handle, manager, GLOBAL_SIDECAR_ID, None)?;
+    publish_global_port_if_current(manager, GlobalCandidateIdentity { port, generation })?;
     Ok(port)
 }
 
 /// Publish CLI discovery only while the same healthy candidate is still the
-/// manager-owned current Global. Holding the manager lock across validation
-/// and write orders this projection against an explicit stop.
+/// manager-owned current Global. A normal dispatch lease orders the filesystem
+/// projection against replacement/stop without holding the manager during IO.
 fn publish_global_port_if_current(
     manager: &ManagedSidecarManager,
-    port: u16,
+    identity: GlobalCandidateIdentity,
 ) -> Result<(), String> {
-    let mut guard = manager.lock().map_err(|error| error.to_string())?;
-    if !guard.global_sidecar_is_desired() || guard.current_generation(GLOBAL_SIDECAR_ID) == 0 {
-        return Err("Global Sidecar stopped before publishing its CLI port".to_string());
-    }
-    let instance = guard
-        .get_instance_mut(GLOBAL_SIDECAR_ID)
-        .ok_or_else(|| "Global Sidecar candidate disappeared before CLI publish".to_string())?;
-    if instance.port != port || !instance.is_running() {
-        return Err(
-            "Global Sidecar candidate is not current and healthy for CLI publish".to_string(),
-        );
-    }
-    write_global_port_file(port);
+    let lease = {
+        let mut guard = manager.lock().map_err(|error| error.to_string())?;
+        if !guard.global_sidecar_is_desired() {
+            return Err("Global Sidecar stopped before publishing its CLI port".to_string());
+        }
+        let instance = guard
+            .get_instance_mut(GLOBAL_SIDECAR_ID)
+            .ok_or_else(|| "Global Sidecar candidate disappeared before CLI publish".to_string())?;
+        if instance.port != identity.port
+            || instance.generation != identity.generation
+            || !instance.is_running()
+        {
+            return Err(
+                "Global Sidecar candidate is not current and healthy for CLI publish".to_string(),
+            );
+        }
+        DispatchGate::try_acquire(&instance.dispatch_gate)
+            .ok_or_else(|| "Global Sidecar generation is draining before CLI publish".to_string())?
+    };
+    write_global_port_file(identity.port);
+    drop(lease);
     Ok(())
 }
 
@@ -556,6 +854,7 @@ fn publish_global_port_if_current(
 fn restart_global_sidecar_if_desired<R: Runtime>(
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,
+    expected_replacement: Option<GlobalCandidateIdentity>,
 ) -> Result<Option<u16>, String> {
     let _lifecycle_spawn_permit = begin_lifecycle_spawn_permit()?;
     {
@@ -565,14 +864,15 @@ fn restart_global_sidecar_if_desired<R: Runtime>(
         }
     }
 
-    let port = start_tab_sidecar_admitted(
+    let (port, generation) = start_tab_sidecar_admitted(
         app_handle,
         manager,
         GLOBAL_SIDECAR_ID,
         None,
         SidecarProcessRole::Global,
+        expected_replacement,
     )?;
-    publish_global_port_if_current(manager, port)?;
+    publish_global_port_if_current(manager, GlobalCandidateIdentity { port, generation })?;
     Ok(Some(port))
 }
 
@@ -691,7 +991,7 @@ const GLOBAL_MAX_BACKOFF_SECS: u64 = 300;
 enum GlobalRestartSource {
     DesiredMissing,
     PresentDead {
-        port: u16,
+        identity: GlobalCandidateIdentity,
         created_at: std::time::Instant,
     },
 }
@@ -704,7 +1004,7 @@ enum GlobalMonitorCycle<T> {
         result: T,
     },
     InspectPresent {
-        port: u16,
+        identity: GlobalCandidateIdentity,
         created_at: std::time::Instant,
     },
 }
@@ -723,16 +1023,21 @@ where
 {
     match snapshot {
         GlobalMonitorSnapshot::Stopped => GlobalMonitorCycle::Idle,
+        GlobalMonitorSnapshot::BirthPending { .. } => GlobalMonitorCycle::Idle,
         GlobalMonitorSnapshot::DesiredMissing => GlobalMonitorCycle::RestartAttempted {
             source: GlobalRestartSource::DesiredMissing,
             result: restart(GlobalRestartSource::DesiredMissing).await,
         },
         GlobalMonitorSnapshot::Present {
             port,
+            generation,
             process_alive: false,
             created_at,
         } => {
-            let source = GlobalRestartSource::PresentDead { port, created_at };
+            let source = GlobalRestartSource::PresentDead {
+                identity: GlobalCandidateIdentity { port, generation },
+                created_at,
+            };
             GlobalMonitorCycle::RestartAttempted {
                 source,
                 result: restart(source).await,
@@ -740,9 +1045,13 @@ where
         }
         GlobalMonitorSnapshot::Present {
             port,
+            generation,
             process_alive: true,
             created_at,
-        } => GlobalMonitorCycle::InspectPresent { port, created_at },
+        } => GlobalMonitorCycle::InspectPresent {
+            identity: GlobalCandidateIdentity { port, generation },
+            created_at,
+        },
     }
 }
 
@@ -796,11 +1105,12 @@ fn global_restart_attempt_transition(
 async fn run_global_sidecar_restart(
     app_handle: &AppHandle,
     manager: &ManagedSidecarManager,
+    expected_replacement: Option<GlobalCandidateIdentity>,
 ) -> GlobalRestartAttemptResult {
     let app_clone = app_handle.clone();
     let mgr_clone = manager.clone();
     match tokio::task::spawn_blocking(move || {
-        restart_global_sidecar_if_desired(&app_clone, &mgr_clone)
+        restart_global_sidecar_if_desired(&app_clone, &mgr_clone, expected_replacement)
     })
     .await
     {
@@ -918,6 +1228,7 @@ pub async fn monitor_global_sidecar(
     // Reset on a healthy probe or a dead process; a restart only fires once it
     // reaches GLOBAL_HEALTH_FAIL_THRESHOLD.
     let mut consecutive_health_failures: u32 = 0;
+    let mut health_failure_identity: Option<GlobalCandidateIdentity> = None;
     let mut is_first_check = true;
 
     logger::info(
@@ -949,6 +1260,7 @@ pub async fn monitor_global_sidecar(
 
         if is_update_shutdown_in_progress() {
             consecutive_health_failures = 0;
+            health_failure_identity = None;
             consecutive_restart_failures = 0;
             continue;
         }
@@ -972,26 +1284,36 @@ pub async fn monitor_global_sidecar(
                         "[sidecar-global] action=restart source=desired-missing attempt={}",
                         restart_attempt
                     ),
-                    GlobalRestartSource::PresentDead { port, created_at } => ulog_warn!(
-                        "[sidecar-global] action=restart source=present-dead port={} age={:?} attempt={}",
-                        port,
+                    GlobalRestartSource::PresentDead {
+                        identity,
+                        created_at,
+                    } => ulog_warn!(
+                        "[sidecar-global] action=restart source=present-dead port={} generation={} age={:?} attempt={}",
+                        identity.port,
+                        identity.generation,
                         created_at.elapsed(),
                         restart_attempt
                     ),
                 }
-                run_global_sidecar_restart(app_handle, manager).await
+                let expected_replacement = match source {
+                    GlobalRestartSource::DesiredMissing => None,
+                    GlobalRestartSource::PresentDead { identity, .. } => Some(identity),
+                };
+                run_global_sidecar_restart(app_handle, manager, expected_replacement).await
             }
         })
         .await;
 
-        let (port, created_at) = match cycle {
+        let (identity, created_at) = match cycle {
             GlobalMonitorCycle::Idle => {
                 consecutive_health_failures = 0;
+                health_failure_identity = None;
                 consecutive_restart_failures = 0;
                 continue;
             }
             GlobalMonitorCycle::RestartAttempted { result, .. } => {
                 consecutive_health_failures = 0;
+                health_failure_identity = None;
                 settle_global_sidecar_restart(
                     &app_handle,
                     result,
@@ -1000,8 +1322,12 @@ pub async fn monitor_global_sidecar(
                 );
                 continue;
             }
-            GlobalMonitorCycle::InspectPresent { port, created_at } => (port, created_at),
+            GlobalMonitorCycle::InspectPresent {
+                identity,
+                created_at,
+            } => (identity, created_at),
         };
+        let port = identity.port;
 
         // Startup grace period: skip health checks for recently-created instances.
         // During startup the sidecar may be busy with TCP check, Bun init, Plugin Bridge
@@ -1012,6 +1338,7 @@ pub async fn monitor_global_sidecar(
             // Dead candidates were restarted by `run_global_monitor_cycle`.
             // A live candidate in grace has not earned any failures yet.
             consecutive_health_failures = 0;
+            health_failure_identity = None;
             continue;
         }
 
@@ -1020,6 +1347,26 @@ pub async fn monitor_global_sidecar(
         let http_healthy = tokio::task::spawn_blocking(move || check_sidecar_http_health(port))
             .await
             .unwrap_or(false);
+
+        // The probe crossed an await and ports are reusable. Discard its result
+        // unless the exact generation observed before the probe still owns the
+        // canonical slot; stale work must not affect failure streaks or restart.
+        let probe_is_current = manager.lock().is_ok_and(|guard| {
+            guard.instance_identity_is_current(
+                GLOBAL_SIDECAR_ID,
+                identity.port,
+                identity.generation,
+            )
+        });
+        if !probe_is_current {
+            consecutive_health_failures = 0;
+            health_failure_identity = None;
+            continue;
+        }
+
+        if health_failure_identity != Some(identity) {
+            consecutive_health_failures = 0;
+        }
 
         // #236: don't restart a still-alive global on a single transient HTTP
         // blip — require GLOBAL_HEALTH_FAIL_THRESHOLD consecutive misses.
@@ -1030,6 +1377,7 @@ pub async fn monitor_global_sidecar(
             GLOBAL_HEALTH_FAIL_THRESHOLD,
         );
         consecutive_health_failures = next_failures;
+        health_failure_identity = (!http_healthy).then_some(identity);
 
         if !http_healthy && !needs_restart {
             ulog_warn!(
@@ -1049,25 +1397,28 @@ pub async fn monitor_global_sidecar(
             port, true, consecutive_health_failures
         );
 
-        // Mark the existing instance as unhealthy so start_global_sidecar() won't
-        // short-circuit with "already running". Without this, a hung process (alive
-        // but not responding to HTTP) would never be replaced — is_running() checks
-        // the healthy flag first, and start_tab_sidecar returns the old port.
-        {
-            if let Ok(mut guard) = manager.lock() {
-                if let Some(instance) = guard.get_instance_mut(GLOBAL_SIDECAR_ID) {
-                    if instance.port == port {
-                        instance.healthy = false;
-                    }
-                }
-            }
+        // Mark only the exact unhealthy candidate. The restart request carries
+        // its expected port into manager admission, where it atomically owns
+        // the existing gate's replacement lease.
+        let marked_current = manager.lock().is_ok_and(|mut guard| {
+            guard.mark_instance_unhealthy_if_current(
+                GLOBAL_SIDECAR_ID,
+                identity.port,
+                identity.generation,
+            )
+        });
+        if !marked_current {
+            consecutive_health_failures = 0;
+            health_failure_identity = None;
+            continue;
         }
 
         ulog_warn!(
             "[sidecar-global] action=restart source=present-unhealthy attempt={}",
             consecutive_restart_failures.saturating_add(1)
         );
-        let result = run_global_sidecar_restart(&app_handle, &manager).await;
+        let result = run_global_sidecar_restart(&app_handle, &manager, Some(identity)).await;
+        health_failure_identity = None;
         settle_global_sidecar_restart(
             &app_handle,
             result,
@@ -1081,8 +1432,8 @@ pub async fn monitor_global_sidecar(
 mod global_restart_decision_tests {
     use super::{
         global_restart_attempt_transition, global_restart_backoff_secs, global_restart_decision,
-        run_global_monitor_cycle, GlobalMonitorCycle, GlobalRestartAttemptResult,
-        GlobalRestartAttemptStatus, GlobalRestartSource,
+        run_global_monitor_cycle, GlobalCandidateIdentity, GlobalMonitorCycle,
+        GlobalRestartAttemptResult, GlobalRestartAttemptStatus, GlobalRestartSource,
     };
     use crate::sidecar::manager::GlobalMonitorSnapshot;
     use crate::sidecar::SidecarManager;
@@ -1139,12 +1490,22 @@ mod global_restart_decision_tests {
         let first_cycle = run_global_monitor_cycle(
             GlobalMonitorSnapshot::Present {
                 port: 31419,
+                generation: 7,
                 process_alive: false,
                 created_at: std::time::Instant::now(),
             },
             move |source| async move {
                 first_attempts.set(first_attempts.get() + 1);
-                assert!(matches!(source, GlobalRestartSource::PresentDead { .. }));
+                assert!(matches!(
+                    source,
+                    GlobalRestartSource::PresentDead {
+                        identity: GlobalCandidateIdentity {
+                            port: 31419,
+                            generation: 7,
+                        },
+                        ..
+                    }
+                ));
                 GlobalRestartAttemptResult::Failed("candidate #1 readiness failed".to_string())
             },
         )
@@ -1355,6 +1716,28 @@ fn recovery_dispatch_candidates(
     }
 }
 
+async fn begin_dead_session_recovery(
+    manager: &ManagedSidecarManager,
+    session_id: &str,
+) -> Result<(), String> {
+    let drain = {
+        let mut guard = manager.lock().map_err(|error| error.to_string())?;
+        guard.prepare_session_sidecar_replacement(session_id)
+    };
+    let Some(drain) = drain else {
+        return Ok(());
+    };
+    let drain = tauri::async_runtime::spawn_blocking(move || {
+        drain.wait();
+        drain
+    })
+    .await
+    .map_err(|error| format!("Session recovery drain task failed: {error:?}"))?;
+    let mut guard = manager.lock().map_err(|error| error.to_string())?;
+    guard.finish_session_sidecar_replacement(&drain);
+    Ok(())
+}
+
 #[cfg(test)]
 mod session_recovery_dispatch_tests {
     use super::recovery_dispatch_candidates;
@@ -1382,6 +1765,7 @@ mod session_recovery_dispatch_tests {
             recovery_dispatch_candidates(&mut manager, now, false),
             vec!["session-a".to_string()]
         );
+        manager.begin_session_sidecar_replacement("session-a");
         let epoch = manager
             .recovering_sidecars
             .get("session-a")
@@ -1438,6 +1822,15 @@ pub async fn monitor_session_sidecars(
             // Keep it across take → blocking restart → install/restore so no
             // delete can observe the deliberate manager gap.
             let _lifecycle = acquire_session_lifecycle(&[&session_id]).await;
+
+            if let Err(error) = begin_dead_session_recovery(&manager, &session_id).await {
+                ulog_warn!(
+                    "[sidecar-recovery] action=drain-failed session={} error={}",
+                    session_id,
+                    error
+                );
+                continue;
+            }
 
             let restart_identity = {
                 let guard = match manager.lock() {

@@ -3,7 +3,7 @@
 // Top-level 容器：组合 useAgentStatusState 派生 + 收起态长条 + 展开态 sections。
 // 自带可见性生命周期（首次淡入、归零延迟 1.5s 淡出，再触发立即淡入）。
 
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronUp, OctagonX, StopCircle } from 'lucide-react';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -41,11 +41,36 @@ const AgentStatusPanel = memo(function AgentStatusPanel({ containerRef, onJumpTo
   // derived DOM only changes when todos/subagents do (cost absorbed by React).
   const tab = useTabStateOptional();
   const messages = tab?.messages ?? EMPTY_MESSAGES;
-  const state = useAgentStatusState(messages, tab?.agentPlanTodos ?? null, tab?.sessionId ?? null);
+  const turnIsLive = tab?.sessionState === 'starting'
+    || tab?.sessionState === 'running'
+    || tab?.sessionState === 'stopping';
+  const [armedSessionId, setArmedSessionId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!turnIsLive && !tab?.isSessionLoading) return;
+    const raf = requestAnimationFrame(() => {
+      setArmedSessionId(tab?.isSessionLoading ? null : tab?.sessionId ?? null);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [tab?.isSessionLoading, tab?.sessionId, turnIsLive]);
+  const tail = messages.at(-1);
+  const lifecycleMessageId = tab?.streamingMessage?.id
+    ?? (!turnIsLive
+      && !tab?.isSessionLoading
+      && armedSessionId === (tab?.sessionId ?? null)
+      && tail?.role === 'assistant'
+      ? tail.id
+      : null);
+  const state = useAgentStatusState(
+    messages,
+    tab?.agentPlanTodos ?? null,
+    tab?.sessionId ?? null,
+    lifecycleMessageId,
+  );
   // hasContent：todos 全部 completed 时视为「已结束」→ 进入 fade-out
   // （对齐 PRD §8.1 #6 验收：「5/5 ☑ 后 1.5s 整段淡出」）
   const todosActive = state.todos.length > 0 && state.todos.some(t => t.status !== 'completed');
-  const hasContent = todosActive || state.subagents.length > 0;
+  const hasActiveContent = todosActive || state.summary.subagentRunning > 0;
+  const hasDisplayContent = state.todos.length > 0 || state.subagents.length > 0;
 
   // 可见性状态机：内容出现 → 立即 setMounted(true) + setOpacity(1)
   // 内容归零 → 立即 setOpacity(0)，1.5s 后 setMounted(false)（卸载 DOM 释放内存）
@@ -60,7 +85,7 @@ const AgentStatusPanel = memo(function AgentStatusPanel({ containerRef, onJumpTo
   const lingerTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
-    if (hasContent) {
+    if (hasActiveContent || (hasDisplayContent && !mounted)) {
       // 取消任何待执行的 fade-out + linger 计时器
       if (fadeTimerRef.current) {
         clearTimeout(fadeTimerRef.current);
@@ -96,6 +121,7 @@ const AgentStatusPanel = memo(function AgentStatusPanel({ containerRef, onJumpTo
       lingerTimerRef.current = undefined;
       setOpaque(false);
       fadeTimerRef.current = setTimeout(() => {
+        setArmedSessionId(null);
         setMounted(false);
         fadeTimerRef.current = undefined;
       }, FADE_OUT_DELAY_MS);
@@ -110,7 +136,7 @@ const AgentStatusPanel = memo(function AgentStatusPanel({ containerRef, onJumpTo
         fadeTimerRef.current = undefined;
       }
     };
-  }, [hasContent, mounted]);
+  }, [hasActiveContent, hasDisplayContent, mounted]);
 
   // 展开/收起状态（Tab 生命周期内保持；不持久化）
   const [expanded, setExpanded] = useState(false);
@@ -127,7 +153,8 @@ const AgentStatusPanel = memo(function AgentStatusPanel({ containerRef, onJumpTo
     // queue 的 z-20 撞车都被布局消化了，输入框高度变化（图片附件、textarea
     // 长大、cron status bar）也不再让 Todo 偏离 queue。
     <div
-      aria-hidden={!hasContent}
+      aria-hidden={!opaque}
+      inert={!opaque}
       className={`flex w-[260px] flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)]/95 shadow-lg backdrop-blur-md transition-opacity duration-200 [&:not(:only-child)]:mr-auto ${
         opaque ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'
       }`}
@@ -162,7 +189,7 @@ interface AgentStatusBarProps {
 const AgentStatusBar = memo(function AgentStatusBar({ summary, expanded, onToggle }: AgentStatusBarProps) {
   const { t } = useTranslation('app');
   const hasTodos = summary.todoTotal > 0;
-  const hasSubagents = summary.subagentRunning > 0;
+  const hasSubagents = summary.subagentTotal > 0;
 
   return (
     <button
@@ -182,8 +209,16 @@ const AgentStatusBar = memo(function AgentStatusBar({ summary, expanded, onToggl
 
       {hasSubagents && (
         <span className="flex items-center gap-1.5 tabular-nums">
-          Agents {summary.subagentRunning}
-          <SubagentRunningIcon />
+          Agents {summary.subagentTotal}
+          {summary.subagentRunning > 0 ? (
+            <SubagentRunningIcon />
+          ) : summary.subagentTerminalStatus === 'failed' ? (
+            <OctagonX className="size-3.5 text-[var(--error)]" />
+          ) : summary.subagentTerminalStatus === 'interrupted' ? (
+            <StopCircle className="size-3.5 text-[var(--warning)]" />
+          ) : (
+            <CheckCircle2 className="size-3.5 text-[var(--success)]" />
+          )}
         </span>
       )}
 

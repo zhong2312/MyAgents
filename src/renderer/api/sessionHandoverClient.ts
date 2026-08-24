@@ -4,8 +4,9 @@
  *
  * Two operations:
  *   1. migrateChannelToNewSession — when desktop user clicks "+新对话" on a
- *      channel-bound session, the channel binding follows the new session.
- *      Equivalent to the IM bot `/new` command, but initiated from desktop.
+ *      channel-bound session, the participating Tab and channel binding move
+ *      together. This is intentionally different from IM `/new`, which only
+ *      rotates the channel binding.
  *
  *   2. handoverSessionToChannel — when desktop user clicks the 📤 button on
  *      a pure desktop session, the chosen channel's binding is replaced to
@@ -25,24 +26,28 @@ async function getInvoke() {
 }
 
 export interface MigrateChannelArgs {
-    oldSessionId: string;
-    /** session_key from `peer_sessions`, format `agent:{agentId}:{platform}:{type}:{id}` */
-    sessionKey: string;
+  oldSessionId: string;
+  /** Exact desktop owner participating in the joint migration. */
+  tabId: string;
+  /** session_key from `peer_sessions`, format `agent:{agentId}:{platform}:{type}:{id}` */
+  sessionKey: string;
 }
 
 /**
- * Atomically rotate the IM channel binding from `oldSessionId` to a freshly
- * generated session id. Returns the new session id (caller should reload UI
- * onto it). Server-side this calls `router.reset_session(session_key)` which
- * does the heavy lifting (`/api/im/session/new` on sidecar +
- * `cmd_upgrade_session_id`).
+ * Migrate exactly `Tab(tabId) + Agent(sessionKey)` from `oldSessionId` to a
+ * freshly generated Session. Rust rejects any additional owner before Node
+ * changes Runtime identity.
  */
 export async function migrateChannelToNewSession(args: MigrateChannelArgs): Promise<string | null> {
     if (!isTauriEnvironment()) return null;
     const invoke = await getInvoke();
     const result = await invoke<{ newSessionId: string }>(
         'cmd_session_new_with_surface_migration',
-        { oldSessionId: args.oldSessionId, sessionKey: args.sessionKey },
+        {
+            oldSessionId: args.oldSessionId,
+            tabId: args.tabId,
+            sessionKey: args.sessionKey,
+        },
     );
     return result?.newSessionId ?? null;
 }

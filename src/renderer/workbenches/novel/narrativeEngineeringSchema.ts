@@ -151,15 +151,14 @@ export const narrativeSimulationConstraintSchema = z
       start !== null &&
       start !== undefined &&
       end !== null &&
-      end !== undefined
+      end !== undefined &&
+      BigInt(start) > BigInt(end)
     ) {
-      if (BigInt(start) > BigInt(end)) {
-        context.addIssue({
-          code: "custom",
-          path: ["timeWindow", "endSortKey"],
-          message: "时间窗结束坐标不能早于开始坐标",
-        });
-      }
+      context.addIssue({
+        code: "custom",
+        path: ["timeWindow", "endSortKey"],
+        message: "时间窗结束坐标不能早于开始坐标",
+      });
     }
   });
 export type NarrativeSimulationConstraint = z.infer<
@@ -318,6 +317,8 @@ export const narrativeDirectorySchema = z
     description: textSchema,
     status: narrativePlanStatusSchema,
     order: z.number().int().nonnegative(),
+    /** 本目录直接承载的章节规划额度；有子目录时必须由叶子目录承载。 */
+    plannedChapterCount: z.number().int().nonnegative().default(0),
     simulationConstraint: narrativeSimulationConstraintSchema.optional(),
   })
   .strict();
@@ -392,7 +393,7 @@ export type SimulationProposalStatus = z.infer<
   typeof simulationProposalStatusSchema
 >;
 
-export const simulationProposalSchema = z
+const legacySimulationProposalSchema = z
   .object({
     id: idSchema,
     title: z.string().trim().min(1),
@@ -413,7 +414,61 @@ export const simulationProposalSchema = z
   })
   .strict();
 
+export type LegacySimulationProposal = z.infer<
+  typeof legacySimulationProposalSchema
+>;
+
+const storyProposalNodeSchema = z
+  .object({
+    order: z.number().int().nonnegative(),
+    title: z.string().trim().min(1),
+    summary: textSchema,
+    evidenceEventIds: uniqueIdsSchema,
+  })
+  .strict();
+
+/** 历史存档中的故事候选节点，仅用于读取旧项目，不再由生产流程创建。 */
+export type LegacyStoryProposalNode = z.infer<typeof storyProposalNodeSchema>;
+
+/** 历史故事候选结构，仅用于读取旧项目，不再由生产流程创建。 */
+export const legacyStoryProposalSchema = z
+  .object({
+    kind: z.literal("world-story"),
+    id: idSchema,
+    title: z.string().trim().min(1),
+    premise: textSchema,
+    description: textSchema,
+    sourceRunId: idSchema,
+    sourceBranchId: idSchema,
+    sourceRoundIds: uniqueIdsSchema,
+    sourceEventIds: uniqueIdsSchema,
+    participantIds: uniqueIdsSchema,
+    locationIds: uniqueIdsSchema,
+    consequences: z.array(textSchema).max(12),
+    openQuestions: z.array(textSchema).max(12),
+    sourceChapterPlanId: idSchema.nullable(),
+    sourceManuscriptChapterId: idSchema.nullable(),
+    nodes: z.array(storyProposalNodeSchema).max(24),
+    status: simulationProposalStatusSchema,
+    createdAt: z.string().datetime(),
+    reviewedAt: z.string().datetime().nullable(),
+  })
+  .strict();
+
+export type LegacyStoryProposal = z.infer<typeof legacyStoryProposalSchema>;
+
+export const simulationProposalSchema = z.union([
+  legacySimulationProposalSchema,
+  legacyStoryProposalSchema,
+]);
+
 export type SimulationProposal = z.infer<typeof simulationProposalSchema>;
+
+export function isLegacyStoryProposal(
+  proposal: SimulationProposal,
+): proposal is LegacyStoryProposal {
+  return "kind" in proposal && proposal.kind === "world-story";
+}
 
 const legacyTrackFieldsSchema = z
   .object({
@@ -749,6 +804,7 @@ const narrativeEngineeringV3Schema = z
     arcs: z.array(storyArcSchema),
     directories: z.array(narrativeDirectorySchema),
     chapters: z.array(narrativeChapterPlanSchema),
+    simulationProposals: z.array(simulationProposalSchema).optional(),
     legacyArchive: legacyArchiveSchema.optional(),
   })
   .strict();
@@ -889,6 +945,7 @@ function migrateLegacyEngineering(
         description: node.summary,
         status: node.status,
         order: node.order,
+        plannedChapterCount: 0,
       },
     ];
   });
@@ -1018,7 +1075,7 @@ function migrateV3Engineering(
   return narrativeEngineeringSchema.parse({
     ...legacy,
     schemaVersion: NARRATIVE_ENGINEERING_SCHEMA_VERSION,
-    simulationProposals: [],
+    simulationProposals: legacy.simulationProposals ?? [],
   });
 }
 

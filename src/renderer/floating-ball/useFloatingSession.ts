@@ -29,11 +29,16 @@ import { parsePartialJson } from '@/utils/parsePartialJson';
 import { enqueuePermissionRequest, peekPermissionRequest, removePermissionRequest } from '@/utils/permissionQueue';
 import { i18n } from '@/i18n';
 import { isSubagentContainerTool } from '@/components/tools/toolBadgeConfig';
+import {
+    applySubagentLifecycleToContent,
+    isSubagentContainerRunning,
+} from '@/components/tools/subagentActivity';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { localDate } from '../../shared/logTime';
 import { buildFloatingBallContextReminder, stripLeadingSystemReminder } from '../../shared/systemReminder';
 import type { AskUserQuestionRequest } from '../../shared/types/askUserQuestion';
 import type { ExitPlanModeRequest } from '../../shared/types/planMode';
+import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
 import type { FbPendingKind } from './petStateMapper';
 import { resolveBoundWorkspace, type FbProject } from './workspaceBinding';
 import { SESSION_MIGRATED_EVENT, type FloatingBallSessionMigratedPayload } from './sessionBinding';
@@ -217,7 +222,7 @@ function mergeAttachmentsByPendingId(
     return merged;
 }
 
-function deriveActivities(message: FbAssistantMsg | null): FbActivity[] {
+export function deriveActivities(message: FbAssistantMsg | null): FbActivity[] {
     if (!message) return [];
     return message.content.flatMap((block, index): FbActivity[] => {
         if (block.type === 'thinking') {
@@ -233,7 +238,9 @@ function deriveActivities(message: FbAssistantMsg | null): FbActivity[] {
             return [{
                 id: block.tool.id,
                 kind: 'tool',
-                running: Boolean(block.tool.isLoading),
+                running: isSubagentContainerTool(block.tool.name)
+                    ? isSubagentContainerRunning(block.tool)
+                    : Boolean(block.tool.isLoading),
                 startedAt: block.tool.taskStartTime ?? 0,
                 durationMs: block.tool.resultMeta?.durationMs ?? undefined,
                 tool: block.tool,
@@ -241,6 +248,20 @@ function deriveActivities(message: FbAssistantMsg | null): FbActivity[] {
         }
         return [];
     });
+}
+
+export function applyFloatingSubagentLifecycle(
+    message: FbAssistantMsg,
+    parentToolUseId: string,
+    lifecycle: SubagentLifecycle,
+): FbAssistantMsg {
+    const content = applySubagentLifecycleToContent(
+        message.content,
+        parentToolUseId,
+        lifecycle,
+    );
+    if (!content || content === message.content) return message;
+    return { ...message, content };
 }
 
 /** Best-effort text extraction from SessionMessage.content (JSON blocks or plain). */
@@ -874,6 +895,28 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     });
                     break;
                 }
+                case 'chat:subagent-status': {
+                    const payload = data as {
+                        parentToolUseId?: string;
+                        lifecycle?: SubagentLifecycle;
+                    } | null;
+                    if (!payload?.parentToolUseId || !payload.lifecycle) break;
+                    replaceLiveMessage((current) => current
+                        ? applyFloatingSubagentLifecycle(
+                            current,
+                            payload.parentToolUseId!,
+                            payload.lifecycle!,
+                        )
+                        : current);
+                    setMessages((prev) => prev.map(message => message.role === 'ai'
+                        ? applyFloatingSubagentLifecycle(
+                            message,
+                            payload.parentToolUseId!,
+                            payload.lifecycle!,
+                        )
+                        : message));
+                    break;
+                }
                 case 'chat:message-complete': {
                     finalizeStream();
                     setBusy(false);
@@ -1044,6 +1087,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             isCurrentInteractiveEvent,
             markTextStopped,
             modeRef,
+            replaceLiveMessage,
             updateLiveContent,
             updateToolBlock,
         ],

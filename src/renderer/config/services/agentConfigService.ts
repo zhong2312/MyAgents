@@ -39,6 +39,7 @@ import {
   type ResolvedAgentWorkspaceProjection,
 } from '../../../shared/agentWorkspaceIdentity';
 import { readLegacyAgentWorkspacePath, readLegacyImBotWorkspacePath } from '../../../shared/legacyAgentWorkspace';
+import { buildProactiveAgentTogglePatch } from '../../../shared/proactiveAgentPolicy';
 
 export {
   buildAgentForProject,
@@ -660,28 +661,20 @@ function restoreAgentFieldsIfUnchanged(
 
 async function projectLiveAgentConfigPatch(
   agentId: string,
-  patch: Partial<Omit<AgentConfig, 'id'>>,
+  _patch: Partial<Omit<AgentConfig, 'id'>>,
   result: AgentConfigDiskPatchResult,
   options: { memoryAutoUpdateReconcileFailure?: 'defer' | 'throw' },
 ): Promise<void> {
   if (result.updated) {
     // Live projection deliberately happens after every disk-intent lock has
-    // been released. Runtime rotation/network waits are not persistence work.
-    await syncAgentRuntime(agentId, result.effectivePatch, result.resolvedMcpJson);
-    if ('memoryAutoUpdate' in patch || 'enabled' in patch) {
-      try {
-        const projection = await resolvePersistedAgentWorkspace(result.updated.id);
-        await configureMemoryAutoUpdateTaskForAgent(result.updated, projection.workspacePath);
-      } catch (error) {
-        if (options.memoryAutoUpdateReconcileFailure === 'throw') {
-          throw error;
-        }
-        // Composite operations such as enabling an Agent already committed
-        // their primary disk intent. Startup reconciliation converges the
-        // managed Task without turning that primary operation into a failure.
-        console.warn('[agentConfigService] Memory auto-update Task reconciliation deferred:', error);
-      }
-    }
+    // been released. Rust owns both hot runtime projection and managed Memory
+    // task reconciliation so GUI and Admin/CLI share one completion result.
+    await syncAgentRuntime(
+      agentId,
+      result.effectivePatch,
+      result.resolvedMcpJson,
+      options.memoryAutoUpdateReconcileFailure ?? 'defer',
+    );
   }
 }
 
@@ -799,6 +792,44 @@ export async function patchAgentConfig(
 }
 
 /**
+ * Explicit user intent for the Proactive Agent master switch. The policy is
+ * derived inside the disk-latest config transaction so a concurrent child
+ * edit cannot be overwritten by a stale React snapshot.
+ */
+export async function setProactiveAgentEnabled(
+  agentId: string,
+  enabled: boolean,
+): Promise<AgentConfig | undefined> {
+  if (enabled) await assertAgentWorkspaceNotArchived(agentId);
+
+  let result: AgentConfigDiskPatchResult = {
+    configChanged: false,
+    effectivePatch: {},
+  };
+  await atomicModifyConfig(config => {
+    const agents = [...(config.agents ?? [])];
+    const index = agents.findIndex(agent => agent.id === agentId);
+    if (index < 0) return config;
+    const previous = agents[index];
+    const patch = buildProactiveAgentTogglePatch(previous, enabled);
+    const updated = { ...previous, ...patch };
+    agents[index] = updated;
+    result = {
+      previous,
+      updated,
+      configChanged: JSON.stringify(updated) !== JSON.stringify(previous),
+      effectivePatch: patch,
+    };
+    return { ...config, agents };
+  });
+
+  await projectLiveAgentConfigPatch(agentId, result.effectivePatch, result, {
+    memoryAutoUpdateReconcileFailure: 'throw',
+  });
+  return result.updated;
+}
+
+/**
  * Commit one renderer-owned Agent default together with its Project mirror.
  * Both disk writes finish under the shared intent lock; hot reload happens
  * only after release. A failed Project write conditionally restores the exact
@@ -912,8 +943,10 @@ export function patchAgentChannelOpenClawConfig(
   }));
 }
 
-export async function disableAgentAndStopChannels(agent: AgentConfig): Promise<number> {
+/** Stop Channel runtime for workspace archival without changing Channel intent. */
+export async function stopAgentChannelsForLifecycle(agent: AgentConfig): Promise<number> {
   let stoppedCount = 0;
+  const failures: string[] = [];
   const { isTauriEnvironment } = await import('@/utils/browserMock');
   if (isTauriEnvironment()) {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -921,39 +954,23 @@ export async function disableAgentAndStopChannels(agent: AgentConfig): Promise<n
       try {
         await invoke('cmd_stop_agent_channel', { agentId: agent.id, channelId: ch.id });
         stoppedCount++;
-      } catch {
-        // Channel may already be stopped; persisting enabled=false below is the durable intent.
+      } catch (error) {
+        failures.push(`${ch.id}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }
-  await patchAgentConfig(agent.id, { enabled: false });
+  if (failures.length > 0) {
+    throw new Error(`Failed to stop ${failures.length} Agent Channel(s): ${failures.join('; ')}`);
+  }
   return stoppedCount;
 }
 
-export async function enableAgentAndStartChannels(
+/** Archive/unarchive projection; deliberately bypasses the user batch policy. */
+export function setAgentEnabledForLifecycle(
   agentId: string,
-  patch: Partial<Omit<AgentConfig, 'id'>> = {},
-): Promise<number> {
-  await patchAgentConfig(agentId, { ...patch, enabled: true });
-
-  const { isTauriEnvironment } = await import('@/utils/browserMock');
-  if (!isTauriEnvironment()) return 0;
-
-  const latestConfig = await loadAppConfig();
-  const latestAgent = getAgentById(latestConfig, agentId);
-  if (!latestAgent) return 0;
-
-  const startable = (latestAgent.channels ?? []).filter(ch => ch.enabled && ch.setupCompleted);
-  let startedCount = 0;
-  for (const ch of startable) {
-    try {
-      await invokeStartAgentChannel(latestAgent, ch);
-      startedCount++;
-    } catch (e) {
-      console.warn(`[agentConfigService] Auto-start channel ${ch.id} failed:`, e);
-    }
-  }
-  return startedCount;
+  enabled: boolean,
+): Promise<AgentConfig | undefined> {
+  return patchAgentConfig(agentId, { enabled });
 }
 
 /**
@@ -964,6 +981,7 @@ async function syncAgentRuntime(
   agentId: string,
   patch: Partial<Omit<AgentConfig, 'id'>>,
   preResolvedMcpJson?: string,
+  failureMode: 'defer' | 'throw' = 'defer',
 ): Promise<void> {
   const { isTauriEnvironment } = await import('@/utils/browserMock');
   if (!isTauriEnvironment()) return;
@@ -971,6 +989,11 @@ async function syncAgentRuntime(
   // Build a runtime patch with only the fields that changed
   const runtimePatch: Record<string, unknown> = {};
   let hasRuntimeChanges = false;
+
+  if ('enabled' in patch) {
+    runtimePatch.enabled = patch.enabled;
+    hasRuntimeChanges = true;
+  }
 
   if ('model' in patch) {
     runtimePatch.model = patch.model ?? null;
@@ -1026,6 +1049,7 @@ async function syncAgentRuntime(
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('cmd_update_agent_config', { agentId, patch: runtimePatch });
   } catch (e) {
+    if (failureMode === 'throw') throw e;
     // Agent may not be running — that's fine, config is already persisted to disk
     console.debug('[agentConfigService] Runtime sync skipped (agent not running?):', e);
   }
@@ -1043,7 +1067,9 @@ export async function configureMemoryAutoUpdateTaskForAgent(
     request: {
       agentId: agent.id,
       workspacePath,
-      memoryAutoUpdate: agent.memoryAutoUpdate,
+      memoryAutoUpdate: agent.memoryAutoUpdate
+        ? { ...agent.memoryAutoUpdate, enabled: agent.enabled && agent.memoryAutoUpdate.enabled }
+        : undefined,
       heartbeat: agent.heartbeat,
     },
   });
@@ -1099,7 +1125,7 @@ export async function configureMemoryEvolutionTasksForAgent(
       mcpEnabledServers: agent.mcpEnabledServers,
       memoryAutoUpdate: agent.memoryAutoUpdate,
       heartbeat: agent.heartbeat,
-      enabled,
+      enabled: agent.enabled && enabled,
     },
   });
 }
@@ -1196,8 +1222,9 @@ export async function invokeStartAgentChannel(
  *  - Transient stop+restart (e.g. credential refresh) — call cmd_stop_agent_channel
  *    + invokeStartAgentChannel directly, keep enabled untouched
  *  - Channel deletion — remove from channels[] in a patchAgentConfig call
- *  - Agent-level disable — patch `agent.enabled = false`; the Rust
- *    auto_start_all_enabled_agent_channels gate handles per-channel rollup
+ *  - Proactive Agent toggle — it is independent from Channel lifecycle
+ *  - Workspace archive — call `stopAgentChannelsForLifecycle`; archive is the
+ *    separate safety gate and must not mutate `channel.enabled`
  *
  * Implementation notes (review-by-codex v1 → v2):
  *  - Takes IDs (not an `agent` snapshot) so concurrent channel additions /

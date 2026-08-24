@@ -55,7 +55,10 @@ fn lookup_live_port(manager: &ManagedSidecarManager, session_id: &str) -> Option
     let guard = manager.lock().ok()?;
     let sidecar = guard.get_session_sidecar(session_id)?;
     match sidecar.state {
-        SidecarState::Healthy => Some((sidecar.port, "healthy".to_string())),
+        SidecarState::Healthy if sidecar.is_reusable() => {
+            Some((sidecar.port, "healthy".to_string()))
+        }
+        SidecarState::Healthy => None,
         SidecarState::Starting => Some((sidecar.port, "starting".to_string())),
         SidecarState::Dead => None,
     }

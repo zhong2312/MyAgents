@@ -87,4 +87,31 @@ describe("ResearchLibrary", () => {
       await screen.findByRole("button", { name: "外部资料" }),
     ).toBeVisible();
   });
+
+  it("搜索会匹配 Markdown 正文内容", async () => {
+    const storage = new NovelMemoryStorage({
+      "research/index.json":
+        '{"schemaVersion":1,"sources":[{"id":"source-1","path":"research/notes/考据.md","title":"考据","createdAt":"2026-01-01T00:00:00.000Z"},{"id":"source-2","path":"research/notes/风俗.md","title":"风俗","createdAt":"2026-01-02T00:00:00.000Z"}]}',
+      "research/trash/index.json": '{"schemaVersion":1,"items":[]}',
+      "research/notes/考据.md": "# 考据\n\n关于城墙材料的历史记录",
+      "research/notes/风俗.md": "# 风俗\n\n节庆中的灯火与饮食习惯",
+    });
+
+    render(
+      <ResearchLibrary
+        storage={storage}
+        projectTitle="测试小说"
+        isActive
+        registerNavigationGuard={() => () => undefined}
+      />,
+    );
+
+    await screen.findByRole("button", { name: "考据" });
+    fireEvent.change(screen.getByPlaceholderText("搜索标题、路径或正文"), {
+      target: { value: "城墙材料" },
+    });
+
+    expect(screen.getByRole("button", { name: "考据" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "风俗" })).toBeNull();
+  });
 });

@@ -64,7 +64,9 @@ import LinkContextMenuProvider from "@/components/LinkContextMenuProvider";
 import TabBar from "@/components/TabBar";
 import { SessionDeletionContext } from "@/context/SessionDeletionContext";
 import TabProvider from "@/context/TabProvider";
-import WorkbenchAgentSurfaceHost from "@/workbench-host/WorkbenchAgentSurfaceHost";
+import WorkbenchAgentSurfaceHost, {
+  workbenchAgentTaskDockHostId,
+} from "@/workbench-host/WorkbenchAgentSurfaceHost";
 import {
   clearWorkbenchAgentConversation,
   loadWorkbenchAgentConversation,
@@ -120,6 +122,7 @@ import {
   createNewTab,
   getFolderName,
   buildChatFlipPatch,
+  buildHistoryChatFlipPatch,
   generateTabId,
   isWorkbenchAgentSurfaceTab,
   MAX_TABS,
@@ -204,9 +207,10 @@ import {
 } from "@/utils/notificationBadgeRegistry";
 import { applyTerminalSessionToTabs } from "@/utils/sessionTermination";
 import {
+  createSessionResourceTransitionState,
   deleteSessionThroughAppOwner,
+  isSessionOpening,
   tryClaimSessionResourceTransition,
-  type SessionResourceTransitionClaim,
 } from "@/utils/sessionDeletionCoordinator";
 import { getSessionDisplayText } from "@/utils/sessionDisplay";
 import { listenWithCleanup } from "@/utils/tauriListen";
@@ -236,7 +240,12 @@ import {
 import type { SessionMetadata } from "@/api/sessionClient";
 import type { RuntimeSource, RuntimeType } from "../shared/types/runtime";
 import {
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  getManagedCodexProviderReadiness,
+} from "../shared/config-types";
+import {
   agentUsesManagedCodexProvider,
+  createRuntimeBackedProviderIdentity,
   isRuntimeBackedProvider,
   toProviderExecutionIntent,
   type RuntimeBackedProviderIdentity,
@@ -478,10 +487,6 @@ interface TabContentProps {
    * tabs' SSE/poll updates → 1-2s blank; see openNewTabDeferred.)
    */
   isDeferredMount: boolean;
-  onLauncherWorkspaceSelectionChange: (
-    tabId: string,
-    workspacePath: string | null,
-  ) => void;
   settingsInitialSection: string | undefined;
   capabilityInitialSection: CapabilitySection;
   capabilityNavigationNonce: number;
@@ -612,7 +617,6 @@ export const MemoizedTabContent = memo(
     onSubscribeWorkbenchAiRunProgress,
     onProvideWorkbenchSearch,
     onProvideWorkbenchProjection,
-    onLauncherWorkspaceSelectionChange,
     settingsInitialSection,
     capabilityInitialSection,
     capabilityNavigationNonce,
@@ -633,11 +637,6 @@ export const MemoizedTabContent = memo(
     taskCenterCurrentSessionId,
   }: TabContentProps) {
     const kind = tabContentKind(tab, isDeferredMount);
-    const handleLauncherWorkspaceChange = useCallback(
-      (workspacePath: string | null) =>
-        onLauncherWorkspaceSelectionChange(tab.id, workspacePath),
-      [onLauncherWorkspaceSelectionChange, tab.id],
-    );
     const claimTabSessionOpeningTransition = useCallback(
       (sessionId: string) => claimSessionOpeningTransition(sessionId, tab.id),
       [claimSessionOpeningTransition, tab.id],
@@ -731,27 +730,33 @@ export const MemoizedTabContent = memo(
             <Space isActive={isActive} />
           </Suspense>
         ) : kind === "workbench" ? (
-          <Suspense fallback={PAGE_FALLBACK}>
-            <WorkbenchShell
-              target={tab.workbench}
-              workspacePath={tab.agentDir ?? ""}
-              isActive={isActive}
-              onNavigate={(route) => onUpdateWorkbenchRoute?.(tab.id, route)}
-              onNavigationGuardChange={(guard) =>
-                onRegisterWorkbenchNavigationGuard?.(tab.id, guard)
-              }
-              onOpenAgentSession={
-                onOpenWorkbenchAgentSession
-                  ? openWorkbenchAgentSession
-                  : undefined
-              }
-              onRunAi={onRunWorkbenchAi}
-              onCancelAiRun={onCancelWorkbenchAiRun}
-              onSubscribeAiRunProgress={onSubscribeWorkbenchAiRunProgress}
-              onProvideSearch={onProvideWorkbenchSearch}
-              onProvideProjection={onProvideWorkbenchProjection}
-            />
-          </Suspense>
+          <div
+            id={workbenchAgentTaskDockHostId(tab.id)}
+            className="relative h-full min-h-0"
+            data-workbench-agent-task-dock-host
+          >
+            <Suspense fallback={PAGE_FALLBACK}>
+              <WorkbenchShell
+                target={tab.workbench}
+                workspacePath={tab.agentDir ?? ""}
+                isActive={isActive}
+                onNavigate={(route) => onUpdateWorkbenchRoute?.(tab.id, route)}
+                onNavigationGuardChange={(guard) =>
+                  onRegisterWorkbenchNavigationGuard?.(tab.id, guard)
+                }
+                onOpenAgentSession={
+                  onOpenWorkbenchAgentSession
+                    ? openWorkbenchAgentSession
+                    : undefined
+                }
+                onRunAi={onRunWorkbenchAi}
+                onCancelAiRun={onCancelWorkbenchAiRun}
+                onSubscribeAiRunProgress={onSubscribeWorkbenchAiRunProgress}
+                onProvideSearch={onProvideWorkbenchSearch}
+                onProvideProjection={onProvideWorkbenchProjection}
+              />
+            </Suspense>
+          </div>
         ) : (
           <TabProvider
             tabId={tab.id}
@@ -769,76 +774,97 @@ export const MemoizedTabContent = memo(
             }
             claimSessionOpeningTransition={claimTabSessionOpeningTransition}
           >
-            <Suspense fallback={<ChatBootOverlay />}>
-              <Chat
-                compactAgentSurface={
-                  tab.workbenchAgentSurface?.presentation ===
-                    "compact-review" ||
-                  tab.workbenchAgentSurface?.presentation === "embedded-review"
-                }
-                isWindowFocused={isWindowFocused}
-                workbenchSurface={
-                  tab.workbenchAgentSurface?.workbenchId === NOVEL_WORKBENCH_ID
-                    ? {
-                        promptId: tab.workbenchAgentSurface.bootstrap?.promptId,
-                        title: tab.workbenchAgentSurface.bootstrap?.title,
-                        promptContent:
-                          tab.workbenchAgentSurface.bootstrap?.systemPrompt,
-                        toolset: tab.workbenchAgentSurface.toolset,
-                        embedded:
-                          tab.workbenchAgentSurface.embeddedSurfaceId !==
-                          undefined,
-                      }
-                    : undefined
-                }
-                onOpenSession={(sessionId, title, historyEntrySource) =>
-                  onOpenHistorySessionInCurrentTab(
-                    tab.id,
+            {kind === "deferred-chat" ? (
+              <ChatBootOverlay />
+            ) : (
+              <Suspense fallback={<ChatBootOverlay />}>
+                <Chat
+                  compactAgentSurface={
+                    tab.workbenchAgentSurface?.presentation ===
+                      "compact-review" ||
+                    tab.workbenchAgentSurface?.presentation ===
+                      "embedded-review"
+                  }
+                  isWindowFocused={isWindowFocused}
+                  workbenchSurface={
+                    tab.workbenchAgentSurface?.workbenchId ===
+                    NOVEL_WORKBENCH_ID
+                      ? {
+                          promptId:
+                            tab.workbenchAgentSurface.bootstrap?.promptId,
+                          title: tab.workbenchAgentSurface.bootstrap?.title,
+                          promptContent:
+                            tab.workbenchAgentSurface.bootstrap?.systemPrompt,
+                          toolset: tab.workbenchAgentSurface.toolset,
+                          embedded:
+                            tab.workbenchAgentSurface.embeddedSurfaceId !==
+                            undefined,
+                        }
+                      : undefined
+                  }
+                  onOpenSession={(sessionId, title, historyEntrySource) =>
+                    onOpenHistorySession(
+                      tab.id,
+                      sessionId,
+                      title,
+                      historyEntrySource,
+                    )
+                  }
+                  onOpenSessionInCurrentTab={(
                     sessionId,
                     title,
                     historyEntrySource,
-                  )
-                }
-                onOpenSessionInNewTab={(sessionId, title) =>
-                  onOpenHistorySession(
-                    tab.id,
-                    sessionId,
-                    title,
-                    "chat_dropdown_new_tab",
-                  )
-                }
-                onNewSession={() => onNewSession(tab.id)}
-                initialMessage={tab.initialMessage}
-                onInitialMessageConsumed={(result) =>
-                  onClearInitialMessage(tab.id, result)
-                }
-                sidecarConfigDisposition={tab.sidecarConfigDisposition}
-                onSidecarConfigAdopted={() => onSidecarConfigAdopted(tab.id)}
-                pendingFilePreview={tab.pendingFilePreview}
-                onFilePreviewIntentConsumed={(intentId) =>
-                  onFilePreviewIntentConsumed?.(tab.id, intentId)
-                }
-                sessionTitle={tab.title}
-                onRenameSession={(newTitle: string) =>
-                  onRenameSession(tab.id, newTitle)
-                }
-                onForkSession={(
-                  newSessionId: string,
-                  agentDir: string,
-                  title: string,
-                  initialMessage?: string,
-                ) =>
-                  onForkSession(
-                    tab.id,
-                    newSessionId,
-                    agentDir,
-                    title,
-                    initialMessage,
-                  )
-                }
-                sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
-              />
-            </Suspense>
+                  ) =>
+                    onOpenHistorySessionInCurrentTab(
+                      tab.id,
+                      sessionId,
+                      title,
+                      historyEntrySource,
+                    )
+                  }
+                  onOpenSessionInNewTab={(sessionId, title) =>
+                    onOpenHistorySession(
+                      tab.id,
+                      sessionId,
+                      title,
+                      "chat_dropdown_new_tab",
+                    )
+                  }
+                  onNewSession={() => onNewSession(tab.id)}
+                  initialMessage={tab.initialMessage}
+                  onInitialMessageConsumed={(result) =>
+                    onClearInitialMessage(tab.id, result)
+                  }
+                  sidecarConfigDisposition={tab.sidecarConfigDisposition}
+                  onSidecarConfigAdopted={() => onSidecarConfigAdopted(tab.id)}
+                  pendingFilePreview={tab.pendingFilePreview}
+                  onFilePreviewIntentConsumed={(intentId) =>
+                    onFilePreviewIntentConsumed?.(tab.id, intentId)
+                  }
+                  sessionTitle={tab.title}
+                  onRenameSession={(newTitle: string) =>
+                    onRenameSession(tab.id, newTitle)
+                  }
+                  onForkSession={(
+                    newSessionId: string,
+                    agentDir: string,
+                    title: string,
+                    initialMessage?: string,
+                  ) =>
+                    onForkSession(
+                      tab.id,
+                      newSessionId,
+                      agentDir,
+                      title,
+                      initialMessage,
+                    )
+                  }
+                  sessionNotificationBadgeCounts={
+                    sessionNotificationBadgeCounts
+                  }
+                />
+              </Suspense>
+            )}
           </TabProvider>
         )}
       </div>
@@ -1156,21 +1182,6 @@ export default function App() {
     }
   }, [tabs]);
 
-  const handleLauncherWorkspaceSelectionChange = useCallback(
-    (tabId: string, workspacePath: string | null) => {
-      setTabs((current) =>
-        current.map((tab) =>
-          tab.id === tabId &&
-          tab.view === "launcher" &&
-          tab.launcherWorkspacePath !== workspacePath
-            ? { ...tab, launcherWorkspacePath: workspacePath }
-            : tab,
-        ),
-      );
-    },
-    [],
-  );
-
   const syncRendererCorrelationForTab = useCallback(
     (
       tabId: string | null | undefined,
@@ -1290,13 +1301,16 @@ export default function App() {
   useEffect(() => {
     if (bootDecisionRef.current) return;
     bootDecisionRef.current = true;
+    let cancelled = false;
     void (async () => {
       const durable = await loadAndClearOpenTabsDurable();
+      if (cancelled) return;
       const override = pickDurableOverride(restoreCandidate != null, durable);
       const candidate = override
         ? hydratePersistedState(override)
         : restoreCandidate;
       const lastExitWasClean = await consumeCleanExitMarker();
+      if (cancelled) return;
       if (
         candidate &&
         shouldOfferRestore(lastExitWasClean, candidate.tabs.length)
@@ -1305,6 +1319,9 @@ export default function App() {
         setRestorePillCount(candidate.tabs.length);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [restoreCandidate]);
 
   // ✕ on the pill — dismiss without restoring (don't nag again this session).
@@ -1322,6 +1339,17 @@ export default function App() {
   const [deferredMountTabIds, setDeferredMountTabIds] = useState<Set<string>>(
     () => new Set(),
   );
+
+  const revealDeferredTab = useCallback((tabId: string) => {
+    runAfterNextPaint(() => {
+      setDeferredMountTabIds((current) => {
+        if (!current.has(tabId)) return current;
+        const next = new Set(current);
+        next.delete(tabId);
+        return next;
+      });
+    });
+  }, []);
 
   // Single source of truth for opening a NEW tab whose view mounts a large
   // renderer-only subtree (Launcher / Settings / TaskCenter). It appends and
@@ -1358,16 +1386,9 @@ export default function App() {
       });
       setTabs((prev) => [...prev, newTab]);
       setActiveTabId(newTab.id, nextTabs);
-      runAfterNextPaint(() => {
-        setDeferredMountTabIds((prev) => {
-          if (!prev.has(newTab.id)) return prev;
-          const next = new Set(prev);
-          next.delete(newTab.id);
-          return next;
-        });
-      });
+      revealDeferredTab(newTab.id);
     },
-    [setActiveTabId],
+    [revealDeferredTab, setActiveTabId],
   );
 
   // Helper-overlay launches must hand `handleLaunchProject` a real, committed
@@ -1923,36 +1944,57 @@ export default function App() {
         async (event) => {
           if (!mountedRef.current) return;
           const { sessionId, generation } = event.payload;
-          // Generation check first: a same-session relaunch after this terminal
-          // event gets a fresh generation. If that replacement is currently dead
-          // but still ownerful and awaiting health-monitor recovery, a liveness
-          // check alone would return false and incorrectly clear the new binding.
-          const currentGeneration = await getSessionGeneration(sessionId);
-          if (currentGeneration !== null && currentGeneration !== generation) {
-            console.log(
-              `[App] Ignoring stale terminal event for ${sessionId} (event gen=${generation}, current gen=${currentGeneration})`,
-            );
-            return;
-          }
-          // Presence check for the same-generation edge case. Readiness is
-          // intentionally irrelevant here; any live entry means don't clear.
-          const liveSidecarPresent = await hasSessionSidecar(sessionId);
-          if (liveSidecarPresent) {
-            console.log(
-              `[App] Ignoring stale terminal event for ${sessionId} (gen=${generation}) — live sidecar entry present`,
-            );
-            return;
-          }
-          if (!mountedRef.current) return;
-          setTabs((prev) => {
-            const next = applyTerminalSessionToTabs(prev, sessionId);
-            if (next !== prev) {
+          while (mountedRef.current) {
+            // An opening that starts and finishes while either Rust read is in
+            // flight owns its own success/failure projection. The revision
+            // check closes that otherwise invisible race window.
+            const openingRevision =
+              sessionResourceTransitionsRef.current.openingRevision;
+            if (
+              isSessionOpening(sessionResourceTransitionsRef.current, sessionId)
+            )
+              return;
+
+            const currentGeneration = await getSessionGeneration(sessionId);
+            if (
+              currentGeneration !== null &&
+              currentGeneration !== generation
+            ) {
               console.log(
-                `[App] Tab.sessionId reset for terminated session ${sessionId}`,
+                `[App] Ignoring stale terminal event for ${sessionId} (event gen=${generation}, current gen=${currentGeneration})`,
               );
+              return;
             }
-            return next as typeof prev;
-          });
+            if (await hasSessionSidecar(sessionId)) {
+              console.log(
+                `[App] Ignoring stale terminal event for ${sessionId} (gen=${generation}) — live sidecar entry present`,
+              );
+              return;
+            }
+            if (
+              isSessionOpening(sessionResourceTransitionsRef.current, sessionId)
+            )
+              return;
+            if (
+              sessionResourceTransitionsRef.current.openingRevision !==
+              openingRevision
+            )
+              continue;
+            if (!mountedRef.current) return;
+
+            flushSync(() => {
+              setTabs((prev) => {
+                const next = applyTerminalSessionToTabs(prev, sessionId);
+                if (next !== prev) {
+                  console.log(
+                    `[App] Tab.sessionId reset for terminated session ${sessionId}`,
+                  );
+                }
+                return next as typeof prev;
+              });
+            });
+            return;
+          }
         },
         listenerAc.signal,
       );
@@ -1978,30 +2020,56 @@ export default function App() {
         async (event) => {
           if (!mountedRef.current) return;
           const stillLive = new Set<string>(event.payload.liveSessionIds);
-          const candidates = tabsRef.current
-            .filter((t) => t.sessionId && !isPendingSessionId(t.sessionId))
-            .map((t) => t.sessionId as string)
-            .filter((sid) => !stillLive.has(sid));
-          const goneIds: string[] = [];
-          await Promise.all(
-            candidates.map(async (sid) => {
-              const currentGeneration = await getSessionGeneration(sid);
-              if (currentGeneration === null) goneIds.push(sid);
-            }),
-          );
-          if (!mountedRef.current || goneIds.length === 0) return;
-          setTabs((prev) => {
-            let next = prev;
-            for (const sid of goneIds) {
-              next = applyTerminalSessionToTabs(next, sid) as typeof prev;
-            }
-            if (next !== prev) {
-              console.log(
-                `[App] Reconcile cleared ${goneIds.length} stale binding(s)`,
-              );
-            }
-            return next;
-          });
+          while (mountedRef.current) {
+            const openingRevision =
+              sessionResourceTransitionsRef.current.openingRevision;
+            const candidates = tabsRef.current
+              .filter(
+                (tab) =>
+                  tab.sessionId &&
+                  !isPendingSessionId(tab.sessionId) &&
+                  !stillLive.has(tab.sessionId) &&
+                  !isSessionOpening(
+                    sessionResourceTransitionsRef.current,
+                    tab.sessionId,
+                  ),
+              )
+              .map((tab) => tab.sessionId as string);
+            const goneIds = (
+              await Promise.all(
+                candidates.map(async (sid) =>
+                  (await getSessionGeneration(sid)) === null ? sid : null,
+                ),
+              )
+            ).filter((sid): sid is string => sid !== null);
+            if (!mountedRef.current || goneIds.length === 0) return;
+            if (
+              sessionResourceTransitionsRef.current.openingRevision !==
+              openingRevision
+            )
+              continue;
+            const stableGoneIds = goneIds.filter(
+              (sid) =>
+                !isSessionOpening(sessionResourceTransitionsRef.current, sid),
+            );
+            if (stableGoneIds.length === 0) return;
+
+            flushSync(() => {
+              setTabs((prev) => {
+                let next = prev;
+                for (const sid of stableGoneIds) {
+                  next = applyTerminalSessionToTabs(next, sid) as typeof prev;
+                }
+                if (next !== prev) {
+                  console.log(
+                    `[App] Reconcile cleared ${stableGoneIds.length} stale binding(s)`,
+                  );
+                }
+                return next;
+              });
+            });
+            return;
+          }
         },
         listenerAc.signal,
       );
@@ -2091,8 +2159,8 @@ export default function App() {
   // destroy a fixed Session identity. Claims are per Session, so unrelated
   // Tabs remain fully concurrent.
   const sessionResourceTransitionsRef = useRef<
-    Map<string, SessionResourceTransitionClaim>
-  >(new Map());
+    ReturnType<typeof createSessionResourceTransitionState>
+  >(createSessionResourceTransitionState());
   const tabSessionIdentityTransitionsRef = useRef<Map<string, Promise<void>>>(
     new Map(),
   );
@@ -2120,6 +2188,12 @@ export default function App() {
             console.error(
               `[App] Refusing to update missing tab ${tabId} sessionId to ${newSessionId}`,
             );
+            if (options?.sidecarAlreadyMigrated) {
+              await Promise.allSettled([
+                stopSseProxy(tabId),
+                releaseTabSession(newSessionId, tabId),
+              ]);
+            }
             return false;
           }
           const oldSessionId = currentTab?.sessionId;
@@ -2137,7 +2211,18 @@ export default function App() {
             // cannot be adopted by this creator. Pending sidecars have no safe old
             // identity to resume, so terminate that exact Tab/owner instead of
             // leaving a continuation that can republish the contested Session.
-            if (oldSessionId && isPendingSessionId(oldSessionId)) {
+            if (options?.sidecarAlreadyMigrated) {
+              if (oldSessionId && isPendingSessionId(oldSessionId)) {
+                clearPendingSessionBirth(tabId);
+                setTabs((current) => [
+                  ...applyTerminalSessionToTabs(current, oldSessionId),
+                ]);
+              }
+              await Promise.allSettled([
+                stopSseProxy(tabId),
+                releaseTabSession(newSessionId, tabId),
+              ]);
+            } else if (oldSessionId && isPendingSessionId(oldSessionId)) {
               clearPendingSessionBirth(tabId);
               setTabs((current) => [
                 ...applyTerminalSessionToTabs(current, oldSessionId),
@@ -2160,7 +2245,11 @@ export default function App() {
 
             // Upgrade the manager-owned Session identity in Rust.
             // This is a no-op if oldSessionId is null or same as newSessionId
-            if (oldSessionId && oldSessionId !== newSessionId) {
+            if (
+              oldSessionId &&
+              oldSessionId !== newSessionId &&
+              !options?.sidecarAlreadyMigrated
+            ) {
               const upgraded = await upgradeSessionId(
                 oldSessionId,
                 newSessionId,
@@ -2363,9 +2452,8 @@ export default function App() {
       }
 
       void performCloseTab(tabId);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- callbacks stabilized via tabsRef
     },
-    [setActiveTabId, t],
+    [performCloseTab, t],
   );
 
   // Close current active tab (for Cmd+W)
@@ -2610,28 +2698,22 @@ export default function App() {
           if (initialMessageHasExecutionSelection || !configForLaunchBirth) {
             return undefined;
           }
-          const effectiveAgentRuntime = resolveEffectiveRuntime(
-            agentForLaunchBirth?.runtime,
-            !!configForLaunchBirth.multiAgentRuntime,
-          );
           if (
-            effectiveAgentRuntime !== "builtin" &&
-            !agentUsesManagedCodexProvider(agentForLaunchBirth)
+            !agentUsesManagedCodexProvider(agentForLaunchBirth) ||
+            !getManagedCodexProviderReadiness(configForLaunchBirth).selectable
           ) {
             return undefined;
           }
-          const sel = resolveBuiltinSelection(
-            { agent: agentForLaunchBirth, workspace: project },
-            configForLaunchBirth,
-            appProvidersRef.current,
-            appApiKeysRef.current,
-            appProviderVerifyStatusRef.current,
-          );
-          if (!sel || !isRuntimeBackedProvider(sel.provider)) {
+          const model =
+            normalizeStringSetting(agentForLaunchBirth?.model) ??
+            normalizeStringSetting(project.model);
+          if (!model) {
             return undefined;
           }
-          const intent = toProviderExecutionIntent(sel.provider, sel.model);
-          return intent.kind === "runtime-backed-provider" ? intent : undefined;
+          return createRuntimeBackedProviderIdentity({
+            providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
+            model,
+          });
         })();
         const runtimeBackedProviderIdentity =
           initialMessage?.providerExecutionIdentity ??
@@ -3295,6 +3377,7 @@ export default function App() {
   // independent per target; failures are removed together from the latest Tab
   // list so concurrent results cannot overwrite one another or newer user work.
   const handleRestoreLastSession = useCallback(async () => {
+    if (!mountedRef.current) return;
     const candidate = restoreCandidateRef.current;
     setRestorePillCount(0);
     restoreCandidateRef.current = null;
@@ -3308,6 +3391,7 @@ export default function App() {
       await Promise.all(
         candidate.tabs.map(
           async (tab): Promise<ValidatedRestoreTarget | null> => {
+            if (!mountedRef.current) return null;
             if (!tab.agentDir || !tab.sessionId) return null;
             const target = tab as Tab & { agentDir: string; sessionId: string };
             const releaseTransition = tryClaimSessionResourceTransition(
@@ -3318,7 +3402,15 @@ export default function App() {
             );
             if (!releaseTransition) return null;
             try {
-              if (await canRestoreSession(target.sessionId, target.agentDir)) {
+              const canRestore = await canRestoreSession(
+                target.sessionId,
+                target.agentDir,
+              );
+              if (!mountedRef.current) {
+                releaseTransition();
+                return null;
+              }
+              if (canRestore) {
                 return { tab: target, releaseTransition };
               }
               console.warn(
@@ -3337,6 +3429,10 @@ export default function App() {
       )
     ).filter((target): target is ValidatedRestoreTarget => target !== null);
 
+    if (!mountedRef.current) {
+      validated.forEach(({ releaseTransition }) => releaseTransition());
+      return;
+    }
     if (validated.length === 0) return;
     const baseTabs = tabsRef.current;
     const previousActiveTabId = activeTabIdRef.current;
@@ -3364,6 +3460,11 @@ export default function App() {
 
     track("restore_last_session", { count: addedTargets.length });
     flushSync(() => {
+      setDeferredMountTabIds((current) => {
+        const next = new Set(current);
+        addedTargets.forEach(({ tab }) => next.add(tab.id));
+        return next;
+      });
       // Compose after any queued field-only updates (for example another
       // existing Tab settling pending → adopt) instead of replacing them with
       // the pre-await render mirror captured by the restore plan.
@@ -3378,6 +3479,7 @@ export default function App() {
       );
       setActiveTabId(plan.activeTabId, plan.tabs);
     });
+    revealDeferredTab(plan.activeTabId);
 
     const results = await Promise.allSettled(
       addedTargets.map(async ({ tab, releaseTransition }) => {
@@ -3414,6 +3516,11 @@ export default function App() {
               nextTabs.some((tab) => tab.id === previousActiveTabId)
             ? previousActiveTabId
             : nextTabs.at(-1)!.id;
+      setDeferredMountTabIds((current) => {
+        const next = new Set(current);
+        failedTabIds.forEach((tabId) => next.delete(tabId));
+        return next;
+      });
       // Functional removal composes after each successful target's queued
       // pending → push/adopt update. A direct `setTabs(nextTabs)` from the
       // render mirror can overwrite that settlement in React's update queue.
@@ -3425,7 +3532,7 @@ export default function App() {
       });
       setActiveTabId(nextActiveTabId, nextTabs);
     });
-  }, [materializeExistingSessionTab, setActiveTabId]);
+  }, [materializeExistingSessionTab, revealDeferredTab, setActiveTabId]);
 
   /** Chat-local adapter: all history selections use the canonical new/jump/revive path. */
   const handleOpenChatHistorySession = useCallback(
@@ -3514,15 +3621,17 @@ export default function App() {
           );
         }
         // Not owned anywhere → open in THIS tab instead of spawning a top-level tab.
-        const patch = buildChatFlipPatch(sourceTab, {
+        const patch = buildHistoryChatFlipPatch(sourceTab, {
           agentDir,
           sessionId,
           title,
           sidecarConfigDisposition: "pending",
         });
-        setTabs((current) =>
-          current.map((tab) => (tab.id === tabId ? patch : tab)),
-        );
+        flushSync(() => {
+          setTabs((current) =>
+            current.map((tab) => (tab.id === tabId ? patch : tab)),
+          );
+        });
         return await materializeExistingSessionTab(tabId, sessionId, agentDir);
       } finally {
         releaseTransition();
@@ -3640,24 +3749,29 @@ export default function App() {
       const current = activeTabIdRef.current;
       if (!current || current === tabId) {
         setActiveTabId(tabId);
+        revealDeferredTab(tabId);
         return;
       }
       // 从带导航守卫的工作台 Tab 切走时先确认（未保存草稿不会被静默丢弃）。
       const guard = workbenchNavigationGuardsRef.current.get(current);
       if (!guard) {
         setActiveTabId(tabId);
+        revealDeferredTab(tabId);
         return;
       }
       void guard
         .confirmLeave()
         .then((allowed) => {
-          if (allowed) setActiveTabId(tabId);
+          if (allowed) {
+            setActiveTabId(tabId);
+            revealDeferredTab(tabId);
+          }
         })
         .catch(() => {
           // 守卫异常时保守处理：留在当前 Tab，避免草稿丢失。
         });
     },
-    [setActiveTabId],
+    [revealDeferredTab, setActiveTabId],
   );
 
   // Clear unread indicator only when the active tab identity changes. Do not key
@@ -4246,12 +4360,21 @@ export default function App() {
       return Object.freeze({
         isAvailable: true,
         async searchFiles(query: string, limit = 50, maxMatchesPerFile = 10) {
-          return searchWorkspaceFiles(
+          const result = await searchWorkspaceFiles(
             query,
             workspacePath,
             limit,
             maxMatchesPerFile,
           );
+          return {
+            hits: result.hits,
+            totalFiles: result.totalFiles,
+            totalMatches: result.hits.reduce(
+              (total, hit) => total + hit.matchCount,
+              0,
+            ),
+            queryTimeMs: result.queryTimeMs,
+          };
         },
         async refreshIndex() {
           return refreshWorkspaceFileIndex(workspacePath);
@@ -4342,6 +4465,9 @@ export default function App() {
       const surfaceBootstrap = {
         title: request.title,
         initialMessage: request.initialMessage,
+        ...(request.autoSendInitialMessage === false
+          ? { autoSendInitialMessage: false }
+          : {}),
         ...(request.systemPrompt ? { systemPrompt: request.systemPrompt } : {}),
         ...(request.promptId ? { promptId: request.promptId } : {}),
         ...(historyGroupPath ? { historyGroupPath } : {}),
@@ -4550,6 +4676,8 @@ export default function App() {
       let initialMessage: InitialMessage | undefined;
       if (!resumeSession) {
         initialMessage = { text: request.initialMessage };
+        if (request.autoSendInitialMessage === false)
+          initialMessage.autoSendInitialMessage = false;
         if (request.systemPrompt)
           initialMessage.systemPrompt = request.systemPrompt;
         if (request.toolset) initialMessage.workbenchToolset = request.toolset;
@@ -5427,6 +5555,9 @@ export default function App() {
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: surface.bootstrap.title,
         initialMessage: surface.bootstrap.initialMessage,
+        ...(surface.bootstrap.autoSendInitialMessage === false
+          ? { autoSendInitialMessage: false }
+          : {}),
         ...(surface.bootstrap.systemPrompt
           ? { systemPrompt: surface.bootstrap.systemPrompt }
           : {}),
@@ -5557,6 +5688,7 @@ export default function App() {
           <div className="flex min-w-0 flex-1 flex-col" data-tab-workspace>
             {/* Chrome-style titlebar with tabs */}
             <CustomTitleBar
+              onOpenSettings={handleOpenGeneralSettings}
               updateReady={updateReady}
               updateVersion={updateVersion}
               updateInstalling={updateInstalling}
@@ -5595,9 +5727,6 @@ export default function App() {
                   isLoading={loadingTabs[tab.id] ?? false}
                   error={tabErrors[tab.id] ?? null}
                   isDeferredMount={deferredMountTabIds.has(tab.id)}
-                  onLauncherWorkspaceSelectionChange={
-                    handleLauncherWorkspaceSelectionChange
-                  }
                   settingsInitialSection={
                     tab.view === "settings" ? settingsInitialSection : undefined
                   }
@@ -5679,9 +5808,6 @@ export default function App() {
                     isLoading={loadingTabs[tab.id] ?? false}
                     error={tabErrors[tab.id] ?? null}
                     isDeferredMount={deferredMountTabIds.has(tab.id)}
-                    onLauncherWorkspaceSelectionChange={
-                      handleLauncherWorkspaceSelectionChange
-                    }
                     settingsInitialSection={undefined}
                     capabilityInitialSection={capabilityInitialSection}
                     capabilityNavigationNonce={capabilityNavigationNonce}

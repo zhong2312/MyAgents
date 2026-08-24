@@ -117,9 +117,11 @@ export function hitMapFeatureGeometry(
   const visualRadius = Number.isFinite(declaredWidth)
     ? Math.max(0, declaredWidth) / 2 + 4 / Math.max(0.08, zoom)
     : 0;
-  return (
-    distanceToPath(target, feature.points) <= Math.max(radius, visualRadius)
-  );
+  const distanceToRoute =
+    feature.kind === "route" && feature.props.closed === "true"
+      ? distanceToClosedPath(target, feature.points)
+      : distanceToPath(target, feature.points);
+  return distanceToRoute <= Math.max(radius, visualRadius);
 }
 
 /** 以屏幕像素为准的顶点手柄命中，缩放不会改变可操作范围。 */

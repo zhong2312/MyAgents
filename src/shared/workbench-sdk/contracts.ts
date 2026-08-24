@@ -57,6 +57,11 @@ export interface WorkbenchAgentSessionRequest {
   readonly version: typeof WORKBENCH_AGENT_SESSION_REQUEST_VERSION;
   readonly title: string;
   readonly initialMessage: string;
+  /**
+   * Whether the initial message should be submitted when the conversation opens.
+   * Omitted requests preserve the historical auto-send behavior.
+   */
+  readonly autoSendInitialMessage?: boolean;
   /** Internal runtime instructions. Never persisted or rendered as a user message. */
   readonly systemPrompt?: string;
   readonly promptId?: string;

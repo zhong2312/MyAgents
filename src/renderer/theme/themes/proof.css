@@ -23,6 +23,7 @@ html[data-theme-id='proof'][data-color-scheme='light'] {
   --ink-faint: #c0c3bb;
   --paper: #f5f3ed;
   --global-sidebar-bg: #f0eee7;
+  --global-sidebar-bg-a0: rgb(240 238 231 / 0);
   --paper-elevated: #fbfaf6;
   --message-user-bg: #fdfcf8;
   --paper-inset: #e3e0d7;
@@ -133,6 +134,7 @@ html[data-theme-id='proof'][data-color-scheme='dark'] {
   --ink-faint: #414d44;
   --paper: #18201c;
   --global-sidebar-bg: #161d19;
+  --global-sidebar-bg-a0: rgb(22 29 25 / 0);
   --paper-elevated: #222b26;
   --message-user-bg: #273129;
   --paper-inset: #101613;

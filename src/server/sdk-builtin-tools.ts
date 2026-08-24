@@ -20,7 +20,6 @@ export const SDK_BUILTIN_TOOLS = [
   'ExitPlanMode',
   'Skill',
   'Task',
-  'TaskOutput',
   'TaskStop',
   'SendMessage',
   'TaskCreate',

@@ -3,13 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   engine: {
     resetForNewDesktopSession: vi.fn(async () => ({ success: true, sessionId: 'new-desktop' })),
+    compactContext: vi.fn(async () => ({ success: true })),
     rewindToUserMessage: vi.fn<(userMessageId: string) => Promise<Record<string, unknown>>>(
       async () => ({ success: true, content: 'removed' }),
     ),
     forkAtAssistantMessage: vi.fn<(messageId: string) => Promise<Record<string, unknown>>>(
       async () => ({ success: true, newSessionId: 'forked' }),
     ),
-    resetForNewImSession: vi.fn(async () => ({ success: true, sessionId: 'im-new' })),
+    migrateBoundSurfaceSession: vi.fn(async (_workspacePath: string, options: { targetSessionId: string }) => ({
+      success: true,
+      sessionId: options.targetSessionId,
+    })),
   },
   retryLastExternalUserMessageAtSelector: vi.fn<(userMessageId: string) => Promise<Record<string, unknown>>>(
     async () => ({ success: true, content: 'retry text' }),
@@ -31,10 +35,14 @@ describe('handleSessionOperationRoute', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.engine.resetForNewDesktopSession.mockResolvedValue({ success: true, sessionId: 'new-desktop' });
+    mocks.engine.compactContext.mockResolvedValue({ success: true });
     mocks.engine.rewindToUserMessage.mockResolvedValue({ success: true, content: 'removed' });
     mocks.retryLastExternalUserMessageAtSelector.mockResolvedValue({ success: true, content: 'retry text' });
     mocks.engine.forkAtAssistantMessage.mockResolvedValue({ success: true, newSessionId: 'forked' });
-    mocks.engine.resetForNewImSession.mockResolvedValue({ success: true, sessionId: 'im-new' });
+    mocks.engine.migrateBoundSurfaceSession.mockImplementation(async (_workspacePath, options) => ({
+      success: true,
+      sessionId: options.targetSessionId,
+    }));
   });
 
   it('resets desktop sessions through the active engine', async () => {
@@ -47,6 +55,18 @@ describe('handleSessionOperationRoute', () => {
     expect(response?.status).toBe(200);
     expect(await readJson(response as Response)).toEqual({ success: true, sessionId: 'new-desktop' });
     expect(mocks.engine.resetForNewDesktopSession).toHaveBeenCalledWith('/workspace');
+  });
+
+  it('routes native context compaction through the active SessionEngine', async () => {
+    const response = await handleSessionOperationRoute(
+      '/api/session/compact',
+      new Request('http://local/api/session/compact', { method: 'POST' }),
+      { workspacePath: '/workspace' },
+    );
+
+    expect(response?.status).toBe(200);
+    expect(await readJson(response as Response)).toEqual({ success: true });
+    expect(mocks.engine.compactContext).toHaveBeenCalledOnce();
   });
 
   it('requires a userMessageId before calling rewind', async () => {
@@ -145,52 +165,75 @@ describe('handleSessionOperationRoute', () => {
     });
   });
 
-  it('resets IM sessions through the active engine', async () => {
+  it('migrates a bound surface to the Rust-proven target identity', async () => {
+    const targetSessionId = '6d57334a-44d8-4fe1-a4f2-cd57fc8beb85';
     const response = await handleSessionOperationRoute(
-      '/api/im/session/new',
-      new Request('http://local/api/im/session/new', { method: 'POST' }),
-      { workspacePath: '/workspace' },
-    );
-
-    expect(response?.status).toBe(200);
-    expect(await readJson(response as Response)).toEqual({ sessionId: 'im-new' });
-    expect(mocks.engine.resetForNewImSession).toHaveBeenCalledWith('/workspace', {
-      metadataBirthPending: false,
-    });
-  });
-
-  it('passes birth-pending state when resetting IM sessions', async () => {
-    const response = await handleSessionOperationRoute(
-      '/api/im/session/new',
-      new Request('http://local/api/im/session/new', {
+      '/api/session/surface-migration',
+      new Request('http://local/api/session/surface-migration', {
         method: 'POST',
-        body: JSON.stringify({ metadataBirthPending: true }),
+        body: JSON.stringify({ targetSessionId }),
       }),
       { workspacePath: '/workspace' },
     );
 
     expect(response?.status).toBe(200);
-    expect(await readJson(response as Response)).toEqual({ sessionId: 'im-new' });
-    expect(mocks.engine.resetForNewImSession).toHaveBeenCalledWith('/workspace', {
+    expect(await readJson(response as Response)).toEqual({ sessionId: targetSessionId });
+    expect(mocks.engine.migrateBoundSurfaceSession).toHaveBeenCalledWith('/workspace', {
+      targetSessionId,
+      metadataBirthPending: false,
+    });
+  });
+
+  it('passes birth-pending state during bound surface migration', async () => {
+    const targetSessionId = 'e8c1e529-8458-4361-a24a-02f5c278203e';
+    const response = await handleSessionOperationRoute(
+      '/api/session/surface-migration',
+      new Request('http://local/api/session/surface-migration', {
+        method: 'POST',
+        body: JSON.stringify({ targetSessionId, metadataBirthPending: true }),
+      }),
+      { workspacePath: '/workspace' },
+    );
+
+    expect(response?.status).toBe(200);
+    expect(await readJson(response as Response)).toEqual({ sessionId: targetSessionId });
+    expect(mocks.engine.migrateBoundSurfaceSession).toHaveBeenCalledWith('/workspace', {
+      targetSessionId,
       metadataBirthPending: true,
     });
   });
 
-  it('passes explicit unindexed state when resetting IM sessions', async () => {
+  it('passes explicit unindexed state during bound surface migration', async () => {
+    const targetSessionId = 'af131598-00c6-4b7b-b4fb-c039cb0f0496';
     const response = await handleSessionOperationRoute(
-      '/api/im/session/new',
-      new Request('http://local/api/im/session/new', {
+      '/api/session/surface-migration',
+      new Request('http://local/api/session/surface-migration', {
         method: 'POST',
-        body: JSON.stringify({ metadataBirthPending: false, metadataIndexed: false }),
+        body: JSON.stringify({ targetSessionId, metadataBirthPending: false, metadataIndexed: false }),
       }),
       { workspacePath: '/workspace' },
     );
 
     expect(response?.status).toBe(200);
-    expect(await readJson(response as Response)).toEqual({ sessionId: 'im-new' });
-    expect(mocks.engine.resetForNewImSession).toHaveBeenCalledWith('/workspace', {
+    expect(await readJson(response as Response)).toEqual({ sessionId: targetSessionId });
+    expect(mocks.engine.migrateBoundSurfaceSession).toHaveBeenCalledWith('/workspace', {
+      targetSessionId,
       metadataBirthPending: false,
       metadataIndexed: false,
     });
+  });
+
+  it('rejects surface migration without a Rust-generated UUID target', async () => {
+    const response = await handleSessionOperationRoute(
+      '/api/session/surface-migration',
+      new Request('http://local/api/session/surface-migration', {
+        method: 'POST',
+        body: JSON.stringify({ targetSessionId: 'not-a-uuid' }),
+      }),
+      { workspacePath: '/workspace' },
+    );
+
+    expect(response?.status).toBe(400);
+    expect(mocks.engine.migrateBoundSurfaceSession).not.toHaveBeenCalled();
   });
 });

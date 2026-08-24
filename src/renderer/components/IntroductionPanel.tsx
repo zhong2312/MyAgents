@@ -5,11 +5,12 @@
  * Uses Rust IPC (cmd_read/write/delete_workspace_file) — no Sidecar dependency.
  * Pattern follows SystemPromptsPanel (preview/edit toggle, isEditing guard, MonacoEditor).
  */
-import { Save, Edit2, X, FileText, Loader2, Trash2 } from 'lucide-react';
+import { Save, Edit2, X, Loader2, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, useImperativeHandle, forwardRef, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 
+import { FileIcon } from '@/components/file-icon';
 import { useToast } from '@/components/Toast';
 import Markdown from '@/components/Markdown';
 import MonacoEditor from '@/components/MonacoEditor';
@@ -143,7 +144,7 @@ const IntroductionPanel = forwardRef<IntroductionPanelRef, IntroductionPanelProp
         {!loading && (exists || isEditing) && (
           <div className="flex flex-shrink-0 items-center justify-between border-b border-[var(--line)] bg-[var(--paper-inset)]/30 px-6 py-2">
             <div className="flex items-center gap-2">
-              <FileText className="h-4 w-4 text-[var(--accent-warm)]" />
+              <FileIcon name={FILENAME} size="regular" />
               <span className="text-sm font-medium text-[var(--ink)]">{FILENAME}</span>
             </div>
             <div className="flex items-center gap-2">

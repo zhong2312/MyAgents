@@ -15,7 +15,9 @@ use std::fs;
 
 use serde::Serialize;
 
-use super::path_safety::{resolve_inside_workspace, validate_workspace_root};
+use super::path_safety::{
+    reject_managed_global_skill_mutation, resolve_inside_workspace, validate_workspace_root,
+};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +34,7 @@ pub async fn cmd_workspace_delete(
 ) -> Result<DeleteResult, String> {
     let workspace_root = validate_workspace_root(&workspace)?;
     let target = resolve_inside_workspace(&workspace_root, &path)?;
+    reject_managed_global_skill_mutation(&workspace_root, &target)?;
 
     // Refuse to delete the workspace root itself.
     if target == workspace_root {

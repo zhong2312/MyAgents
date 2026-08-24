@@ -130,6 +130,30 @@ describe("generateDirectOneShotText", () => {
     ).resolves.toBe("质量审查结果");
   });
 
+  it("供应商忽略 stream 参数时仍提取普通 JSON 正文", async () => {
+    mocks.fetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            { message: { role: "assistant", content: "桥接后的正文" } },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const progress: string[] = [];
+    const { generateDirectOneShotText } = await import("./direct-one-shot");
+
+    await expect(
+      generateDirectOneShotText({
+        ...requestFor("openai"),
+        streamText: true,
+        onProgress: (partialOutput) => progress.push(partialOutput),
+      }),
+    ).resolves.toBe("桥接后的正文");
+    expect(progress).toEqual(["桥接后的正文"]);
+  });
+
   it("超时和取消会中断底层请求并返回明确错误", async () => {
     mocks.fetch.mockImplementation(
       (_url: string, init: RequestInit) =>

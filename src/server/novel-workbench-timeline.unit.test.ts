@@ -8,6 +8,7 @@ import {
   createTimelineFiles,
   timelineRecordPath,
   type TimelineStorageAggregate,
+  type TimelineStorageRecord,
 } from "../shared/workbenches/novel/timelineStorage";
 
 type ToolResult = {
@@ -50,6 +51,41 @@ import { createNovelWorkbenchServer } from "./tools/novel-workbench-tool";
 
 const NOW = "2026-08-09T00:00:00.000Z";
 
+function eventValue(
+  id: string,
+  title: string,
+  includeAudit = true,
+): TimelineStorageRecord {
+  return {
+    id,
+    branchId: "branch-main",
+    timeLabel: "第一日",
+    sortKey: 1,
+    sortOrder: 0,
+    endSortKey: null,
+    timePrecision: "exact",
+    timeExpressions: [],
+    periodId: null,
+    scope: "story",
+    knowledgeScope: "public",
+    narrativeOrder: null,
+    title,
+    kind: "event",
+    summary: "事件摘要",
+    description: "事件正文",
+    characterIds: [],
+    locationIds: [],
+    chapterIds: [],
+    factionIds: [],
+    itemIds: [],
+    causeEventIds: [],
+    stateChanges: [],
+    foreshadowings: [],
+    tags: [],
+    ...(includeAudit ? { createdAt: NOW, updatedAt: NOW } : {}),
+  };
+}
+
 function fixture(): TimelineStorageAggregate {
   return {
     schemaVersion: 1,
@@ -71,17 +107,7 @@ function fixture(): TimelineStorageAggregate {
         updatedAt: NOW,
       },
     ],
-    events: [
-      {
-        id: "event-main",
-        branchId: "branch-main",
-        title: "开端",
-        summary: "事件摘要",
-        description: "事件正文",
-        stateChanges: [],
-        foreshadowings: [],
-      },
-    ],
+    events: [eventValue("event-main", "开端")],
   };
 }
 
@@ -180,9 +206,9 @@ describe("时间线目录化工具", () => {
           targetId: "event-main",
           summary: "更新开端",
           value: {
-            id: "event-main",
-            branchId: "branch-main",
-            title: "新的开端",
+            ...eventValue("event-main", "新的开端", false),
+            createdAt: "2000-01-01T00:00:00.000Z",
+            updatedAt: "2000-01-01T00:00:00.000Z",
           },
         },
         {
@@ -190,11 +216,7 @@ describe("时间线目录化工具", () => {
           kind: "event",
           action: "create",
           summary: "新建后续事件",
-          value: {
-            id: "event-next",
-            branchId: "branch-main",
-            title: "后续事件",
-          },
+          value: eventValue("event-next", "后续事件", false),
         },
       ],
     });
@@ -224,6 +246,7 @@ describe("时间线目录化工具", () => {
       operations: Array<{
         candidateId: string;
         baseValue?: Record<string, unknown> | null;
+        value: Record<string, unknown>;
       }>;
     };
     expect(
@@ -240,5 +263,20 @@ describe("时间线目录化工具", () => {
         (operation) => operation.candidateId === "candidate-create",
       )?.baseValue,
     ).toBeNull();
+    const updateOperation = proposal.operations.find(
+      (operation) => operation.candidateId === "candidate-update",
+    );
+    expect(updateOperation?.value.createdAt).toBe(NOW);
+    expect(updateOperation?.value.updatedAt).not.toBe(
+      "2000-01-01T00:00:00.000Z",
+    );
+    expect(
+      proposal.operations.find(
+        (operation) => operation.candidateId === "candidate-create",
+      )?.value,
+    ).toMatchObject({
+      createdAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/u),
+      updatedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/u),
+    });
   });
 });

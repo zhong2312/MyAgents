@@ -122,6 +122,7 @@ export type BuiltinRestartReason =
   | 'model-aliases'
   | 'provider-history'
   | 'plugins'
+  | 'capabilities'
   | 'reasoning-effort';
 
 export type TurnProviderAnalytics = {
@@ -256,6 +257,7 @@ export type BuiltinConfigSnapshot = {
   providerEnv: ProviderEnv | undefined;
   pendingProviderHistoryBoundaryReset: boolean;
   frozenSdkMcpFingerprint: string;
+  capabilitySnapshot: import('../../shared/projectCapabilities').EffectiveProjectCapabilitySnapshot | null;
   deferredRestartReasons: BuiltinRestartReason[];
 };
 

@@ -21,6 +21,7 @@ import type { ToolUse } from '@/types/stream';
 import type { ToolDisplayPayload } from '../../shared/toolDisplay/filePatch';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
 import type { ToolInput } from '../../shared/types/tool-input';
+import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
 
 export type { ToolAttachment, ToolAttachmentKind } from '../../shared/types/tool-attachment';
 export type { ToolInput } from '../../shared/types/tool-input';
@@ -124,6 +125,8 @@ export interface ToolUseSimple extends ToolUse {
   resultMeta?: ToolResultMeta;
   // Nested tool calls emitted by subagents (Task tool)
   subagentCalls?: SubagentToolCall[];
+  // Runtime-neutral lifecycle for CollabAgent cards that own a real child turn.
+  subagentLifecycle?: SubagentLifecycle;
   // Task tool specific: start time for duration calculation
   taskStartTime?: number;
   // Task tool specific: running statistics

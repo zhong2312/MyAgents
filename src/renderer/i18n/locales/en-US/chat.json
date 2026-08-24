@@ -363,12 +363,15 @@
     "search": {
       "searching": "Searching...",
       "searchInWorkspace": "Search in the current workspace",
-      "fileNameAndContent": "File names and file contents",
+      "fileNameAndContent": "Folders, file names, and file contents",
       "zeroResults": "0 results",
       "refreshingSuffix": " · updating index...",
-      "summary": "{{files}} file(s), {{matches}} result(s)",
-      "collapseResults": "Collapse results",
-      "expandResults": "Expand results",
+      "summary": "Found {{folders}} folder(s) and {{files}} file(s)",
+      "folderSection": "Folders ({{count}})",
+      "fileSection": "Files ({{count}})",
+      "contentMatchCount": "{{count}} content match(es)",
+      "collapseResults": "Collapse",
+      "expandResults": "Expand",
       "moreResults": "... {{count}} more result(s)"
     }
   },
@@ -395,7 +398,7 @@
       "exportMarkdown": "Export as Markdown",
       "tokenStats": "Session token usage",
       "contextUsage": "Context token details",
-      "bindBot": "Bind chat bot",
+      "continueInBot": "Continue in chat bot",
       "deleteBlockedByOwner": "This chat is still in use. Complete, archive, or delete its task or Goal; wait for background completion; or unbind the chat bot before deleting.",
       "deleteTransitionInProgress": "This chat is opening or switching. Try deleting it again in a moment.",
       "deleteActivityUnavailable": "Unable to confirm whether this chat is still running. It was kept; try again in a moment.",
@@ -526,16 +529,11 @@
     "runtimeDiagnostics": {
       "problems": {
         "needsCodexLogin": "Codex login required (click the account avatar or run codex login)",
-        "authQueryFailed": "auth query failed: {{error}}",
-        "appListFailed": "app list failed: {{error}}",
-        "mcpStatusFailed": "MCP status query failed: {{error}}",
-        "featureFlagFailed": "feature flag query failed: {{error}}",
-        "appsInaccessible": "{{count}} enabled app(s) inaccessible: {{names}}",
-        "mcpServersFailed": "MCP server failed: {{names}}"
+        "extensionComponent": "Extension {{component}}{{id}} is {{state}}: {{reason}}"
       },
       "headlines": {
         "needsCodexLogin": "Sign in to Codex to continue",
-        "allDiagnosticsFailed": "All Codex diagnostics failed; runtime may not be running"
+        "extensionsFailed": "Managed Codex extension application failed"
       },
       "status": {
         "unsupported": "Unsupported",
@@ -548,7 +546,8 @@
         "featureFlags": "Feature flags",
         "mcpServers": "MCP servers",
         "apps": "Apps",
-        "effectiveEnv": "Effective env"
+        "effectiveEnv": "Effective env",
+        "extensions": "MyAgents extensions"
       },
       "requiresLoginSuffix": " • login required",
       "appAccessible": "accessible ",
@@ -748,6 +747,7 @@
         "statusCompleted": "Completed",
         "statusError": "Error",
         "statusRunning": "Running",
+        "statusStopped": "Stopped",
         "backgroundCompleted": "Background completed",
         "backgroundFailed": "Background failed",
         "backgroundRunning": "Background running",
@@ -946,6 +946,8 @@
       "syncFailed": "Sync failed",
       "syncFailedRetry": "Sync failed. Please try again.",
       "configPartiallySaved": "Configuration was not fully saved and may revert after restart.",
+      "extensionsDeferred": "This extension change will apply after the active turn.",
+      "extensionsUnsupported": "Some selected extension capabilities are not supported by Managed Codex.",
       "searchUnsupported": "In-page search is not supported in this environment because the CSS Highlight API is missing.",
       "codexSubscriptionNeedsSession": "Codex subscription requires a new Codex session. Switch in the model picker and confirm the new session first.",
       "queueLimit": "You can queue at most 5 messages.",
@@ -962,7 +964,7 @@
       "providerSwitchChannelTransferFailed": "The new chat opened, but the Channel binding was not migrated.",
       "createNewSessionFailed": "Failed to create new chat.",
       "imagesNotTransferred": "Image attachments cannot be carried into the new chat. Add them again.",
-      "channelRebindFailedReset": "Channel rebind failed. The chat was reset locally.",
+      "channelRebindFailedNewCancelled": "Channel rebind failed. The new conversation was cancelled.",
       "channelRebindFailedDeleteCancelled": "Channel rebind failed. Delete was cancelled.",
       "reselectModelFirst": "Select the model again in the model picker first.",
       "submitFailedRetry": "Submit failed. Please try again.",
@@ -1018,8 +1020,8 @@
           "detail": "The provider returned a rate-limit or quota error. Check the provider quota or wait for it to reset."
         },
         "rapid_refill_breaker": {
-          "label": "Requests are too frequent; backing off",
-          "detail": "The SDK triggered its rapid refill breaker and is backing off before retrying. It should recover automatically."
+          "label": "Context repeatedly refilled; this turn stopped",
+          "detail": "The context reached its limit several times shortly after automatic compaction. Reduce file or tool output and try again; if it still fails, start a new chat."
         },
         "aborted_tools": {
           "label": "Tool execution was interrupted",

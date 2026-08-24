@@ -144,6 +144,14 @@ function parseGenerateRequest(value: unknown): AzgaarRuntimeGenerateRequest {
     world: {
       sourceHash: worldRecord.sourceHash,
       files: files as Record<string, string | null>,
+      ...(worldRecord.generationPlan &&
+      typeof worldRecord.generationPlan === "object" &&
+      !Array.isArray(worldRecord.generationPlan)
+        ? {
+            generationPlan:
+              worldRecord.generationPlan as AzgaarRuntimeGenerateRequest["world"]["generationPlan"],
+          }
+        : {}),
       ...(typeof worldRecord.summary === "string"
         ? { summary: worldRecord.summary }
         : {}),
@@ -412,6 +420,7 @@ function bootstrapScript(request: AzgaarRuntimeGenerateRequest): string {
     window.addEventListener("unhandledrejection", event => recordError(event.reason));
 
     const options = request.options || {};
+    const generationPlan = request.world.generationPlan || null;
     const storedOptions = {
       template: options.heightmapTemplate,
       statesNumber: options.states,
@@ -443,6 +452,9 @@ function bootstrapScript(request: AzgaarRuntimeGenerateRequest): string {
           if (regions[index]) state.name = regions[index];
         });
       }
+      if (generationPlan?.entities) {
+        window.__MYAGENTS_AZGAAR_GENERATION_PLAN__ = generationPlan;
+      }
       window.__MYAGENTS_AZGAAR_GENERATED__ = {
         mapId: event.detail?.mapId || window.mapId || null,
         seed: event.detail?.seed || null
@@ -464,6 +476,7 @@ function exportScript(request: AzgaarRuntimeGenerateRequest): string {
     // mapping here so an event missed during navigation cannot drop world
     // architecture names from the exported candidate.
     const constraints = request.world.constraints || {};
+    const generationPlan = request.world.generationPlan || null;
     const places = [...new Set(constraints.placeNames || [])].filter(Boolean);
     const regions = [...new Set([...(constraints.factionNames || []), ...(constraints.spatialNames || [])])].filter(Boolean);
     if (window.pack?.burgs) {
@@ -475,6 +488,9 @@ function exportScript(request: AzgaarRuntimeGenerateRequest): string {
       window.pack.states.slice(1).forEach((state, index) => {
         if (regions[index]) state.name = regions[index];
       });
+    }
+    if (generationPlan?.entities) {
+      window.__MYAGENTS_AZGAAR_GENERATION_PLAN__ = generationPlan;
     }
     // The official exporter embeds active web fonts by fetching their URLs.
     // Use an offline-safe font for labels so the isolated runtime never needs

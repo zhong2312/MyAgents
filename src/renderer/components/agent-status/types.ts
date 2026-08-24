@@ -15,6 +15,7 @@ export interface TodoItem {
 }
 
 export type SubagentMode = 'sync' | 'background';
+export type SubagentDisplayStatus = 'running' | 'completed' | 'failed' | 'interrupted';
 
 export interface SubagentStatus {
   /**
@@ -31,6 +32,8 @@ export interface SubagentStatus {
   mode: SubagentMode;
   /** 开始时间（ms），用于实时计时；不变量，不要每次派生时重算 */
   startedAt: number;
+  finishedAt?: number;
+  status: SubagentDisplayStatus;
   inputTokens: number;
   outputTokens: number;
   toolCount: number;
@@ -42,6 +45,8 @@ export interface AgentStatusSummary {
   todoInProgress: number;
   todoTotal: number;
   subagentRunning: number;
+  subagentTotal: number;
+  subagentTerminalStatus: Exclude<SubagentDisplayStatus, 'running'> | null;
   /**
    * 最早开始的活跃 subagent 的开始时间（ms epoch）。null 表示当前无活跃 subagent。
    * 暴露 startedAt 而不是已运行的 elapsedMs，让消费组件自己驱动 1s 计时器

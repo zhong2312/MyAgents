@@ -17,11 +17,11 @@ import {
   useState,
 } from "react";
 
-import { useWorkbenchStorage } from "@/workbench-host/useWorkbenchStorage";
 import {
   dispatchWorkbenchHostAction,
   type WorkbenchAgentCompanionProps,
 } from "@/workbench-sdk";
+import { useWorkbenchStorage } from "@/workbench-sdk/storage";
 
 import {
   buildNextManuscriptChapterContent,

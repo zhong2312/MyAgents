@@ -55,8 +55,16 @@ export class DirectOneShotCancelledError extends Error {
 
 type DirectResponseEvent = {
   readonly type?: unknown;
-  readonly delta?: { readonly type?: unknown; readonly text?: unknown };
+  readonly delta?:
+    | { readonly type?: unknown; readonly text?: unknown }
+    | string;
   readonly content_block?: { readonly type?: unknown; readonly text?: unknown };
+  readonly choices?: readonly {
+    readonly delta?: { readonly content?: unknown };
+    readonly message?: { readonly content?: unknown };
+  }[];
+  readonly output_text?: unknown;
+  readonly output?: unknown;
 };
 
 type DirectResponseHandle = {
@@ -120,23 +128,51 @@ function errorFromResponse(response: Response, body: string): Error {
   );
 }
 
+function extractTextValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => extractTextValue(item)).join("");
+  }
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text;
+  if (record.type === "text" && typeof record.content === "string") {
+    return record.content;
+  }
+  if (record.content !== undefined) return extractTextValue(record.content);
+  return "";
+}
+
 function extractTextFromResponseBody(value: unknown): string {
   if (!value || typeof value !== "object") return "";
-  const content = (value as { content?: unknown }).content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((block): block is { type?: unknown; text?: unknown } =>
-      Boolean(block && typeof block === "object"),
-    )
-    .filter((block) => block.type === "text" && typeof block.text === "string")
-    .map((block) => block.text as string)
-    .join("");
+  const record = value as Record<string, unknown>;
+  const anthropicText = extractTextValue(record.content);
+  if (anthropicText) return anthropicText;
+  const openAiChoices = record.choices;
+  if (Array.isArray(openAiChoices)) {
+    const choiceText = openAiChoices
+      .map((choice) => {
+        if (!choice || typeof choice !== "object") return "";
+        const typed = choice as Record<string, unknown>;
+        const message = typed.message;
+        return message && typeof message === "object"
+          ? extractTextValue((message as Record<string, unknown>).content)
+          : "";
+      })
+      .join("");
+    if (choiceText) return choiceText;
+  }
+  const outputText = extractTextValue(record.output_text);
+  if (outputText) return outputText;
+  return extractTextValue(record.output);
 }
 
 function extractTextDelta(event: DirectResponseEvent): string {
   if (
     event.type === "content_block_delta" &&
-    event.delta?.type === "text_delta" &&
+    event.delta !== null &&
+    typeof event.delta === "object" &&
+    event.delta.type === "text_delta" &&
     typeof event.delta.text === "string"
   ) {
     return event.delta.text;
@@ -147,6 +183,21 @@ function extractTextDelta(event: DirectResponseEvent): string {
     typeof event.content_block.text === "string"
   ) {
     return event.content_block.text;
+  }
+  if (Array.isArray(event.choices)) {
+    return event.choices
+      .map((choice) => extractTextValue(choice?.delta?.content))
+      .join("");
+  }
+  if (event.type === "response.output_text.delta") {
+    return typeof event.delta === "string" ? event.delta : "";
+  }
+  if (event.type === "response.output_text.done") {
+    return typeof event.output_text === "string"
+      ? event.output_text
+      : typeof event.delta === "string"
+        ? event.delta
+        : "";
   }
   return "";
 }
@@ -175,9 +226,14 @@ async function readDirectResponse(
   const responseIsStream =
     response.headers.get("content-type")?.includes("text/event-stream") ??
     false;
-  if (!streamText && !responseIsStream) {
+  // Some OpenAI-compatible providers ignore `stream: true` and still return a
+  // regular JSON response. Treat the content type as authoritative so that a
+  // valid response is not discarded by the SSE parser.
+  if (!responseIsStream) {
     const body = await response.json();
-    return extractTextFromResponseBody(body);
+    const output = extractTextFromResponseBody(body).trim();
+    if (output) onProgress?.(output);
+    return output;
   }
 
   if (!response.body) return "";

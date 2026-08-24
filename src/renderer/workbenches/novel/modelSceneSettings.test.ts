@@ -2,10 +2,20 @@ import { describe, expect, it } from "vitest";
 
 import {
   getEffectiveModelSceneSelection,
+  NOVEL_MODEL_SCENES,
   parseModelSceneSettings,
 } from "./modelSceneSettings";
 
 describe("novel model scene selection", () => {
+  it("registers the world simulation one-shot scene", () => {
+    expect(NOVEL_MODEL_SCENES).toContainEqual(
+      expect.objectContaining({
+        id: "simulation.advance",
+        execution: "run",
+      }),
+    );
+  });
+
   it("uses the manuscript scene binding before the novel default model", () => {
     const settings = parseModelSceneSettings(
       "settings/ai-model-scenes.json",

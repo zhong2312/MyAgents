@@ -28,16 +28,18 @@ import CustomTitleBar from './CustomTitleBar';
 function renderBar(over: Partial<React.ComponentProps<typeof CustomTitleBar>> = {}) {
     const onRestoreSession = vi.fn();
     const onDismissRestore = vi.fn();
+    const onOpenSettings = vi.fn();
     const result = render(
         <CustomTitleBar
             onRestoreSession={onRestoreSession}
             onDismissRestore={onDismissRestore}
+            onOpenSettings={onOpenSettings}
             {...over}
         >
             <div data-testid="tabbar" />
         </CustomTitleBar>,
     );
-    return { ...result, onRestoreSession, onDismissRestore };
+    return { ...result, onRestoreSession, onDismissRestore, onOpenSettings };
 }
 
 describe('CustomTitleBar — 恢复对话 pill (Issue #309)', () => {
@@ -110,15 +112,19 @@ describe('CustomTitleBar — 恢复对话 pill (Issue #309)', () => {
         expect(tabbarHost?.className).toContain('flex-1');
     });
 
-    it('does not duplicate global product navigation in the titlebar', async () => {
+    it('opens MyAgents settings from the titlebar', async () => {
         mocks.isTauri.mockReturnValue(true);
         await i18n.changeLanguage('en-US');
 
-        renderBar();
+        const { onOpenSettings } = renderBar();
 
         expect(screen.queryByRole('button', { name: 'AI Helper' })).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Team' })).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Tasks' })).not.toBeInTheDocument();
-        expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument();
+        const settingsButton = screen.getByRole('button', { name: 'Settings' });
+        expect(settingsButton).toHaveAttribute('title', 'Settings (Ctrl+U)');
+
+        fireEvent.click(settingsButton);
+        expect(onOpenSettings).toHaveBeenCalledTimes(1);
     });
 });

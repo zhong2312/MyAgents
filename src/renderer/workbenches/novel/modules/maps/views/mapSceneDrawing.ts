@@ -1,10 +1,17 @@
-import { getMapRiverStyle, mapRiverWidthAt } from "../business/mapHydrography";
+import {
+  getMapRiverStyle,
+  mapRiverWidthAt,
+} from "../business/mapHydrography";
 import { mapBrushCurvePoints } from "../business/mapFeatureShapes";
 import {
+  getMapLabelFrameStyle,
   getMapLabelLayout,
   getMapLabelStyle,
+  getMapLabelTextDimensions,
+  mapLabelLines,
   mapFeatureHasLabel,
   mapLabelCanvasFont,
+  type MapLabelPlacement,
 } from "../business/mapLabels";
 import { getMapRouteStyle, mapRouteStrokeLayers } from "../business/mapRoutes";
 import type {
@@ -344,7 +351,8 @@ export function drawMapStyledRoute(
   // 样式路线也必须尊重画笔的直线/弧线选择，不能绕过通用触点契约。
   // 缺少 curve 的历史路线沿用原先的自然平滑。
   const curve = feature.props.curve === "line" ? "line" : "arc";
-  const smoothed = mapBrushCurvePoints(points, curve);
+  const closed = feature.props.closed === "true";
+  const smoothed = mapBrushCurvePoints(points, curve, closed);
   if (smoothed.length < 2) return false;
 
   context.save();
@@ -358,6 +366,7 @@ export function drawMapStyledRoute(
       layer.dash ? layer.dash.map((value) => value * camera.zoom) : [],
     );
     drawPath(context, smoothed, camera);
+    if (closed) context.closePath();
     context.stroke();
   });
   context.setLineDash([]);
@@ -460,7 +469,13 @@ export function drawAzgaarOverlayFeature(
     );
     if (layer === "route")
       context.setLineDash([4 * camera.zoom, 5 * camera.zoom]);
-    drawMapBrushPath(context, points, camera, mapFeatureBrushCurve(feature));
+    drawMapBrushPath(
+      context,
+      points,
+      camera,
+      mapFeatureBrushCurve(feature),
+      feature.props.closed === "true",
+    );
     context.stroke();
     context.setLineDash([]);
     context.restore();
@@ -518,10 +533,12 @@ export function drawMapFeatureLabel(
   points: readonly MapScenePoint[],
   camera: MapRenderCamera,
   opacity: number,
+  placement?: MapLabelPlacement,
 ): void {
   if (!mapFeatureHasLabel(feature) || points.length === 0) return;
+  if (placement && !placement.visible) return;
   const style = getMapLabelStyle(feature);
-  const layout = getMapLabelLayout(feature, points);
+  const layout = placement?.layout ?? getMapLabelLayout(feature, points);
   const anchor = mapToCanvasPoint(layout.anchor, camera);
 
   context.save();
@@ -535,13 +552,38 @@ export function drawMapFeatureLabel(
   context.textAlign = "center";
   context.textBaseline = "middle";
   context.lineJoin = "round";
+  const frame = getMapLabelFrameStyle(style);
+  const dimensions = getMapLabelTextDimensions(feature.name, style);
+  const width = dimensions.width * camera.zoom;
+  const height = dimensions.height * camera.zoom;
+  if (frame) {
+    context.fillStyle = frame.fill;
+    context.strokeStyle = frame.stroke;
+    context.lineWidth = frame.lineWidth * camera.zoom;
+    if (style.frame === "seal") {
+      context.beginPath();
+      context.arc(0, 0, Math.max(width, height) / 2, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+    } else {
+      context.fillRect(-width / 2, -height / 2, width, height);
+      context.strokeRect(-width / 2, -height / 2, width, height);
+    }
+  }
+  const lines = mapLabelLines(feature.name, style);
+  const lineHeight = style.fontSize * camera.zoom * 1.15;
+  const firstLineY = (-lineHeight * (lines.length - 1)) / 2;
   if (style.haloWidth > 0) {
     context.strokeStyle = style.haloColor;
     context.lineWidth = style.haloWidth * camera.zoom;
-    context.strokeText(feature.name, 0, 0);
+    lines.forEach((line, index) =>
+      context.strokeText(line, 0, firstLineY + index * lineHeight),
+    );
   }
   context.fillStyle = style.color;
-  context.fillText(feature.name, 0, 0);
+  lines.forEach((line, index) =>
+    context.fillText(line, 0, firstLineY + index * lineHeight),
+  );
   context.restore();
 }
 

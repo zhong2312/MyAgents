@@ -476,17 +476,15 @@ impl HeartbeatRunner {
             .map(|s| s.to_string());
 
         {
-            let drift_result = match {
-                let mut router_guard = router.lock().await;
-                router_guard
-                    .check_and_reset_on_runtime_identity_drift(
-                        &session_key,
-                        &current_runtime,
-                        current_runtime_source.as_deref(),
-                        sidecar_manager,
-                    )
-                    .await
-            } {
+            let drift_result = match SessionRouter::check_and_reset_on_runtime_identity_drift(
+                router,
+                &session_key,
+                &current_runtime,
+                current_runtime_source.as_deref(),
+                sidecar_manager,
+            )
+            .await
+            {
                 Ok(result) => result,
                 Err(error) => {
                     ulog_error!(

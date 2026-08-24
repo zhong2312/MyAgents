@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { useToastOptional } from "@/components/Toast";
+import { useWorkbenchToastOptional } from "@/workbench-sdk/toast";
 
 import {
   MAP_COMPONENT_DRAG_MIME,
@@ -59,6 +59,7 @@ import {
   expandMapSelectableItemIds,
   findMapSelectableGroup,
   isMapSelectableGroupSelection,
+  isMapSelectableItemLocked,
   moveMapSelectableItems,
 } from "../business/mapSelection";
 import {
@@ -85,7 +86,7 @@ import {
 import { getMapTerrainMaterialPreset } from "../business/mapTerrainMaterials";
 import {
   DEFAULT_MAP_RIVER_PROPS,
-  isMapRiverFeature,
+  hasMapRiverAppearance,
 } from "../business/mapHydrography";
 import {
   DEFAULT_MAP_FREEFORM_AREA_PROPS,
@@ -97,6 +98,10 @@ import {
   resampleMapBrushPoints,
   resampleMapBrushPointsBySpacing,
 } from "../business/mapFeatureShapes";
+import {
+  mapLabelViewportCandidates,
+  resolveMapLabelPlacements,
+} from "../business/mapLabels";
 import {
   getMapBackgroundImagePlacement,
   isMapBackgroundImageVisible,
@@ -158,6 +163,7 @@ type SceneMode =
   | "terrain-water"
   | "terrain-material"
   | "draw"
+  | "polygon"
   | "region"
   | "place-stamp"
   | "place-terrain-prefab"
@@ -176,6 +182,24 @@ type SceneMode =
   | "move-selection";
 
 const EMPTY_PROJECT_ARTWORK_SOURCES: ReadonlyMap<string, string> = new Map();
+const DRAG_PREVIEW_TERRAIN_MAX_SURFACE_EDGE = 512;
+const LABEL_LAYOUT_VIEWPORT_BUCKET_SIZE = 128;
+const LABEL_LAYOUT_VIEWPORT_PADDING = 640;
+
+function mapSceneLabelLayoutViewport(viewport: {
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
+  readonly bottom: number;
+}) {
+  const bucket = LABEL_LAYOUT_VIEWPORT_BUCKET_SIZE;
+  return {
+    left: Math.floor(viewport.left / bucket) * bucket,
+    right: Math.ceil(viewport.right / bucket) * bucket,
+    top: Math.floor(viewport.top / bucket) * bucket,
+    bottom: Math.ceil(viewport.bottom / bucket) * bucket,
+  };
+}
 
 function terrainMaterialSurface(
   material: MapTerrainMaterial | null | undefined,
@@ -217,6 +241,8 @@ type MapSceneContextMenu = {
   readonly x: number;
   readonly y: number;
   readonly itemIds: readonly string[];
+  readonly lockedItemIds: readonly string[];
+  readonly unlockedItemIds: readonly string[];
   readonly groupId: string | null;
   readonly isCompleteGroup: boolean;
   readonly materialLandPair: readonly [string, string] | null;
@@ -315,6 +341,11 @@ interface MapSceneCanvasProps {
   readonly onCreateGroup?: (itemIds: readonly string[]) => void;
   /** 解除组合只删除组合引用，不改写成员事实。 */
   readonly onUngroup?: (groupId: string) => void;
+  /** 修改普通地理对象的对象级锁定状态。 */
+  readonly onSetItemsLocked?: (
+    itemIds: readonly string[],
+    locked: boolean,
+  ) => void;
   readonly onCreate: (feature: MapFeature) => void;
   readonly onComponentDrop: (
     componentId: string,
@@ -442,6 +473,18 @@ function snapPoint(
 
 function distance(a: MapScenePoint, b: MapScenePoint): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+const MAP_POLYGON_CLOSE_TOLERANCE = 24;
+
+function isPolygonClosePoint(
+  points: readonly MapScenePoint[],
+  point: MapScenePoint,
+): boolean {
+  return (
+    points.length >= 3 &&
+    distance(points[0]!, point) <= MAP_POLYGON_CLOSE_TOLERANCE
+  );
 }
 
 function distanceToSegment(
@@ -850,6 +893,7 @@ function drawMapSceneNavigatorContent(
     if (!layer?.visible || feature.points.length === 0) return;
     const layerOpacity = Math.max(0.2, Math.min(1, layer.opacity));
     const isArea = isMapFeatureFreeformArea(feature.kind);
+    const isClosedPath = isArea || feature.props.closed === "true";
     const areaStyle = isArea ? getMapFeatureAreaStyle(feature) : null;
     context.globalAlpha = layerOpacity;
     context.strokeStyle = feature.props.color ?? "#6f5944";
@@ -861,7 +905,7 @@ function drawMapSceneNavigatorContent(
       feature.points,
       { x: 0, y: 0, zoom: 1 },
       mapFeatureBrushCurve(feature),
-      isArea,
+      isClosedPath,
     );
     if (isArea) {
       context.globalAlpha = layerOpacity * (areaStyle?.opacity ?? 1);
@@ -1028,7 +1072,7 @@ function drawMapFeatureSelectionOutline(
       points,
       camera,
       mapFeatureBrushCurve(feature),
-      isMapFeatureFreeformArea(feature.kind),
+      isMapFeatureFreeformArea(feature.kind) || feature.props.closed === "true",
     );
   }
   context.stroke();
@@ -1418,6 +1462,7 @@ export default function MapSceneCanvas({
   onSelectionChange,
   onCreateGroup,
   onUngroup,
+  onSetItemsLocked,
   onCreate,
   onComponentDrop,
   onComponentSurface,
@@ -1435,7 +1480,7 @@ export default function MapSceneCanvas({
   onGeometryChange,
   onBatchMove,
 }: MapSceneCanvasProps) {
-  const toast = useToastOptional();
+  const toast = useWorkbenchToastOptional();
   const [isExporting, setIsExporting] = useState(false);
   const [contextMenu, setContextMenu] = useState<MapSceneContextMenu | null>(
     null,
@@ -1450,6 +1495,8 @@ export default function MapSceneCanvas({
     fitted: false,
   });
   const pointerRef = useRef<PointerState | null>(null);
+  const polygonDraftRef = useRef<MapScenePoint[]>([]);
+  const polygonHoverRef = useRef<MapScenePoint | null>(null);
   const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
   const assetCatalogRef = useRef(
     createMapArtworkAssetCatalog(document.artwork, projectArtworkSources),
@@ -1460,6 +1507,14 @@ export default function MapSceneCanvas({
     readonly height: number;
     readonly composite: ReturnType<typeof createMapTerrainComposite>;
   } | null>(null);
+  /** 连续素材的完整笔触边界只随事实点位变化，视口重绘不应重复扫描。 */
+  const sceneStrokeBoundsRef = useRef<
+    WeakMap<MapSceneStroke, ReturnType<typeof regionBounds>>
+  >(new WeakMap());
+  /** 区域边线只在进入视口时需要采样和描边。 */
+  const sceneRegionBoundsRef = useRef<
+    WeakMap<MapSceneRegion, ReturnType<typeof regionBounds>>
+  >(new WeakMap());
   const terrainSourceKeyRef = useRef<{
     readonly scene: MapDocument["scene"];
     readonly sourceKey: string;
@@ -1481,6 +1536,20 @@ export default function MapSceneCanvas({
     readonly renderOrder: readonly MapFeature[];
     readonly boundsById: ReadonlyMap<string, ReturnType<typeof regionBounds>>;
     readonly layersById: ReadonlyMap<string, MapDocument["layers"][number]>;
+  } | null>(null);
+  const labelPlacementCacheRef = useRef<{
+    readonly features: MapDocument["features"];
+    readonly layers: MapDocument["layers"];
+    readonly timelineCursor: number | null;
+    readonly hasAzgaarBaseMap: boolean;
+    readonly zoomBucket: number;
+    readonly viewport: {
+      readonly left: number;
+      readonly right: number;
+      readonly top: number;
+      readonly bottom: number;
+    };
+    readonly placements: ReturnType<typeof resolveMapLabelPlacements>;
   } | null>(null);
   const documentRef = useRef(document);
   const selectedIdRef = useRef(selectedFeatureId);
@@ -1610,7 +1679,11 @@ export default function MapSceneCanvas({
 
       const scene = currentDocument.scene;
       const canvasSettings = settingsRef.current;
-      const previewPoints = pointerPreviewPoints(pointerRef.current);
+      const previewPoints = [
+        ...pointerPreviewPoints(pointerRef.current),
+        ...polygonDraftRef.current,
+        ...(polygonHoverRef.current ? [polygonHoverRef.current] : []),
+      ];
       const externalDragAssetId = externalDragAssetIdRef.current;
       const externalDragComponent = externalDragAssetId
         ? MAP_COMPONENT_PRESETS.find(
@@ -1951,7 +2024,12 @@ export default function MapSceneCanvas({
           sourceKey: terrainSourceKey,
           width: currentDocument.canvas.width,
           height: currentDocument.canvas.height,
-          composite: createMapTerrainComposite(terrainPreviewDocument),
+          composite: createMapTerrainComposite(
+            terrainPreviewDocument,
+            hasTerrainPreview
+              ? { maxSurfaceEdge: DRAG_PREVIEW_TERRAIN_MAX_SURFACE_EDGE }
+              : undefined,
+          ),
         };
       }
       const terrainComposite = terrainCompositeRef.current?.composite ?? null;
@@ -1983,6 +2061,22 @@ export default function MapSceneCanvas({
               selectionDelta ||
               region.id === selectedIdRef.current ||
               !shouldDrawMapSceneRegionEdge(region, Boolean(terrainComposite))
+            ) {
+              return;
+            }
+            const regionBoundsForRender =
+              sceneRegionBoundsRef.current.get(region) ??
+              (() => {
+                const bounds = regionBounds(region.points);
+                sceneRegionBoundsRef.current.set(region, bounds);
+                return bounds;
+              })();
+            if (
+              !mapSceneBoundsIntersectViewport(
+                regionBoundsForRender,
+                visibleWorldBounds,
+                Math.max(32, region.edgeWidth / 2),
+              )
             ) {
               return;
             }
@@ -2134,12 +2228,7 @@ export default function MapSceneCanvas({
                 );
                 context.stroke();
               } else {
-                drawMapBrushPath(
-                  context,
-                  strokePoints,
-                  camera,
-                  stroke.curve,
-                );
+                drawMapBrushPath(context, strokePoints, camera, stroke.curve);
                 context.stroke();
               }
               context.restore();
@@ -2195,6 +2284,26 @@ export default function MapSceneCanvas({
                       currentDocument.canvas,
                     )
                   : stroke.points;
+            const strokeBounds =
+              strokePoints === stroke.points
+                ? (sceneStrokeBoundsRef.current.get(stroke) ??
+                  (() => {
+                    const bounds = regionBounds(stroke.points);
+                    sceneStrokeBoundsRef.current.set(stroke, bounds);
+                    return bounds;
+                  })())
+                : regionBounds(strokePoints);
+            // 连续素材可能扩展为数百甚至数千个印章。先按作者笔触范围裁剪，
+            // 使视口外内容不再参与曲线采样、素材变体选择和图像绘制。
+            if (
+              !mapSceneBoundsIntersectViewport(
+                strokeBounds,
+                visibleWorldBounds,
+                Math.max(64, stroke.width),
+              )
+            ) {
+              return;
+            }
             // 笔触事实保存的是作者控制点，实际盖印/描边必须先按 curve
             // 派生中心线，否则选择“弧线触点”只会改变 JSON 而不会改变画面。
             const renderedStrokePoints = mapBrushCurvePoints(
@@ -2227,10 +2336,7 @@ export default function MapSceneCanvas({
                       scatter: stroke.scatter,
                       followPath: asset.brushFollowsPath,
                     });
-              if (
-                strokePoints === stroke.points &&
-                dabs !== cachedDabs?.dabs
-              ) {
+              if (strokePoints === stroke.points && dabs !== cachedDabs?.dabs) {
                 artworkBrushDabsRef.current.set(stroke, {
                   assetId: asset.id,
                   followPath: asset.brushFollowsPath,
@@ -2300,12 +2406,7 @@ export default function MapSceneCanvas({
                 context.fillStyle = stroke.color;
                 context.fill();
               } else {
-                drawMapBrushPath(
-                  context,
-                  strokePoints,
-                  camera,
-                  stroke.curve,
-                );
+                drawMapBrushPath(context, strokePoints, camera, stroke.curve);
                 context.stroke();
               }
             }
@@ -2331,12 +2432,7 @@ export default function MapSceneCanvas({
                 );
                 context.stroke();
               } else {
-                drawMapBrushPath(
-                  context,
-                  strokePoints,
-                  camera,
-                  stroke.curve,
-                );
+                drawMapBrushPath(context, strokePoints, camera, stroke.curve);
                 context.stroke();
               }
               context.restore();
@@ -2414,14 +2510,10 @@ export default function MapSceneCanvas({
             context.save();
             context.globalAlpha = 0.58;
             context.fillStyle =
-              previewFeature.props.fill ?? previewFeature.props.color ?? "#a96d5c66";
-            drawMapBrushPath(
-              context,
-              areaPoints,
-              camera,
-              brushCurve,
-              true,
-            );
+              previewFeature.props.fill ??
+              previewFeature.props.color ??
+              "#a96d5c66";
+            drawMapBrushPath(context, areaPoints, camera, brushCurve, true);
             context.fill();
             context.strokeStyle = previewFeature.props.color ?? "#8b6b4a";
             context.setLineDash([6, 4]);
@@ -2558,6 +2650,66 @@ export default function MapSceneCanvas({
           (currentDocument.canvas.backgroundImage ||
             currentDocument.canvas.backgroundAssetPath),
       );
+      const zoomBucket = Math.round(camera.zoom * 20) / 20;
+      const labelLayoutViewport =
+        mapSceneLabelLayoutViewport(visibleWorldBounds);
+      const cachedLabelPlacements = labelPlacementCacheRef.current;
+      const labelPlacements =
+        cachedLabelPlacements?.features === currentDocument.features &&
+        cachedLabelPlacements.layers === currentDocument.layers &&
+        cachedLabelPlacements.timelineCursor === timelineCursor &&
+        cachedLabelPlacements.hasAzgaarBaseMap === hasAzgaarBaseMap &&
+        cachedLabelPlacements.zoomBucket === zoomBucket &&
+        cachedLabelPlacements.viewport.left === labelLayoutViewport.left &&
+        cachedLabelPlacements.viewport.right === labelLayoutViewport.right &&
+        cachedLabelPlacements.viewport.top === labelLayoutViewport.top &&
+        cachedLabelPlacements.viewport.bottom === labelLayoutViewport.bottom
+          ? cachedLabelPlacements.placements
+          : resolveMapLabelPlacements(
+              mapLabelViewportCandidates(
+                featureRender.renderOrder.filter((feature) => {
+                  const layer = featureRender.layersById.get(feature.layerId);
+                  return Boolean(
+                    layer?.visible &&
+                      (timelineCursor === null ||
+                        ((feature.timeFrom === null ||
+                          timelineCursor >= feature.timeFrom) &&
+                          (feature.timeTo === null ||
+                            timelineCursor <= feature.timeTo))) &&
+                      shouldDrawMapFeatureTextOverlay(
+                        feature,
+                        hasAzgaarBaseMap,
+                      ),
+                  );
+                }),
+                featureRender.boundsById,
+                labelLayoutViewport,
+                LABEL_LAYOUT_VIEWPORT_PADDING,
+              ),
+              { zoom: zoomBucket },
+            );
+      if (
+        !cachedLabelPlacements ||
+        cachedLabelPlacements.features !== currentDocument.features ||
+        cachedLabelPlacements.layers !== currentDocument.layers ||
+        cachedLabelPlacements.timelineCursor !== timelineCursor ||
+        cachedLabelPlacements.hasAzgaarBaseMap !== hasAzgaarBaseMap ||
+        cachedLabelPlacements.zoomBucket !== zoomBucket ||
+        cachedLabelPlacements.viewport.left !== labelLayoutViewport.left ||
+        cachedLabelPlacements.viewport.right !== labelLayoutViewport.right ||
+        cachedLabelPlacements.viewport.top !== labelLayoutViewport.top ||
+        cachedLabelPlacements.viewport.bottom !== labelLayoutViewport.bottom
+      ) {
+        labelPlacementCacheRef.current = {
+          features: currentDocument.features,
+          layers: currentDocument.layers,
+          timelineCursor,
+          hasAzgaarBaseMap,
+          zoomBucket,
+          viewport: labelLayoutViewport,
+          placements: labelPlacements,
+        };
+      }
       featureRender.renderOrder.forEach((feature) => {
         const layer = featureRender.layersById.get(feature.layerId);
         if (
@@ -2637,7 +2789,11 @@ export default function MapSceneCanvas({
           feature.kind === "marker"
             ? assetCatalogRef.current.get(feature.props.component ?? "")
             : undefined;
-        if (
+        // 场景区域已使用这些源要素绘制海陆表面。要素层只保留它们的选择、
+        // 标签和几何编辑能力，不能再覆盖一次相同的地貌填色。
+        if (feature.props.sceneSurface === "true") {
+          // 由场景地表合成器绘制。
+        } else if (
           drawAzgaarOverlayFeature(
             context,
             feature,
@@ -2674,7 +2830,7 @@ export default function MapSceneCanvas({
               opacity,
             );
           }
-        } else if (isMapRiverFeature(feature)) {
+        } else if (hasMapRiverAppearance(feature)) {
           drawTaperedRiver(context, feature, points, camera, opacity);
         } else if (
           drawMapStyledRoute(context, feature, points, camera, opacity)
@@ -2686,7 +2842,8 @@ export default function MapSceneCanvas({
             points,
             camera,
             mapFeatureBrushCurve(feature),
-            isMapFeatureFreeformArea(feature.kind),
+            isMapFeatureFreeformArea(feature.kind) ||
+              feature.props.closed === "true",
           );
           if (isMapFeatureFreeformArea(feature.kind)) {
             const areaStyle = getMapFeatureAreaStyle(feature);
@@ -2714,7 +2871,14 @@ export default function MapSceneCanvas({
           }
         }
         if (shouldDrawMapFeatureTextOverlay(feature, hasAzgaarBaseMap)) {
-          drawMapFeatureLabel(context, feature, points, camera, opacity);
+          drawMapFeatureLabel(
+            context,
+            feature,
+            points,
+            camera,
+            opacity,
+            labelPlacements.get(feature.id),
+          );
         }
         if (feature.id === selectedIdRef.current) {
           drawMapFeatureSelectionOutline(context, feature, points, camera);
@@ -3022,6 +3186,71 @@ export default function MapSceneCanvas({
       const pointer = pointerRef.current;
       const pointerCurve = pointer?.curve ?? canvasSettings.brushPointCurve;
       const pointerAreaShape = pointer?.areaShape ?? canvasSettings.areaShape;
+      const polygonPoints =
+        pointer?.mode === "polygon"
+          ? [
+              ...pointer.points,
+              ...(distance(
+                pointer.points.at(-1) ?? pointer.start,
+                pointer.last,
+              ) >= 1
+                ? [pointer.last]
+                : []),
+            ]
+          : [
+              ...polygonDraftRef.current,
+              ...(polygonHoverRef.current &&
+              distance(
+                polygonDraftRef.current.at(-1) ?? polygonHoverRef.current,
+                polygonHoverRef.current,
+              ) >= 1
+                ? [polygonHoverRef.current]
+                : []),
+            ];
+      const polygonPreviewClosed = isPolygonClosePoint(
+        polygonPoints,
+        polygonPoints.at(-1) ?? polygonPoints[0]!,
+      );
+      const polygonPreviewPoints = polygonPreviewClosed
+        ? polygonPoints.slice(0, -1)
+        : polygonPoints;
+      if (
+        toolRef.current === "polygon" &&
+        polygonPreviewPoints.length >= 1 &&
+        (polygonDraftRef.current.length > 0 || pointer?.mode === "polygon")
+      ) {
+        context.save();
+        context.globalAlpha = 0.9;
+        context.strokeStyle = "#c75436";
+        context.lineWidth = 2;
+        context.setLineDash([5, 4]);
+        drawMapBrushPath(
+          context,
+          polygonPreviewPoints,
+          camera,
+          pointerCurve,
+          polygonPreviewClosed,
+        );
+        context.stroke();
+        context.setLineDash([]);
+        polygonPreviewPoints.forEach((polygonPoint, index) => {
+          const point = mapToCanvasPoint(polygonPoint, camera);
+          context.beginPath();
+          context.arc(
+            point.x,
+            point.y,
+            index === polygonPreviewPoints.length - 1 ? 5 : 3.5,
+            0,
+            Math.PI * 2,
+          );
+          context.fillStyle =
+            index === polygonPreviewPoints.length - 1 ? "#c75436" : "#fffaf1";
+          context.fill();
+          context.strokeStyle = "#c75436";
+          context.stroke();
+        });
+        context.restore();
+      }
       if (pointer?.mode === "brush" && brushAssetRef.current) {
         const asset = assetCatalogRef.current.get(brushAssetRef.current);
         if (asset) {
@@ -3033,10 +3262,7 @@ export default function MapSceneCanvas({
           mapArtworkBrushDabs({
             id: `brush-preview:${asset.id}`,
             assetId: asset.id,
-            points: mapBrushCurvePoints(
-              pointer.points,
-              pointerCurve,
-            ),
+            points: mapBrushCurvePoints(pointer.points, pointerCurve),
             width: canvasSettings.brushSize,
             spacing: canvasSettings.brushSpacing,
             scatter: canvasSettings.brushScatter,
@@ -3184,12 +3410,7 @@ export default function MapSceneCanvas({
             );
             context.fill();
           } else {
-            drawMapBrushPath(
-              context,
-              previewCurvePoints,
-              camera,
-              pointerCurve,
-            );
+            drawMapBrushPath(context, previewCurvePoints, camera, pointerCurve);
             context.stroke();
           }
           const cursorPoint = mapToCanvasPoint(pointer.last, camera);
@@ -3235,7 +3456,7 @@ export default function MapSceneCanvas({
         const previewUsesHandDrawnPath =
           isAreaPreview &&
           (pointerTool === "freehand" ||
-            areaShape === "polygon" ||
+            areaShape === "closed" ||
             areaShape === "freehand");
         const previewRawPoints = previewUsesHandDrawnPath
           ? [
@@ -3267,7 +3488,10 @@ export default function MapSceneCanvas({
         const freehandPreviewClosed =
           isFreehandAreaPreview && isMapBrushPathClosed(previewRawPoints);
         const areaPoints =
-          isAreaPreview && areaShape !== "polygon" && areaShape !== "freehand"
+          isAreaPreview &&
+          areaShape !== "closed" &&
+          areaShape !== "polygon" &&
+          areaShape !== "freehand"
             ? createMapAreaShapePoints(areaShape, pointer.start, pointer.last)
             : previewUsesHandDrawnPath
               ? resampleMapBrushPoints(
@@ -3282,33 +3506,17 @@ export default function MapSceneCanvas({
           areaPoints.length >= 3 &&
           (!isFreehandAreaPreview || freehandPreviewClosed)
         ) {
-          drawMapBrushPath(
-            context,
-            areaPoints,
-            camera,
-            pointerCurve,
-            true,
-          );
+          drawMapBrushPath(context, areaPoints, camera, pointerCurve, true);
           context.fillStyle = "#c7543633";
           context.globalAlpha = 0.3;
           context.fill();
           context.globalAlpha = 0.8;
           context.stroke();
         } else if (isAreaPreview && areaPoints.length >= 2) {
-          drawMapBrushPath(
-            context,
-            areaPoints,
-            camera,
-            pointerCurve,
-          );
+          drawMapBrushPath(context, areaPoints, camera, pointerCurve);
           context.stroke();
         } else if (isRegionPreview && pointer.points.length >= 3) {
-          drawMapSceneRegionPath(
-            context,
-            pointer.points,
-            camera,
-            pointerCurve,
-          );
+          drawMapSceneRegionPath(context, pointer.points, camera, pointerCurve);
           context.fillStyle = isLand ? "#b8ad7d" : "#5d92a5";
           context.globalAlpha = 0.36;
           context.fill();
@@ -3348,12 +3556,7 @@ export default function MapSceneCanvas({
             context.lineWidth = 2;
             context.lineCap = "round";
             context.lineJoin = "round";
-            drawMapBrushPath(
-              context,
-              previewRoutePoints,
-              camera,
-              pointerCurve,
-            );
+            drawMapBrushPath(context, previewRoutePoints, camera, pointerCurve);
             context.stroke();
           }
           context.restore();
@@ -3417,12 +3620,7 @@ export default function MapSceneCanvas({
           // 普通路径构件没有专用路线样式时，也必须走同一条曲线渲染链。
           // 之前这里直接连接原始触点，导致弧线模式只有松手后才改变，
           // 实际创作时看起来像弧线没有生效。
-          drawMapBrushPath(
-            context,
-            routePoints,
-            camera,
-            pointerCurve,
-          );
+          drawMapBrushPath(context, routePoints, camera, pointerCurve);
           context.stroke();
         }
         context.restore();
@@ -3574,6 +3772,13 @@ export default function MapSceneCanvas({
   }, [requestRender]);
 
   useEffect(() => {
+    if (tool !== "polygon") {
+      polygonDraftRef.current = [];
+      polygonHoverRef.current = null;
+      if (pointerRef.current?.mode === "polygon") {
+        pointerRef.current = null;
+      }
+    }
     if (tool !== "artwork-stamp" && tool !== "terrain-prefab") {
       hoverPointRef.current = null;
     }
@@ -3853,9 +4058,21 @@ export default function MapSceneCanvas({
       const isFixedAreaShape =
         pointer.mode === "draw" &&
         drawTool === "area" &&
-        pointer.areaShape !== "polygon" &&
+        pointer.areaShape !== "closed" &&
         pointer.areaShape !== "freehand";
-      if (!isFixedAreaShape && distance(pointer.last, nextPoint) >= 8) {
+      // 自由画笔必须保留微小弯折；与普通路线共用 8 世界单位阈值会
+      // 把小弯中间的指针点全部丢掉，最终只剩起点和终点。自由画笔
+      // 只去除重复坐标，最终落地仍由 brushPointCount 控制数据规模。
+      const isFreehandPath =
+        pointer.mode === "draw" &&
+        (drawTool === "freehand" || pointer.areaShape === "freehand");
+      const previousPoint = pointer.points.at(-1) ?? pointer.start;
+      if (
+        !isFixedAreaShape &&
+        (isFreehandPath
+          ? distance(previousPoint, nextPoint) > 0
+          : distance(pointer.last, nextPoint) >= 8)
+      ) {
         pointer.points.push(nextPoint);
       }
     }
@@ -3963,9 +4180,17 @@ export default function MapSceneCanvas({
     const layer = currentDocument.artwork.layers.find((candidate) =>
       candidate.stamps.some((stamp) => stamp.id === selectedId),
     );
-    if (!layer?.visible || layer.locked) return null;
-    const stamp = layer.stamps.find((candidate) => candidate.id === selectedId);
-    if (!stamp) return null;
+    const stamp = layer?.stamps.find(
+      (candidate) => candidate.id === selectedId,
+    );
+    if (
+      !layer?.visible ||
+      layer.locked ||
+      !stamp ||
+      isMapSelectableItemLocked(currentDocument, stamp.id)
+    ) {
+      return null;
+    }
     const asset = assetCatalogRef.current.get(stamp.assetId);
     const variant = asset
       ? getMapArtworkAssetVariant(asset, stamp.variant)
@@ -4010,7 +4235,13 @@ export default function MapSceneCanvas({
     const layer = currentDocument.layers.find(
       (candidate) => candidate.id === feature.layerId,
     );
-    if (!layer?.visible || layer.locked) return null;
+    if (
+      !layer?.visible ||
+      layer.locked ||
+      isMapSelectableItemLocked(currentDocument, feature.id)
+    ) {
+      return null;
+    }
     const index = findMapGeometryVertexHandle(
       feature.points,
       point,
@@ -4035,7 +4266,9 @@ export default function MapSceneCanvas({
       const region = layer.regions.find(
         (candidate) => candidate.id === selectedId,
       );
-      if (!region) continue;
+      if (!region || isMapSelectableItemLocked(currentDocument, region.id)) {
+        continue;
+      }
       const index = findMapGeometryVertexHandle(
         region.points,
         point,
@@ -4062,7 +4295,13 @@ export default function MapSceneCanvas({
       const stroke = layer.strokes.find(
         (candidate) => candidate.id === selectedId,
       );
-      if (!stroke || stroke.points.length < 2) continue;
+      if (
+        !stroke ||
+        stroke.points.length < 2 ||
+        isMapSelectableItemLocked(currentDocument, stroke.id)
+      ) {
+        continue;
+      }
       const index = findMapSceneStrokeControlPointHandle(
         stroke.points,
         point,
@@ -4075,12 +4314,14 @@ export default function MapSceneCanvas({
 
   const hitTestCandidates = (
     point: MapScenePoint,
+    options: { readonly includeLocked?: boolean } = {},
   ): Array<{
     readonly type: "stamp" | "feature" | "stroke" | "region";
     readonly id: string;
     readonly sourcePoints?: readonly MapScenePoint[];
   }> => {
     const currentDocument = documentRef.current;
+    const includeLocked = options.includeLocked === true;
     const hits: Array<{
       readonly type: "stamp" | "feature" | "stroke" | "region";
       readonly id: string;
@@ -4091,8 +4332,14 @@ export default function MapSceneCanvas({
         for (const layer of [
           ...mapArtworkLayersInRenderOrder(currentDocument.artwork, phase),
         ].reverse()) {
-          if (!layer.visible || layer.locked) continue;
+          if (!layer.visible || (!includeLocked && layer.locked)) continue;
           for (const stamp of [...layer.stamps].reverse()) {
+            if (
+              !includeLocked &&
+              isMapSelectableItemLocked(currentDocument, stamp.id)
+            ) {
+              continue;
+            }
             const asset = assetCatalogRef.current.get(stamp.assetId);
             const variant = asset
               ? getMapArtworkAssetVariant(asset, stamp.variant)
@@ -4117,7 +4364,13 @@ export default function MapSceneCanvas({
       const layer = currentDocument.layers.find(
         (item) => item.id === feature.layerId,
       );
-      if (!layer?.visible || layer.locked) continue;
+      if (!layer?.visible || (!includeLocked && layer.locked)) continue;
+      if (
+        !includeLocked &&
+        isMapSelectableItemLocked(currentDocument, feature.id)
+      ) {
+        continue;
+      }
       if (hitMapFeatureGeometry(feature, point, cameraRef.current.zoom)) {
         hits.push({
           type: "feature",
@@ -4129,8 +4382,14 @@ export default function MapSceneCanvas({
     hitArtworkStamps(["scene"]);
     if (currentDocument.scene) {
       for (const layer of [...currentDocument.scene.layers].reverse()) {
-        if (!layer.visible || layer.locked) continue;
+        if (!layer.visible || (!includeLocked && layer.locked)) continue;
         for (const stroke of [...layer.strokes].reverse()) {
+          if (
+            !includeLocked &&
+            isMapSelectableItemLocked(currentDocument, stroke.id)
+          ) {
+            continue;
+          }
           const threshold = Math.max(10, stroke.width * 0.5 + 8);
           if (distanceToPath(point, stroke.points) <= threshold) {
             hits.push({
@@ -4141,6 +4400,12 @@ export default function MapSceneCanvas({
           }
         }
         for (const region of [...layer.regions].reverse()) {
+          if (
+            !includeLocked &&
+            isMapSelectableItemLocked(currentDocument, region.id)
+          ) {
+            continue;
+          }
           if (pointInPolygon(point, region.points)) {
             hits.push({
               type: "region",
@@ -4157,12 +4422,13 @@ export default function MapSceneCanvas({
 
   const hitTest = (
     point: MapScenePoint,
+    options: { readonly includeLocked?: boolean } = {},
   ): {
     readonly type: "stamp" | "feature" | "stroke" | "region";
     readonly id: string;
     readonly sourcePoints?: readonly MapScenePoint[];
   } | null => {
-    return hitTestCandidates(point)[0] ?? null;
+    return hitTestCandidates(point, options)[0] ?? null;
   };
 
   const setCanvasSelection = (
@@ -4217,8 +4483,17 @@ export default function MapSceneCanvas({
 
   const handleContextMenu = (event: React.MouseEvent<HTMLCanvasElement>) => {
     event.preventDefault();
+    if (toolRef.current === "polygon") {
+      event.stopPropagation();
+      if (polygonDraftRef.current.length > 0) {
+        commitPolygonDraft(
+          snapPoint(pointFromEvent(event), settingsRef.current),
+        );
+      }
+      return;
+    }
     const point = pointFromEvent(event);
-    const hit = hitTest(point);
+    const hit = hitTest(point, { includeLocked: true });
     if (!hit) {
       setContextMenu(null);
       setCanvasSelection([], null);
@@ -4231,13 +4506,20 @@ export default function MapSceneCanvas({
     if (!selectedIds.has(hit.id)) {
       setCanvasSelection(itemIds, hit.id);
     }
-    const candidates = hitTestCandidates(point);
+    const candidates = hitTestCandidates(point, { includeLocked: true });
     const group = findMapSelectableGroup(documentRef.current, hit.id);
+    const lockedItemIds = itemIds.filter((id) =>
+      isMapSelectableItemLocked(documentRef.current, id),
+    );
     const rootBounds = rootRef.current?.getBoundingClientRect();
     setContextMenu({
       x: Math.max(8, event.clientX - (rootBounds?.left ?? 0)),
       y: Math.max(8, event.clientY - (rootBounds?.top ?? 0)),
       itemIds,
+      lockedItemIds,
+      unlockedItemIds: itemIds.filter(
+        (id) => !isMapSelectableItemLocked(documentRef.current, id),
+      ),
       groupId: group?.id ?? null,
       isCompleteGroup: isMapSelectableGroupSelection(
         documentRef.current,
@@ -4274,7 +4556,12 @@ export default function MapSceneCanvas({
       const layer = currentDocument.layers.find(
         (candidate) => candidate.id === feature.layerId,
       );
-      if (!isEditableLayer(layer)) return;
+      if (
+        !isEditableLayer(layer) ||
+        isMapSelectableItemLocked(currentDocument, feature.id)
+      ) {
+        return;
+      }
       const candidateBounds =
         feature.points.length === 1
           ? {
@@ -4289,6 +4576,7 @@ export default function MapSceneCanvas({
     currentDocument.artwork.layers.forEach((layer) => {
       if (!isEditableLayer(layer)) return;
       layer.stamps.forEach((stamp) => {
+        if (isMapSelectableItemLocked(currentDocument, stamp.id)) return;
         const asset = assetCatalogRef.current.get(stamp.assetId);
         const variant = asset
           ? getMapArtworkAssetVariant(asset, stamp.variant)
@@ -4312,6 +4600,7 @@ export default function MapSceneCanvas({
     currentDocument.scene?.layers.forEach((layer) => {
       if (!isEditableLayer(layer)) return;
       layer.strokes.forEach((stroke) => {
+        if (isMapSelectableItemLocked(currentDocument, stroke.id)) return;
         const padding = Math.max(12, stroke.width / 2);
         const candidate = regionBounds(stroke.points);
         if (
@@ -4326,6 +4615,7 @@ export default function MapSceneCanvas({
         }
       });
       layer.regions.forEach((region) => {
+        if (isMapSelectableItemLocked(currentDocument, region.id)) return;
         const candidate = regionBounds(region.points);
         if (intersects(candidate)) ids.push(region.id);
       });
@@ -4764,6 +5054,28 @@ export default function MapSceneCanvas({
       };
       return;
     }
+    if (currentTool === "polygon" && event.button === 0) {
+      event.preventDefault();
+      const snappedPoint = snapPoint(point, settingsRef.current);
+      const draft = polygonDraftRef.current;
+      if (isPolygonClosePoint(draft, snappedPoint)) {
+        commitPolygonDraft(snappedPoint, true);
+        return;
+      }
+      polygonHoverRef.current = snappedPoint;
+      canvas.setPointerCapture(event.pointerId);
+      pointerRef.current = {
+        pointerId: event.pointerId,
+        mode: "polygon",
+        start: draft.at(-1) ?? snappedPoint,
+        last: snappedPoint,
+        points: [...draft],
+        selectedId: null,
+        curve: settingsRef.current.brushPointCurve,
+      };
+      requestRender();
+      return;
+    }
     if (
       event.button === 0 &&
       (currentTool === "marker" ||
@@ -4817,6 +5129,12 @@ export default function MapSceneCanvas({
         toolRef.current === "artwork-brush"
       ) {
         hoverPointRef.current = point;
+        requestRender();
+      } else if (
+        toolRef.current === "polygon" &&
+        polygonDraftRef.current.length > 0
+      ) {
+        polygonHoverRef.current = snapPoint(point, settingsRef.current);
         requestRender();
       }
       return;
@@ -4872,7 +5190,14 @@ export default function MapSceneCanvas({
     // 和重新打开后保持一致。
     const controlPointCurve =
       pointer.curve ?? settingsRef.current.brushPointCurve;
-    if (pointer.mode === "brush" && brushAssetRef.current) {
+    if (pointer.mode === "polygon") {
+      const snappedPoint = snapPoint(point, settingsRef.current);
+      const previous = polygonDraftRef.current.at(-1);
+      if (!previous || distance(previous, snappedPoint) >= 3) {
+        polygonDraftRef.current = [...polygonDraftRef.current, snappedPoint];
+      }
+      polygonHoverRef.current = snappedPoint;
+    } else if (pointer.mode === "brush" && brushAssetRef.current) {
       if (distance(pointer.points[pointer.points.length - 1]!, point) >= 8) {
         pointer.points.push(point);
       }
@@ -5075,12 +5400,7 @@ export default function MapSceneCanvas({
           closed,
         );
         if (sampledPoints.length >= 2) {
-          onComponentSurface(
-            component.id,
-            sampledPoints,
-            closed,
-            curve,
-          );
+          onComponentSurface(component.id, sampledPoints, closed, curve);
         }
       }
     } else if (
@@ -5305,13 +5625,10 @@ export default function MapSceneCanvas({
         (currentTool === "area" && areaShape === "freehand");
       const rawPoints =
         currentTool === "area" &&
+        areaShape !== "closed" &&
         areaShape !== "polygon" &&
         areaShape !== "freehand"
-          ? createMapAreaShapePoints(
-              areaShape,
-              pointer.start,
-              point,
-            )
+          ? createMapAreaShapePoints(areaShape, pointer.start, point)
           : [
               ...pointer.points,
               ...(distance(pointer.points.at(-1) ?? pointer.start, point) >= 1
@@ -5410,6 +5727,51 @@ export default function MapSceneCanvas({
     }
     pointerRef.current = null;
     updateCanvasCursor(point);
+    requestRender();
+  };
+
+  const commitPolygonDraft = (finalPoint?: MapScenePoint, close = false) => {
+    const points = [...polygonDraftRef.current];
+    if (
+      finalPoint &&
+      (!points.at(-1) || distance(points.at(-1)!, finalPoint) >= 3)
+    ) {
+      points.push(finalPoint);
+    }
+    const closeAtStart = isPolygonClosePoint(points, points.at(-1)!);
+    const shouldClose = close || closeAtStart;
+    const uniquePoints = points.filter(
+      (candidate, index) =>
+        index === 0 || distance(candidate, points[index - 1]!) >= 3,
+    );
+    const committedPoints =
+      shouldClose &&
+      uniquePoints.length > 2 &&
+      isPolygonClosePoint(uniquePoints, uniquePoints.at(-1)!)
+        ? uniquePoints.slice(0, -1)
+        : uniquePoints;
+    const committedClosed = shouldClose && committedPoints.length >= 3;
+    if (committedPoints.length >= 2) {
+      onCreate({
+        id: nextId("feature"),
+        kind: "route",
+        name: "多边形",
+        entityRef: null,
+        layerId: activeLayerId,
+        points: committedPoints,
+        timeFrom: null,
+        timeTo: null,
+        props: {
+          polygonBrush: "true",
+          closed: committedClosed ? "true" : "false",
+          curve: settingsRef.current.brushPointCurve,
+        },
+        description: "",
+      });
+    }
+    polygonDraftRef.current = [];
+    polygonHoverRef.current = null;
+    pointerRef.current = null;
     requestRender();
   };
 
@@ -5548,6 +5910,14 @@ export default function MapSceneCanvas({
         onPointerCancel={handlePointerCancel}
         onContextMenu={handleContextMenu}
         onDoubleClick={(event) => {
+          if (toolRef.current === "polygon") {
+            event.preventDefault();
+            event.stopPropagation();
+            commitPolygonDraft(
+              snapPoint(pointFromEvent(event), settingsRef.current),
+            );
+            return;
+          }
           if (
             toolRef.current !== "select" &&
             toolRef.current !== "move" &&
@@ -5563,6 +5933,20 @@ export default function MapSceneCanvas({
           );
           requestRender();
         }}
+        onKeyDown={(event) => {
+          if (toolRef.current !== "polygon") return;
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commitPolygonDraft();
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            polygonDraftRef.current = [];
+            polygonHoverRef.current = null;
+            pointerRef.current = null;
+            requestRender();
+          }
+        }}
+        tabIndex={0}
         onWheel={(event) => {
           event.preventDefault();
           cameraRef.current = zoomMapSceneCameraAt(
@@ -5643,6 +6027,40 @@ export default function MapSceneCanvas({
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
+          {contextMenu.unlockedItemIds.length > 0 && onSetItemsLocked && (
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full px-3 py-2 text-left hover:bg-[#eee8dc]"
+              onClick={() => {
+                onSetItemsLocked(contextMenu.unlockedItemIds, true);
+                setContextMenu(null);
+              }}
+            >
+              {contextMenu.itemIds.length === 1
+                ? "锁定"
+                : contextMenu.lockedItemIds.length === 0
+                  ? `锁定所选对象（${contextMenu.itemIds.length}）`
+                  : `锁定未锁定对象（${contextMenu.unlockedItemIds.length}）`}
+            </button>
+          )}
+          {contextMenu.lockedItemIds.length > 0 && onSetItemsLocked && (
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full px-3 py-2 text-left hover:bg-[#eee8dc]"
+              onClick={() => {
+                onSetItemsLocked(contextMenu.lockedItemIds, false);
+                setContextMenu(null);
+              }}
+            >
+              {contextMenu.itemIds.length === 1
+                ? "解锁"
+                : contextMenu.unlockedItemIds.length === 0
+                  ? `解锁所选对象（${contextMenu.itemIds.length}）`
+                  : `解锁已锁定对象（${contextMenu.lockedItemIds.length}）`}
+            </button>
+          )}
           {contextMenu.materialLandPair &&
             contextMenu.itemIds.length === 1 &&
             onCreateGroup && (

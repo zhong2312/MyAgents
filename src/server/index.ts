@@ -345,7 +345,6 @@ import {
   buildMemoryUpdateReminder,
   MEMORY_UPDATE_COMPLETION_MARKER,
 } from "./utils/memory-update-reminder";
-import { assertOfficialSystemSkillExposed } from "./utils/system-skill-readiness";
 import { setImCronContext } from "./tools/im-cron-tool";
 // admin-api module (~2900 lines, depends on zod + full config/session/cron surface)
 // is lazy-loaded on first /api/admin/* hit to shave ~150ms off sidecar cold
@@ -576,7 +575,7 @@ import {
   setBackgroundAgentPermissionMode,
 } from "./agent-session";
 import type { ProviderEnv } from "./provider-types";
-import { getHomeDirOrNull, isSkillBlockedOnPlatform } from "./utils/platform";
+import { getHomeDirOrNull } from "./utils/platform";
 import { getScriptDir } from "./utils/runtime";
 import {
   createSession,
@@ -591,14 +590,8 @@ import {
   getAttachmentPath,
 } from "./SessionStore";
 import {
-  decodeProviderEnvSnapshot,
   findAgentByWorkspacePath,
   findProjectAgentByWorkspacePath,
-  findProvider,
-  getAllMcpServers,
-  getEffectiveMcpServers,
-  getEnabledMcpServerIds,
-  isProviderDisabled,
   loadConfig,
   resolveImProviderRouting,
   resolveProviderEnv,
@@ -994,7 +987,6 @@ function createRequiredSystemSkillDispatchGuard(
       };
     }
     try {
-      assertOfficialSystemSkillExposed({ workspacePath, skillName });
       if (getSessionEngine().kind === "builtin") {
         await requireCurrentBuiltinSkill(skillName);
       }
@@ -1268,12 +1260,6 @@ function seedBundledSkills(): void {
     for (const folder of bundledFolders) {
       if (SYSTEM_SKILLS.includes(folder)) {
         // Owned by Rust version gate — skip silently.
-        continue;
-      }
-      if (isSkillBlockedOnPlatform(folder)) {
-        console.log(
-          `[seed] Skipping ${folder} on ${process.platform} (platform blocked)`,
-        );
         continue;
       }
       const dst = join(userSkillsDir, folder);
@@ -4426,7 +4412,11 @@ async function main() {
               `[workbench-ai] empty label=${JSON.stringify(label)} durationMs=${Date.now() - startedAt}`,
             );
             return jsonResponse(
-              { success: false, error: "The model returned no text." },
+              {
+                success: false,
+                error:
+                  "模型完成了本次请求，但没有返回可用正文。请重试，或更换模型后再进行推演。",
+              },
               502,
             );
           }
@@ -6679,7 +6669,6 @@ async function main() {
               for (const folder of folders) {
                 // isDirEntry follows symlinks + Windows junctions (issue #104).
                 if (!isDirEntry(folder, join(dir, folder.name))) continue;
-                if (isSkillBlockedOnPlatform(folder.name)) continue;
                 const skillMdPath = join(dir, folder.name, "SKILL.md");
                 if (!existsSync(skillMdPath)) continue;
 

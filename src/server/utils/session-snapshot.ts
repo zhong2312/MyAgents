@@ -70,7 +70,12 @@ export type OwnedSessionSnapshot = Pick<
 export function snapshotForForkedSession(
   source: SessionMetadata,
   legacyFallback?: OwnedSessionSnapshot & Pick<SessionMetadata, 'configSnapshotAt'>,
-): OwnedSessionSnapshot & Pick<SessionMetadata, 'configSnapshotAt'> {
+): OwnedSessionSnapshot & Pick<
+  SessionMetadata,
+  | 'configSnapshotAt'
+  | 'managedCodexExtensionProtocolVersion'
+  | 'managedCodexHostCatalogFingerprint'
+> {
   const fallback = source.configSnapshotAt ? undefined : legacyFallback;
   return {
     runtime: source.runtime ?? fallback?.runtime ?? 'builtin',
@@ -91,6 +96,8 @@ export function snapshotForForkedSession(
     providerRoute: source.providerRoute ?? fallback?.providerRoute,
     providerExecutionIdentity: source.providerExecutionIdentity ?? fallback?.providerExecutionIdentity,
     providerEnvJson: source.providerEnvJson ?? fallback?.providerEnvJson,
+    managedCodexExtensionProtocolVersion: source.managedCodexExtensionProtocolVersion,
+    managedCodexHostCatalogFingerprint: source.managedCodexHostCatalogFingerprint,
     // A fork is always an owned Session. Legacy sources followed Agent config,
     // so their caller supplies the effective owned snapshot at the fork boundary.
     configSnapshotAt: source.configSnapshotAt ?? fallback?.configSnapshotAt ?? new Date().toISOString(),

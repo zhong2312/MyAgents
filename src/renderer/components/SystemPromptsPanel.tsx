@@ -4,11 +4,12 @@
  *
  * Uses Tab-scoped API when in Tab context, falls back to global API otherwise.
  */
-import { Save, Edit2, X, Plus, FileText, AlertCircle, Loader2, Trash2, Sparkles, FolderArchive } from 'lucide-react';
+import { Save, Edit2, X, Plus, AlertCircle, Loader2, Trash2, Sparkles, FolderArchive } from 'lucide-react';
 import { useCallback, useEffect, useState, useImperativeHandle, forwardRef, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { apiGetJson as globalApiGet, apiPostJson as globalApiPost, apiPutJson as globalApiPut, apiDelete as globalApiDelete } from '@/api/apiFetch';
+import { FileIcon } from '@/components/file-icon';
 import { useTabApiOptional } from '@/context/TabContext';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { useToast } from '@/components/Toast';
@@ -377,7 +378,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                                 : 'text-[var(--ink-muted)] hover:bg-[var(--paper)] hover:text-[var(--ink)]'
                         }`}
                     >
-                        <FileText className="h-3.5 w-3.5" />
+                        <FileIcon name="CLAUDE.md" />
                         CLAUDE.md
                     </button>
 
@@ -430,6 +431,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                                     setRenameValue(filename.replace(/\.md$/, ''));
                                 }}
                             >
+                                <FileIcon name={filename} />
                                 <span className="max-w-[120px] truncate">{filename}</span>
                             </div>
                         );
@@ -510,7 +512,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                 {!loading && (exists || isEditing) && (
                     <div className="flex flex-shrink-0 items-center justify-between border-b border-[var(--line)] bg-[var(--paper-inset)]/30 px-6 py-2">
                         <div className="flex items-center gap-2">
-                            <FileText className="h-4 w-4 text-[var(--accent-warm)]" />
+                            <FileIcon name={activeFilename} size="regular" />
                             <span className="text-sm font-medium text-[var(--ink)]">{activeFilename}</span>
                         </div>
                         <div className="flex items-center gap-2">
@@ -630,7 +632,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                         ) : (
                             // Rule file empty state — single create button (no /init or template options)
                             <div className="flex h-full flex-col items-center justify-center gap-4 p-6">
-                                <FileText className="h-16 w-16 text-[var(--ink-muted)]/30" />
+                                <FileIcon name={activeFilename} size="display" />
                                 <div className="text-center">
                                     <p className="text-sm font-medium text-[var(--ink-muted)]">
                                         {t('agentSettings.systemPrompts.ruleMissingTitle', { filename: activeFilename })}

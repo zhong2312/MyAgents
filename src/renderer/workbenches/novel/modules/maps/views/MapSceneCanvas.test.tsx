@@ -45,6 +45,9 @@ function renderSceneCanvas(
     onGeometryChange: vi.fn(),
     onSelectionChange: vi.fn(),
     onBatchMove: vi.fn(),
+    onCreateGroup: vi.fn(),
+    onUngroup: vi.fn(),
+    onSetItemsLocked: vi.fn(),
   };
   render(
     <MapSceneCanvas
@@ -495,9 +498,166 @@ describe("MapSceneCanvas 画布动作优先级", () => {
     expect(onCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: "route",
+        props: expect.objectContaining({
+          freehand: "true",
+          closed: "false",
+        }),
+      }),
+    );
+  });
+
+  it("自由画笔会保留短距离内的微小弯曲", () => {
+    const { canvas, onCreate } = renderSceneCanvas({
+      tool: "freehand",
+      artworkBrushAssetId: null,
+      settings: {
+        ...DEFAULT_MAP_CANVAS_SETTINGS,
+        brushPointCount: 16,
+      },
+    });
+
+    firePointer(canvas, "pointerdown", {
+      button: 0,
+      clientX: 300,
+      clientY: 300,
+      pointerId: 27,
+    });
+    firePointer(canvas, "pointermove", {
+      button: 0,
+      clientX: 304,
+      clientY: 300,
+      pointerId: 27,
+    });
+    firePointer(canvas, "pointermove", {
+      button: 0,
+      clientX: 308,
+      clientY: 302,
+      pointerId: 27,
+    });
+    firePointer(canvas, "pointermove", {
+      button: 0,
+      clientX: 312,
+      clientY: 300,
+      pointerId: 27,
+    });
+    firePointer(canvas, "pointermove", {
+      button: 0,
+      clientX: 316,
+      clientY: 300,
+      pointerId: 27,
+    });
+    firePointer(canvas, "pointermove", {
+      button: 0,
+      clientX: 320,
+      clientY: 300,
+      pointerId: 27,
+    });
+    firePointer(canvas, "pointermove", {
+      button: 0,
+      clientX: 324,
+      clientY: 300,
+      pointerId: 27,
+    });
+    firePointer(canvas, "pointerup", {
+      button: 0,
+      clientX: 328,
+      clientY: 300,
+      pointerId: 27,
+    });
+
+    const feature = onCreate.mock.calls.at(-1)?.[0];
+    const points = feature?.points as
+      | readonly { readonly x: number; readonly y: number }[]
+      | undefined;
+    expect(feature).toEqual(
+      expect.objectContaining({
+        kind: "route",
         props: expect.objectContaining({ freehand: "true", closed: "false" }),
       }),
     );
+    expect(points?.slice(1, -1).some((point) => point.y > 300.5)).toBe(true);
+  });
+
+  it("自由画笔不会过滤小于采样阈值的连续弯折", () => {
+    const { canvas, onCreate } = renderSceneCanvas({
+      tool: "freehand",
+      artworkBrushAssetId: null,
+      settings: {
+        ...DEFAULT_MAP_CANVAS_SETTINGS,
+        brushPointCount: 32,
+      },
+    });
+
+    firePointer(canvas, "pointerdown", {
+      button: 0,
+      clientX: 400,
+      clientY: 400,
+      pointerId: 28,
+    });
+    for (let offset = 1; offset <= 30; offset += 1) {
+      firePointer(canvas, "pointermove", {
+        button: 0,
+        clientX: 400 + offset,
+        clientY: offset === 1 ? 401 : 400,
+        pointerId: 28,
+      });
+    }
+    firePointer(canvas, "pointerup", {
+      button: 0,
+      clientX: 431,
+      clientY: 400,
+      pointerId: 28,
+    });
+
+    const feature = onCreate.mock.calls.at(-1)?.[0];
+    const points = feature?.points as
+      | readonly { readonly x: number; readonly y: number }[]
+      | undefined;
+    expect(feature?.kind).toBe("route");
+    expect(points?.some((point) => point.y > 400.1)).toBe(true);
+  });
+
+  it("自由画笔的短弯线不会被误判为闭合区域", () => {
+    const { canvas, onCreate } = renderSceneCanvas({
+      tool: "freehand",
+      artworkBrushAssetId: null,
+      settings: {
+        ...DEFAULT_MAP_CANVAS_SETTINGS,
+        brushPointCount: 8,
+      },
+    });
+
+    firePointer(canvas, "pointerdown", {
+      button: 0,
+      clientX: 500,
+      clientY: 500,
+      pointerId: 30,
+    });
+    firePointer(canvas, "pointermove", {
+      button: 0,
+      clientX: 504,
+      clientY: 502,
+      pointerId: 30,
+    });
+    firePointer(canvas, "pointerup", {
+      button: 0,
+      clientX: 508,
+      clientY: 500,
+      pointerId: 30,
+    });
+
+    const feature = onCreate.mock.calls.at(-1)?.[0];
+    expect(feature).toEqual(
+      expect.objectContaining({
+        kind: "route",
+        props: expect.objectContaining({ freehand: "true", closed: "false" }),
+      }),
+    );
+    expect(
+      (feature?.points as readonly { readonly y: number }[] | undefined)?.some(
+        (point) => point.y > 500.5,
+      ),
+    ).toBe(true);
   });
 
   it("独立自由画笔入口不受区域形状残留状态影响，并保留弧线模式", () => {
@@ -587,9 +747,7 @@ describe("MapSceneCanvas 画布动作优先级", () => {
       | readonly { readonly x: number; readonly y: number }[]
       | undefined;
     expect(
-      points?.some(
-        (point, index) => index > 0 && index < 8 && point.y !== 200,
-      ),
+      points?.some((point, index) => index > 0 && index < 8 && point.y !== 200),
     ).toBe(true);
   });
 
@@ -1024,13 +1182,13 @@ describe("MapSceneCanvas 画布动作优先级", () => {
     expect(points).toHaveLength(4);
   });
 
-  it("画笔使用多边形沿拖拽轨迹创建闭合 area 要素", () => {
+  it("闭合形状沿拖拽轨迹创建闭合 area 要素", () => {
     const { canvas, onCreate } = renderSceneCanvas({
       tool: "area",
       artworkBrushAssetId: null,
       settings: {
         ...DEFAULT_MAP_CANVAS_SETTINGS,
-        areaShape: "polygon",
+        areaShape: "closed",
       },
     });
 
@@ -1072,6 +1230,157 @@ describe("MapSceneCanvas 画布动作优先级", () => {
       }),
     );
     expect(onCreate.mock.calls[0]?.[0].points.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("多边形画笔逐点击落开放路径，双击确认时不强制闭合", () => {
+    const { canvas, onCreate } = renderSceneCanvas({
+      tool: "polygon",
+      artworkBrushAssetId: null,
+      settings: {
+        ...DEFAULT_MAP_CANVAS_SETTINGS,
+        areaShape: "polygon",
+      },
+    });
+
+    for (const [clientX, clientY, pointerId] of [
+      [180, 160, 31],
+      [500, 180, 32],
+    ] as const) {
+      firePointer(canvas, "pointerdown", {
+        button: 0,
+        clientX,
+        clientY,
+        pointerId,
+      });
+      firePointer(canvas, "pointerup", {
+        button: 0,
+        clientX,
+        clientY,
+        pointerId,
+      });
+    }
+
+    fireEvent.doubleClick(canvas, {
+      button: 0,
+      clientX: 440,
+      clientY: 460,
+    });
+
+    expect(onCreate).toHaveBeenCalledTimes(1);
+    const feature = onCreate.mock.calls[0]?.[0];
+    expect(feature).toEqual(
+      expect.objectContaining({
+        kind: "route",
+        name: "多边形",
+        props: expect.objectContaining({
+          polygonBrush: "true",
+          closed: "false",
+        }),
+      }),
+    );
+    expect(feature?.points).toHaveLength(3);
+    expect(feature?.points[0]).toEqual({ x: 180, y: 160 });
+    expect(feature?.points[1]).toEqual({ x: 500, y: 180 });
+    expect(feature?.points[2]?.x).toBeCloseTo(440, 8);
+    expect(feature?.points[2]?.y).toBeCloseTo(460, 8);
+  });
+
+  it("多边形画笔点击首点可以闭合路径", () => {
+    const { canvas, onCreate } = renderSceneCanvas({
+      tool: "polygon",
+      artworkBrushAssetId: null,
+      settings: {
+        ...DEFAULT_MAP_CANVAS_SETTINGS,
+        areaShape: "polygon",
+      },
+    });
+
+    for (const [clientX, clientY, pointerId] of [
+      [180, 160, 41],
+      [500, 180, 42],
+      [440, 460, 43],
+    ] as const) {
+      firePointer(canvas, "pointerdown", {
+        button: 0,
+        clientX,
+        clientY,
+        pointerId,
+      });
+      firePointer(canvas, "pointerup", {
+        button: 0,
+        clientX,
+        clientY,
+        pointerId,
+      });
+    }
+
+    firePointer(canvas, "pointerdown", {
+      button: 0,
+      clientX: 180,
+      clientY: 160,
+      pointerId: 44,
+    });
+
+    expect(onCreate).toHaveBeenCalledTimes(1);
+    const feature = onCreate.mock.calls[0]?.[0];
+    expect(feature).toEqual(
+      expect.objectContaining({
+        kind: "route",
+        props: expect.objectContaining({
+          polygonBrush: "true",
+          closed: "true",
+        }),
+      }),
+    );
+    expect(feature?.points).toHaveLength(3);
+    expect(feature?.points.at(-1)).not.toEqual(feature?.points[0]);
+  });
+
+  it("多边形画笔可以单击右键确认开放路径", () => {
+    const { canvas, onCreate } = renderSceneCanvas({
+      tool: "polygon",
+      artworkBrushAssetId: null,
+      settings: {
+        ...DEFAULT_MAP_CANVAS_SETTINGS,
+        areaShape: "polygon",
+      },
+    });
+
+    for (const [clientX, clientY, pointerId] of [
+      [180, 160, 51],
+      [500, 180, 52],
+    ] as const) {
+      firePointer(canvas, "pointerdown", {
+        button: 0,
+        clientX,
+        clientY,
+        pointerId,
+      });
+      firePointer(canvas, "pointerup", {
+        button: 0,
+        clientX,
+        clientY,
+        pointerId,
+      });
+    }
+
+    fireEvent.contextMenu(canvas, {
+      button: 2,
+      clientX: 440,
+      clientY: 460,
+    });
+
+    expect(onCreate).toHaveBeenCalledTimes(1);
+    expect(onCreate.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        kind: "route",
+        props: expect.objectContaining({
+          polygonBrush: "true",
+          closed: "false",
+        }),
+      }),
+    );
+    expect(onCreate.mock.calls[0]?.[0].points).toHaveLength(3);
   });
 
   it("画笔按指定数量使用弧线触点提交闭合区域", () => {
@@ -1247,6 +1556,182 @@ describe("MapSceneCanvas 画布动作优先级", () => {
       ["feature-west", "feature-east"],
       "feature-east",
     );
+  });
+
+  it("框选会跳过已锁定的对象", () => {
+    const document = {
+      ...createDocument(),
+      features: [
+        {
+          id: "feature-locked",
+          kind: "marker" as const,
+          name: "锁定城市",
+          entityRef: null,
+          layerId: "layer-main",
+          locked: true,
+          points: [{ x: 320, y: 240 }],
+          timeFrom: null,
+          timeTo: null,
+          props: {},
+          description: "",
+        },
+        {
+          id: "feature-open",
+          kind: "marker" as const,
+          name: "开放城市",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [{ x: 620, y: 420 }],
+          timeFrom: null,
+          timeTo: null,
+          props: {},
+          description: "",
+        },
+      ],
+    };
+    const { canvas, onSelectionChange } = renderSceneCanvas({
+      document,
+      tool: "select",
+      artworkBrushAssetId: null,
+    });
+
+    firePointer(canvas, "pointerdown", {
+      button: 0,
+      clientX: 180,
+      clientY: 140,
+      pointerId: 81,
+    });
+    firePointer(canvas, "pointermove", {
+      button: 0,
+      clientX: 760,
+      clientY: 560,
+      pointerId: 81,
+    });
+    firePointer(canvas, "pointerup", {
+      button: 0,
+      clientX: 760,
+      clientY: 560,
+      pointerId: 81,
+    });
+
+    expect(onSelectionChange).toHaveBeenLastCalledWith(
+      ["feature-open"],
+      "feature-open",
+    );
+  });
+
+  it("右键锁定对象显示解锁菜单", () => {
+    const document = {
+      ...createDocument(),
+      features: [
+        {
+          id: "feature-locked",
+          kind: "marker" as const,
+          name: "锁定城市",
+          entityRef: null,
+          layerId: "layer-main",
+          locked: true,
+          points: [{ x: 320, y: 240 }],
+          timeFrom: null,
+          timeTo: null,
+          props: {},
+          description: "",
+        },
+        {
+          id: "feature-open",
+          kind: "marker" as const,
+          name: "开放城市",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [{ x: 620, y: 420 }],
+          timeFrom: null,
+          timeTo: null,
+          props: {},
+          description: "",
+        },
+      ],
+    };
+    const { canvas, onSetItemsLocked } = renderSceneCanvas({
+      document,
+      tool: "select",
+      artworkBrushAssetId: null,
+    });
+
+    fireEvent.contextMenu(canvas, {
+      button: 2,
+      clientX: 320,
+      clientY: 240,
+    });
+    expect(screen.getByRole("menuitem", { name: "解锁" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("menuitem", { name: "解锁" }));
+    expect(onSetItemsLocked).toHaveBeenCalledWith(["feature-locked"], false);
+  });
+
+  it("多选右键显示批量锁定和组合菜单", () => {
+    const document = {
+      ...createDocument(),
+      features: [
+        {
+          id: "feature-west",
+          kind: "marker" as const,
+          name: "西境城",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [{ x: 320, y: 240 }],
+          timeFrom: null,
+          timeTo: null,
+          props: {},
+          description: "",
+        },
+        {
+          id: "feature-east",
+          kind: "marker" as const,
+          name: "东境城",
+          entityRef: null,
+          layerId: "layer-main",
+          points: [{ x: 620, y: 420 }],
+          timeFrom: null,
+          timeTo: null,
+          props: {},
+          description: "",
+        },
+      ],
+    };
+    const { canvas } = renderSceneCanvas({
+      document,
+      tool: "select",
+      artworkBrushAssetId: null,
+    });
+    firePointer(canvas, "pointerdown", {
+      button: 0,
+      clientX: 180,
+      clientY: 140,
+      pointerId: 82,
+    });
+    firePointer(canvas, "pointermove", {
+      button: 0,
+      clientX: 760,
+      clientY: 560,
+      pointerId: 82,
+    });
+    firePointer(canvas, "pointerup", {
+      button: 0,
+      clientX: 760,
+      clientY: 560,
+      pointerId: 82,
+    });
+    fireEvent.contextMenu(canvas, {
+      button: 2,
+      clientX: 620,
+      clientY: 420,
+    });
+
+    expect(
+      screen.getByRole("menuitem", { name: "锁定所选对象（2）" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("menuitem", { name: "组合所选对象（2）" }),
+    ).toBeTruthy();
   });
 
   it("首击只选中对象，第二次手势才移动对象", () => {

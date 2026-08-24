@@ -1,3 +1,5 @@
+import type { MapGenerationEntityRef } from "./mapGenerationPlan";
+
 export interface AzgaarMapPoint {
   readonly x: number;
   readonly y: number;
@@ -7,7 +9,7 @@ export interface AzgaarMapFeature {
   readonly id: string;
   readonly kind: "marker" | "label" | "area" | "route";
   readonly name: string;
-  readonly entityRef: null;
+  readonly entityRef: MapGenerationEntityRef | null;
   readonly layerId: string;
   readonly points: readonly AzgaarMapPoint[];
   readonly timeFrom: null;
@@ -17,6 +19,7 @@ export interface AzgaarMapFeature {
 }
 
 type AzgaarEditableLayer =
+  | "land"
   | "state"
   | "province"
   | "biome"
@@ -39,12 +42,15 @@ export interface AzgaarMapFeatureSelection {
 }
 
 /**
- * Full JSON 常包含数百城镇、河流和分散生物群系碎片。完整 SVG 已保留其成图
- * 细节，MapDocument 只保留适合继续创作的高层可编辑事实，避免命中检测、重绘
- * 和草稿序列化随 Azgaar 的内部网格规模线性膨胀。
+ * Full JSON 常包含数百城镇、河流和分散生物群系碎片。MapDocument 保留
+ * 可编辑的海陆骨架和高层事实，避免命中检测、重绘和草稿序列化随 Azgaar
+ * 的内部网格规模线性膨胀。
  */
 const DEFAULT_EDITABLE_LIMITS: Readonly<Record<AzgaarEditableLayer, number>> =
   Object.freeze({
+    // 陆地轮廓是结构化 MapDocument 的海陆事实，不能因为普通对象限额
+    // 被丢弃；多个陆块仍保留合理上限，避免异常导出无限膨胀。
+    land: 12,
     state: 48,
     province: 96,
     biome: 48,
@@ -58,6 +64,7 @@ const DEFAULT_EDITABLE_LIMITS: Readonly<Record<AzgaarEditableLayer, number>> =
 
 function editableLayer(feature: AzgaarMapFeature): AzgaarEditableLayer {
   switch (feature.props.azgaarLayer) {
+    case "land":
     case "state":
     case "province":
     case "biome":
@@ -116,7 +123,7 @@ function countByLayer(
  * 选择适合进入 MapDocument 的 Azgaar Full JSON 要素。
  *
  * 世界架构显式给出的名称没有限额，始终保留。其余对象按视觉影响力排序后再按
- * 类型限额采样；被省略的对象仍完整留在 Runtime 生成的 SVG 背景中。
+ * 类型限额采样；被省略的低优先级对象不参与当前 MapDocument 的可编辑成图。
  */
 export function selectAzgaarMapDocumentFeatures(input: {
   readonly features: readonly AzgaarMapFeature[];
@@ -274,6 +281,8 @@ type PackCell = {
   readonly province: number;
   readonly biome: number;
   readonly feature: number;
+  /** Azgaar cell height；20 以上为陆地，低于该值为水域。 */
+  readonly height: number;
 };
 
 type PackVertex = {
@@ -314,6 +323,7 @@ function normalizePackCells(value: unknown): PackCell[] {
           province: numberValue(record.province),
           biome: numberValue(record.biome ?? record.b),
           feature: numberValue(record.f ?? record.feature),
+          height: numberValue(record.h ?? record.height),
         },
       ];
     });
@@ -329,6 +339,7 @@ function normalizePackCells(value: unknown): PackCell[] {
   const provinces = Array.isArray(source.province) ? source.province : [];
   const biomes = Array.isArray(source.biome) ? source.biome : [];
   const features = Array.isArray(source.f) ? source.f : [];
+  const heights = Array.isArray(source.h) ? source.h : [];
   const ids = Array.isArray(source.i)
     ? source.i
     : vertices.map((_, index) => index);
@@ -343,6 +354,7 @@ function normalizePackCells(value: unknown): PackCell[] {
         province: numberValue(provinces[index]),
         biome: numberValue(biomes[index]),
         feature: numberValue(features[index]),
+        height: numberValue(heights[index]),
       },
     ];
   });
@@ -453,6 +465,36 @@ function convertPackRegions(
   );
   if (cells.length === 0 || vertices.size === 0) return [];
   const regions: AzgaarMapFeature[] = [];
+  // Runtime Full JSON 的 cells 是唯一不依赖 SVG 的基础海陆事实。先重建
+  // 连续陆地轮廓，后续行政区、地貌和素材均在这份结构化表面上合成。
+  const landCells = cells.filter((cell) => cell.height >= 20);
+  boundaryRings(landCells, vertices).forEach((ring, ringIndex) => {
+    const points = sampleRing(
+      mapCanvasPoints(ring, width, height, sourceWidth, sourceHeight),
+    );
+    if (points.length < 3) return;
+    regions.push({
+      id: id("land", `runtime-${ringIndex}`, ringIndex),
+      kind: "area",
+      name: ringIndex === 0 ? "主大陆" : `外海陆块 ${ringIndex + 1}`,
+      entityRef: null,
+      layerId,
+      points,
+      timeFrom: null,
+      timeTo: null,
+      props: {
+        color: "#536b54",
+        fill: "#d8c58f",
+        lineWidth: "3",
+        showLabel: "false",
+        terrain: ringIndex === 0 ? "coast" : "island",
+        azgaarLayer: "land",
+        azgaarId: String(ringIndex),
+        generator: "azgaar-runtime",
+      },
+      description: "Azgaar Full JSON cells 重建的可编辑陆地轮廓。",
+    });
+  });
   const descriptors = [
     {
       field: "state" as const,

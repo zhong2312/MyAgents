@@ -49,7 +49,9 @@ vi.mock("@/workbench-registry", async () => {
 });
 
 import type { Tab } from "@/types/tab";
-import WorkbenchAgentSurfaceHost from "./WorkbenchAgentSurfaceHost";
+import WorkbenchAgentSurfaceHost, {
+  workbenchAgentTaskDockHostId,
+} from "./WorkbenchAgentSurfaceHost";
 
 function createSurface(
   presentation: "dialog" | "compact-review" | "embedded-review",
@@ -98,6 +100,13 @@ function renderHost(tab: Tab | readonly Tab[]) {
       onClose={vi.fn()}
     />,
   );
+}
+
+function installTaskDockHost(sourceTabId = "source-1"): HTMLElement {
+  const target = document.createElement("div");
+  target.id = workbenchAgentTaskDockHostId(sourceTabId);
+  document.body.append(target);
+  return target;
 }
 
 describe("WorkbenchAgentSurfaceHost", () => {
@@ -166,7 +175,9 @@ describe("WorkbenchAgentSurfaceHost", () => {
 
     renderHost(createSurface("embedded-review"));
 
-    expect(conversationTarget.querySelector("[data-testid='agent-conversation']")).not.toBeNull();
+    expect(
+      conversationTarget.querySelector("[data-testid='agent-conversation']"),
+    ).not.toBeNull();
     // Loading placeholders can coexist briefly with the Portal while a new
     // session is created. The Portal must overlay that placeholder rather than
     // become a second flex item and compress the embedded Chat into a narrow
@@ -182,7 +193,9 @@ describe("WorkbenchAgentSurfaceHost", () => {
     expect(await screen.findByTestId("agent-companion")).toHaveTextContent(
       "manuscript-review",
     );
-    expect(companionTarget.querySelector("[data-testid='agent-companion']")).not.toBeNull();
+    expect(
+      companionTarget.querySelector("[data-testid='agent-companion']"),
+    ).not.toBeNull();
     expect(screen.queryByLabelText("AI 任务坞")).not.toBeInTheDocument();
 
     conversationTarget.remove();
@@ -198,8 +211,12 @@ describe("WorkbenchAgentSurfaceHost", () => {
 
     renderHost(createSurface("compact-review", { embedded: true }));
 
-    expect(conversationTarget.querySelector("[data-testid='agent-conversation']")).not.toBeNull();
-    expect(companionTarget.querySelector("[data-testid='agent-companion']")).not.toBeNull();
+    expect(
+      conversationTarget.querySelector("[data-testid='agent-conversation']"),
+    ).not.toBeNull();
+    expect(
+      companionTarget.querySelector("[data-testid='agent-companion']"),
+    ).not.toBeNull();
     expect(screen.queryByLabelText("AI 任务坞")).not.toBeInTheDocument();
 
     conversationTarget.remove();
@@ -242,9 +259,12 @@ describe("WorkbenchAgentSurfaceHost", () => {
   });
 
   it("allows the AI task dock to be moved without turning its buttons into drag handles", () => {
+    const taskDockHost = installTaskDockHost();
     renderHost(createSurface("dialog"));
 
-    const dock = screen.getByLabelText("AI 任务坞");
+    const dock = taskDockHost.querySelector("[aria-label='AI 任务坞']");
+    if (!dock)
+      throw new Error("AI task dock did not mount inside the workbench tab");
     const dragHandle = screen.getByLabelText("拖动 AI 任务坞");
     fireEvent.pointerDown(dragHandle, {
       button: 0,
@@ -283,5 +303,23 @@ describe("WorkbenchAgentSurfaceHost", () => {
     expect(
       screen.queryByRole("button", { name: /第一章 · 完整生成/ }),
     ).not.toBeInTheDocument();
+    taskDockHost.remove();
+  });
+
+  it("mounts AI task dock into the active source workbench tab only", () => {
+    const activeDockHost = installTaskDockHost("source-1");
+    const inactiveDockHost = installTaskDockHost("source-2");
+    renderHost(createSurface("dialog"));
+
+    expect(
+      activeDockHost.querySelector("[aria-label='AI 任务坞']"),
+    ).not.toBeNull();
+    expect(
+      inactiveDockHost.querySelector("[aria-label='AI 任务坞']"),
+    ).toBeNull();
+    expect(screen.queryByLabelText("AI 任务坞")).toBeInTheDocument();
+
+    activeDockHost.remove();
+    inactiveDockHost.remove();
   });
 });

@@ -7,11 +7,10 @@ import {
   pauseSessionGoal,
   resumeSessionGoal,
 } from '@/api/sessionGoalClient';
-import type { RuntimeType } from '@/../shared/types/runtime';
 import type {
   GoalChangedPayload,
-  GoalEndConditions,
   SessionGoal,
+  SessionGoalDraftConfig,
 } from '@/types/sessionGoal';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import {
@@ -23,15 +22,6 @@ import { createSyncStateRef } from '@/utils/syncStateRef';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { workspacePathsEqual } from '@/../shared/workspacePath';
 import { coerceRuntimeBirthPermissionMode } from '@/../shared/runtimeBirthFields';
-
-export interface SessionGoalDraftConfig {
-  taskKind: 'goal';
-  prompt: string;
-  endConditions: GoalEndConditions;
-  notifyEnabled: boolean;
-  permissionMode?: string;
-  runtime?: RuntimeType;
-}
 
 export interface SessionGoalState {
   goal: SessionGoal | null;

@@ -1,12 +1,17 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { describe, expect, it } from 'vitest';
 
 import { IMAGE_UNDERSTANDING_TOOL_ID, type OfficialToolId } from '../../shared/official-tools';
 import {
   getEffectiveOfficialToolIdsForSession,
   isImageUnderstandingToolCallable,
+  listImageUnderstandingModelOptions,
   resolveImageUnderstandingToolAvailability,
   type AdminAppConfig,
 } from './admin-config';
+import { __resetModelCapabilityCacheForTests } from './model-capabilities';
 
 const ENABLED_OFFICIAL_TOOLS: OfficialToolId[] = [IMAGE_UNDERSTANDING_TOOL_ID];
 
@@ -78,6 +83,129 @@ describe('official image understanding availability', () => {
       ENABLED_OFFICIAL_TOOLS,
       config,
     )).toEqual([]);
+  });
+
+  it('keeps a persisted custom model with omitted modalities callable as user-confirmed unknown', () => {
+    const config = apiVisionConfig({
+      officialToolSettings: {
+        imageUnderstanding: {
+          providerId: 'google-gemini',
+          model: 'custom-vision-without-modality-metadata',
+        },
+      },
+      presetCustomModels: {
+        'google-gemini': [{
+          model: 'custom-vision-without-modality-metadata',
+          modelName: 'Custom Vision Without Metadata',
+          modelSeries: 'custom',
+        }],
+      },
+    });
+
+    expect(resolveImageUnderstandingToolAvailability(config)).toMatchObject({
+      ok: true,
+      providerId: 'google-gemini',
+      model: 'custom-vision-without-modality-metadata',
+      modelEntry: { capabilityConfidence: 'unknown' },
+    });
+    expect(listImageUnderstandingModelOptions(config)).toContainEqual(expect.objectContaining({
+      providerId: 'google-gemini',
+      model: 'custom-vision-without-modality-metadata',
+      capabilityConfidence: 'unknown',
+    }));
+  });
+
+  it('treats an empty modality array as unknown rather than explicit text-only', () => {
+    const config = apiVisionConfig({
+      officialToolSettings: {
+        imageUnderstanding: {
+          providerId: 'google-gemini',
+          model: 'custom-vision-with-empty-modalities',
+        },
+      },
+      presetCustomModels: {
+        'google-gemini': [{
+          model: 'custom-vision-with-empty-modalities',
+          modelName: 'Custom Vision With Empty Modalities',
+          modelSeries: 'custom',
+          inputModalities: [],
+        }],
+      },
+    });
+
+    expect(resolveImageUnderstandingToolAvailability(config)).toMatchObject({
+      ok: true,
+      modelEntry: { capabilityConfidence: 'unknown' },
+    });
+  });
+
+  it('projects positive LiteLLM cache evidence as inferred for an unknown offering', () => {
+    const previousHome = process.env.HOME;
+    const tempHome = mkdtempSync(join(tmpdir(), 'ma-vision-options-'));
+    const cacheDir = join(tempHome, '.myagents', 'cache');
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      join(cacheDir, 'litellm_model_prices.json'),
+      JSON.stringify({
+        'catalog-provider/unique-litellm-vision-model': {
+          mode: 'chat',
+          supports_vision: true,
+        },
+      }),
+    );
+    try {
+      process.env.HOME = tempHome;
+      __resetModelCapabilityCacheForTests();
+      const config = apiVisionConfig({
+        presetCustomModels: {
+          'google-gemini': [{
+            model: 'unique-litellm-vision-model',
+            modelName: 'Unique LiteLLM Vision Model',
+            modelSeries: 'custom',
+          }],
+        },
+      });
+
+      expect(listImageUnderstandingModelOptions(config)).toContainEqual(expect.objectContaining({
+        providerId: 'google-gemini',
+        model: 'unique-litellm-vision-model',
+        capabilityConfidence: 'inferred',
+        capabilitySource: 'litellm',
+      }));
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      __resetModelCapabilityCacheForTests();
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it('does not let fallback data override an explicit text-only custom declaration', () => {
+    const config = apiVisionConfig({
+      officialToolSettings: {
+        imageUnderstanding: {
+          providerId: 'google-gemini',
+          model: 'custom-explicit-text-only',
+        },
+      },
+      presetCustomModels: {
+        'google-gemini': [{
+          model: 'custom-explicit-text-only',
+          modelName: 'Custom Explicit Text Only',
+          modelSeries: 'custom',
+          inputModalities: ['text'],
+        }],
+      },
+    });
+
+    expect(resolveImageUnderstandingToolAvailability(config)).toMatchObject({
+      ok: false,
+      reason: 'model-not-image-capable',
+    });
+    expect(listImageUnderstandingModelOptions(config)).not.toContainEqual(expect.objectContaining({
+      providerId: 'google-gemini',
+      model: 'custom-explicit-text-only',
+    }));
   });
 
   it('filters image understanding out when the provider is globally disabled', () => {

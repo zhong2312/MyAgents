@@ -188,6 +188,7 @@ describe("createNarrativeProposalRepository", () => {
             description: "主角踏入棋局",
             status: "planned",
             order: 0,
+            plannedChapterCount: 0,
           },
         },
         {
@@ -203,6 +204,7 @@ describe("createNarrativeProposalRepository", () => {
             description: "龙胆初鸣",
             status: "planned",
             order: 0,
+            plannedChapterCount: 0,
           },
         },
         {
@@ -218,6 +220,7 @@ describe("createNarrativeProposalRepository", () => {
             description: "荒城开局",
             status: "planned",
             order: 0,
+            plannedChapterCount: 0,
           },
         },
       ],
@@ -262,6 +265,7 @@ describe("createNarrativeProposalRepository", () => {
       description: "开篇",
       status: "planned" as const,
       order: 0,
+      plannedChapterCount: 0,
     };
     const current = await engineeringRepository.save(empty, {
       ...empty.library,
@@ -375,6 +379,7 @@ describe("createNarrativeProposalRepository", () => {
             description: "",
             status: "planned",
             order: 0,
+            plannedChapterCount: 0,
           },
         },
         {
@@ -390,6 +395,7 @@ describe("createNarrativeProposalRepository", () => {
             description: "",
             status: "planned",
             order: 0,
+            plannedChapterCount: 0,
           },
         },
       ],

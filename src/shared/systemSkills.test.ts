@@ -7,7 +7,7 @@ import {
 } from './systemSkills';
 
 describe('required system skill contract', () => {
-  it('contains exactly the eight product-required global skills', () => {
+  it('contains exactly the nine product-required global skills', () => {
     expect(REQUIRED_SYSTEM_SKILLS).toEqual([
       'task-alignment',
       'task-implement',
@@ -15,6 +15,7 @@ describe('required system skill contract', () => {
       'myagents-memory-gardener',
       'myagents-memory-molt',
       'myagents-cli',
+      'myagents-anydoc',
       'myagents-task-automation',
       'myagents-docs',
     ]);
@@ -27,6 +28,7 @@ describe('required system skill contract', () => {
   it('removes required and malformed entries without disturbing optional disabled skills', () => {
     expect(withoutRequiredSystemSkills([
       'myagents-cli',
+      'myagents-anydoc',
       'task-implement',
       'prompt-writer',
       null,

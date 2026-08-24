@@ -729,14 +729,13 @@ export async function generateOneShotText(
       );
     };
 
-    try {
-      return await runWithOptionalToolset();
-    } catch (error) {
-      if (!request.toolset || !isOneShotMaxTurnsError(error)) throw error;
-
+    let recoveryAttempted = false;
+    const recoverToolsetRun = async (): Promise<string | null> => {
+      if (!request.toolset || recoveryAttempted) return null;
+      recoveryAttempted = true;
       request.onProgress?.({
         kind: "status",
-        message: "已达到轮次上限，依据已读取资料直接输出",
+        message: "依据已读取资料直接输出最终结果",
       });
       activeRequest = {
         ...request,
@@ -745,13 +744,31 @@ export async function generateOneShotText(
           recoveryContext
             ? `【本轮已读取资料快照】\n${recoveryContext}`
             : "【本轮已读取资料快照】\n本轮没有收到可复用的工具返回，请依据原始请求中的已有资料直接完成。",
-          "【收敛要求】不得调用工具，不得重新读取，直接输出最终结果。",
+          "【收敛要求】不得调用工具、读取资料或重新开始检索，直接输出最终结果。",
         ].join("\n\n"),
-        systemPrompt: `${request.systemPrompt}\n\n上一轮已达到轮次上限。本轮必须依据上面保留的已读资料直接输出最终结果，不得重新开始读取。`,
+        systemPrompt: `${request.systemPrompt}\n\n本轮资料读取已经结束。必须依据上面保留的资料直接输出最终结果，不得调用工具或重新读取。`,
         maxTurns: 1,
         toolset: undefined,
       };
       return await run();
+    };
+
+    try {
+      const output = await runWithOptionalToolset();
+      // A provider can report a successful tool turn without emitting a final
+      // assistant text message. Give it one bounded no-tool turn to convert
+      // the already-read context into the requested result.
+      return (
+        output?.trim() || (request.toolset ? await recoverToolsetRun() : null)
+      );
+    } catch (error) {
+      if (!request.toolset || !isOneShotMaxTurnsError(error)) throw error;
+
+      request.onProgress?.({
+        kind: "status",
+        message: "已达到轮次上限，依据已读取资料直接输出",
+      });
+      return await recoverToolsetRun();
     }
   } finally {
     bridge?.release();
@@ -968,6 +985,7 @@ export function buildExternalTitleSessionOptions(input: {
   sessionId: string;
   workspacePath: string;
   userPrompt: string;
+  clientUserMessageId: string;
   runtimeType: RuntimeType;
   model: string;
   runtimeSource?: RuntimeSource;
@@ -975,7 +993,10 @@ export function buildExternalTitleSessionOptions(input: {
   return {
     sessionId: input.sessionId,
     workspacePath: input.workspacePath,
-    initialMessage: input.userPrompt,
+    initialTurn: {
+      message: input.userPrompt,
+      clientUserMessageId: input.clientUserMessageId,
+    },
     systemPromptAppend: SYSTEM_PROMPT,
     ...(input.model ? { model: input.model } : {}),
     permissionMode: titlePermissionMode(input.runtimeType),
@@ -1011,7 +1032,7 @@ export function buildExternalTitleSessionOptions(input: {
 /**
  * Generate a title using the session's external runtime (claude-code / codex /
  * gemini). Spawns a brand-new short-lived process, sends the title prompt as
- * initialMessage, accumulates text_delta, returns on turn_complete or
+ * initialTurn, accumulates text_delta, returns on turn_complete or
  * session_complete. The process is always stopped afterwards (including on
  * timeout), so Gemini's temporary GEMINI_SYSTEM_MD file is cleaned up.
  *
@@ -1030,6 +1051,10 @@ export async function generateTitleExternal(
   // "Invalid session ID. Must be a valid UUID." A `title-` prefix would tank
   // every CC title-gen call. Logs are already tagged with `[title-generator]`.
   const titleSessionId = randomUUID();
+  // This utility turn has no Product SessionMessage. It still owns an ephemeral
+  // caller identity so Codex can establish its root-turn admission invariant
+  // without pretending the title prompt belongs to the user's transcript.
+  const titleClientUserMessageId = randomUUID();
   const userPrompt = buildUserPrompt(rounds);
 
   let runtime: AgentRuntime;
@@ -1069,6 +1094,7 @@ export async function generateTitleExternal(
     sessionId: titleSessionId,
     workspacePath,
     userPrompt,
+    clientUserMessageId: titleClientUserMessageId,
     runtimeType,
     model,
     runtimeSource,

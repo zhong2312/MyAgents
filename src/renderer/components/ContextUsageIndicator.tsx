@@ -2,7 +2,7 @@
  * ContextUsageIndicator — 对话框右下角的实时 context 用量指示器（PRD 0.2.32）。
  *
  * 形态（V1 极简）：model 选择器左侧一个环形进度，hover 弹出极简卡片完整展示用量。
- * 内置 runtime 在卡片内提供「智能压缩」入口（等价 `/compact`）；三方 runtime 隐藏该按钮。
+ * 支持手动压缩的 runtime 在卡片内提供「智能压缩」入口；能力由 Chat 注入。
  *
  * 关键约束：
  * - **自取数**：通过 `useTabState()` 直接订阅 `contextUsage` 切片，**不**经由
@@ -59,8 +59,8 @@ function Ring({ percent, size, stroke }: { percent: number; size: number; stroke
 
 export interface ContextUsageIndicatorProps {
   /**
-   * 触发智能压缩（builtin only）。由 Chat.tsx 用已解析的 model/providerEnv 包好
-   * `sendMessage('/compact', …)` 注入。未提供时不渲染压缩按钮。
+   * 触发智能压缩。Chat.tsx 负责选择 builtin SDK 命令或 Runtime 原生控制面；
+   * 未提供时不渲染压缩按钮。
    */
   onCompact?: () => void;
 }
@@ -98,7 +98,7 @@ export default function ContextUsageIndicator({ onCompact }: ContextUsageIndicat
   const { contextTokens, contextWindow, usedPercent, source, windowSource } = contextUsage;
   const isBuiltin = source === 'builtin';
   const compactAt = computeBuiltinAutoCompactThreshold(contextWindow);
-  const showCompact = isBuiltin && !!onCompact;
+  const showCompact = !!onCompact;
 
   // 窗口来源描述 + （仅 builtin）共享 90% policy 投影的自动压缩阈值；
   // 外部 runtime 的压缩阈值各不相同（Codex 有自己的 auto-compact），不能套用同一文案（review #W4）。
@@ -137,7 +137,7 @@ export default function ContextUsageIndicator({ onCompact }: ContextUsageIndicat
           onMouseLeave={scheduleClose}
           className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] px-4 pb-3 pt-3.5 shadow-xl"
         >
-          {/* 头部：标题 + 智能压缩入口（builtin only） */}
+          {/* 头部：标题 + runtime capability 驱动的智能压缩入口 */}
           <div className="mb-3 flex min-h-[24px] items-center justify-between">
             <span className="text-xs font-semibold text-[var(--ink-muted)]">{t('contextUsage.title')}</span>
             {showCompact && (

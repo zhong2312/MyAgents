@@ -4,6 +4,7 @@ import type { TranscriptWriteCursor } from '../SessionStore';
 import type { SessionMessage } from '../types/session';
 import {
   appendSessionMessages,
+  commitBuiltinConversationRewind,
   loadSessionTranscript,
   mutateSessionTranscript,
   updateSessionMetadata,
@@ -24,11 +25,13 @@ import {
   saveForkTranscript,
   stampTurnUsageOnPendingAssistant,
   stripPlaywrightResults,
+  truncateTranscriptPersistenceForRewind,
 } from './transcript-persistence';
 import type { MessageWire } from './types';
 
 vi.mock('../SessionStore', () => ({
   appendSessionMessages: vi.fn(),
+  commitBuiltinConversationRewind: vi.fn(),
   loadSessionTranscript: vi.fn(),
   mutateSessionTranscript: vi.fn(),
   updateSessionMetadata: vi.fn(),
@@ -69,6 +72,12 @@ describe('builtin transcript persistence owner', () => {
       cursor: current,
     }));
     vi.mocked(updateSessionMetadata).mockResolvedValue(null);
+    vi.mocked(commitBuiltinConversationRewind).mockResolvedValue({
+      success: true,
+      metadata: {} as never,
+      messages: [],
+      cursor: cursor(0),
+    });
   });
 
   it('strips Playwright tool results without changing other tools', () => {
@@ -178,6 +187,32 @@ describe('builtin transcript persistence owner', () => {
 
     expect(transcriptState.messages.map(message => message.id)).toEqual(['0']);
     expect(transcriptState.transcriptCursor?.persistedMessageCount).toBe(1);
+  });
+
+  it('adopts the cursor returned by the composite builtin rewind commit', async () => {
+    loadTranscriptFromSessionMessages([stored('0'), stored('1', 'assistant')], cursor(2));
+    vi.mocked(commitBuiltinConversationRewind).mockResolvedValueOnce({
+      success: true,
+      metadata: {} as never,
+      messages: [],
+      cursor: cursor(0),
+    });
+
+    await truncateTranscriptPersistenceForRewind('product-session-a', '0', 0, {
+      sourceSdkSessionId: 'sdk-session-1',
+      replacementSdkSessionId: 'sdk-session-2',
+    });
+
+    expect(commitBuiltinConversationRewind).toHaveBeenCalledWith({
+      sessionId: 'product-session-a',
+      cursor: expect.objectContaining({ persistedMessageCount: 2 }),
+      targetMessageId: '0',
+      targetMessageCount: 0,
+      sourceSdkSessionId: 'sdk-session-1',
+      replacementSdkSessionId: 'sdk-session-2',
+    });
+    expect(transcriptState.transcriptCursor?.persistedMessageCount).toBe(0);
+    expect(mutateSessionTranscript).not.toHaveBeenCalled();
   });
 
   it('updates activity metadata without issuing a no-op append', async () => {

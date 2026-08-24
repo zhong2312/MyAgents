@@ -79,6 +79,19 @@ describe("mapGeometryEdit", () => {
     expect(hitMapFeatureGeometry(area, { x: 160, y: 88 }, 1)).toBe(true);
     expect(hitMapFeatureGeometry(area, { x: 72, y: 108 }, 1)).toBe(true);
 
+    const closedRoute = {
+      ...route,
+      points: [
+        { x: 40, y: 60 },
+        { x: 220, y: 60 },
+        { x: 160, y: 240 },
+      ],
+      props: { closed: "true" },
+    };
+    expect(hitMapFeatureGeometry(closedRoute, { x: 120, y: 170 }, 1)).toBe(
+      true,
+    );
+
     expect(isMapFeatureVertexEditable("route")).toBe(true);
     expect(isMapFeatureVertexEditable("polygon")).toBe(true);
     expect(isMapFeatureVertexEditable("area")).toBe(true);

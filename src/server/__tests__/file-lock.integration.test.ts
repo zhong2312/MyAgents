@@ -3,18 +3,29 @@
  *
  * Covers:
  *  (a) basic withFileLock serializes two concurrent ops in the same process
- *  (b) stale-lock recovery breaks a lockdir whose owner pid is dead
- *  (c) timeout returns FileBusyError when owner is alive past timeoutMs
+ *  (b) confirmed-dead process owners bypass the age grace
+ *  (c) live/unknown owners stay protected
+ *  (d) unknown owner forms share one strict age-gated protocol
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { withFileLock, FileBusyError } from '../utils/file-lock';
 
 let scratch: string;
+
+async function exitedChildPid(): Promise<number> {
+  const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+  const pid = child.pid;
+  if (pid === undefined) throw new Error('short-lived child did not expose a pid');
+  await once(child, 'exit');
+  return pid;
+}
 
 beforeEach(() => {
   scratch = mkdtempSync(join(tmpdir(), 'myagents-file-lock-'));
@@ -46,17 +57,15 @@ describe('withFileLock', () => {
     expect(exitIdx(first)).toBeLessThan(enterIdx(second));
   });
 
-  it('breaks a stale lock whose owner pid is dead and is older than staleMs', async () => {
+  it('breaks an old ownerless lock after staleMs', async () => {
     const lockPath = join(scratch, 'stale.lock');
     mkdirSync(lockPath);
-    // Use a high but representable pid — process.kill(pid, 0) returns ESRCH
-    // because no such process exists. (Don't use 0xFFFFFFFF — Node rejects it
-    // with ERR_INVALID_ARG_TYPE before the syscall.)
-    writeFileSync(join(lockPath, 'owner'), 'node:999999\n', 'utf-8');
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lockPath, old, old);
 
     let ran = false;
     await withFileLock(
-      { lockPath, timeoutMs: 2000, staleMs: 0, pollMs: 10 }, // staleMs=0 → any age is "old"
+      { lockPath, timeoutMs: 2000, staleMs: 30_000, pollMs: 10 },
       async () => {
         ran = true;
       }
@@ -65,27 +74,151 @@ describe('withFileLock', () => {
     expect(existsSync(lockPath)).toBe(false);
   });
 
-  // Pid-reuse detection requires a working getPidStartTimeMs (Linux /proc or
-  // macOS `ps`). On Windows we fall back to age-only stale detection — skip
-  // the precise reuse assertion there.
-  const startTimeSupported = process.platform === 'linux' || process.platform === 'darwin';
-  (startTimeSupported ? it : it.skip)('breaks a stale lock whose pid was reused (3-tuple owner with bogus start_time)', async () => {
-    // Owner advertises a live pid (this very test process) but with a
-    // start_time we know is wrong (epoch 1). The lock is past staleMs.
-    // Our pid IS alive but the start time mismatches by years → the
-    // recycled-pid detector should break it.
-    const lockPath = join(scratch, 'reused.lock');
+  it.each([
+    ['legacy Node owner', (pid: number) => `node:${pid}`],
+    ['current Node owner', (pid: number) => `node:${pid}:0`],
+    ['legacy Rust owner', (pid: number) => `rust:${pid}`],
+    ['current Rust owner', (pid: number) => `rust:${pid}:0`],
+  ] as const)('breaks a fresh lock immediately when its %s pid is confirmed dead', async (_label, ownerForPid) => {
+    const deadPid = await exitedChildPid();
+    const lockPath = join(scratch, 'fresh-dead.lock');
     mkdirSync(lockPath);
-    writeFileSync(join(lockPath, 'owner'), `node:${process.pid}:1\n`, 'utf-8');
+    writeFileSync(join(lockPath, 'owner'), `${ownerForPid(deadPid)}\n`, 'utf-8');
 
     let ran = false;
     await withFileLock(
-      { lockPath, timeoutMs: 2000, staleMs: 0, pollMs: 10 },
+      { lockPath, timeoutMs: 200, staleMs: 60_000, pollMs: 10 },
+      async () => {
+        ran = true;
+      }
+    );
+
+    expect(ran).toBe(true);
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it('reclaims a confirmed-dead owner even when wall-clock rollback leaves a future mtime', async () => {
+    const deadPid = await exitedChildPid();
+    const lockPath = join(scratch, 'future-dead.lock');
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, 'owner'), `node:${deadPid}:0\n`, 'utf-8');
+    const future = new Date(Date.now() + 60_000);
+    utimesSync(lockPath, future, future);
+
+    await withFileLock(
+      { lockPath, timeoutMs: 200, staleMs: 60_000, pollMs: 10 },
+      async () => { /* acquired */ },
+    );
+
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it('does not age-break a legacy lock whose owner pid is alive', async () => {
+    const lockPath = join(scratch, 'old-live.lock');
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, 'owner'), `node:${process.pid}\n`, 'utf-8');
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(lockPath, old, old);
+
+    await expect(withFileLock(
+      { lockPath, timeoutMs: 100, staleMs: 0, pollMs: 10 },
+      async () => { /* unreachable */ }
+    )).rejects.toBeInstanceOf(FileBusyError);
+  });
+
+  it('retains a valid process owner when the liveness probe is inconclusive', async () => {
+    const lockPath = join(scratch, 'unobservable-owner.lock');
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, 'owner'), 'node:123\n', 'utf-8');
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(lockPath, old, old);
+
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    });
+    try {
+      await expect(withFileLock(
+        { lockPath, timeoutMs: 100, staleMs: 0, pollMs: 10 },
+        async () => { /* unreachable */ }
+      )).rejects.toBeInstanceOf(FileBusyError);
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    ['mismatched', '1'],
+    ['maximum JS-safe', '9007199254740991'],
+  ] as const)('retains a live owner with a %s v1 startMs even when the lock is old', async (_label, startMs) => {
+    const lockPath = join(scratch, 'mismatched-start.lock');
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, 'owner'), `node:${process.pid}:${startMs}\n`, 'utf-8');
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(lockPath, old, old);
+
+    await expect(withFileLock(
+      { lockPath, timeoutMs: 100, staleMs: 0, pollMs: 10 },
+      async () => { /* unreachable */ }
+    )).rejects.toBeInstanceOf(FileBusyError);
+  });
+
+  it.each([
+    ['missing owner', null],
+    ['renderer owner', 'renderer:123'],
+    ['extra field', `node:${process.pid}:1:extra`],
+    ['signed pid', `node:+${process.pid}`],
+    ['signed Rust pid', `rust:+${process.pid}:1`],
+    ['signed startMs', `rust:${process.pid}:+1`],
+    ['negative pid', 'node:-1'],
+    ['zero pid', 'node:0'],
+    ['empty pid', 'node:'],
+    ['non-numeric pid', 'node:nope'],
+    ['PID overflow', 'node:2147483648'],
+    ['negative startMs', `rust:${process.pid}:-1`],
+    ['empty startMs', `rust:${process.pid}:`],
+    ['non-numeric startMs', `rust:${process.pid}:nope`],
+    ['startMs overflow', `node:${process.pid}:9007199254740992`],
+    ['unknown runtime', `other:${process.pid}`],
+    ['BOM-prefixed token', `\uFEFFnode:${process.pid}`],
+    ['vertical-tab-prefixed token', `\u000Bnode:${process.pid}`],
+  ] as const)('age-gates %s instead of treating it as a process owner', async (_label, owner) => {
+    const lockPath = join(scratch, 'malformed-owner.lock');
+    mkdirSync(lockPath);
+    if (owner !== null) {
+      writeFileSync(join(lockPath, 'owner'), `${owner}\n`, 'utf-8');
+    }
+
+    await expect(withFileLock(
+      { lockPath, timeoutMs: 100, staleMs: 60_000, pollMs: 10 },
+      async () => { /* unreachable */ }
+    )).rejects.toBeInstanceOf(FileBusyError);
+
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(lockPath, old, old);
+    let ran = false;
+    await withFileLock(
+      { lockPath, timeoutMs: 200, staleMs: 60_000, pollMs: 10 },
       async () => {
         ran = true;
       }
     );
     expect(ran).toBe(true);
+  });
+
+  it('does not immediately reclaim a fresh dead-looking owner with an out-of-range startMs', async () => {
+    const deadPid = await exitedChildPid();
+    const lockPath = join(scratch, 'malformed-dead-owner.lock');
+    mkdirSync(lockPath);
+    writeFileSync(
+      join(lockPath, 'owner'),
+      `node:${deadPid}:9007199254740992\n`,
+      'utf-8',
+    );
+
+    await expect(withFileLock(
+      { lockPath, timeoutMs: 100, staleMs: 60_000, pollMs: 10 },
+      async () => { /* unreachable */ }
+    )).rejects.toBeInstanceOf(FileBusyError);
   });
 
   it('release does NOT delete a different holder when our lock was broken as stale', async () => {

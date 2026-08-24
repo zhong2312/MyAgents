@@ -52,7 +52,7 @@ import { mapFeaturesInRenderOrder } from "../business/mapLayerOrder";
 import {
   DEFAULT_MAP_RIVER_PROPS,
   getMapRiverStyle,
-  isMapRiverFeature,
+  hasMapRiverAppearance,
   mapRiverWidthAt,
   smoothMapPath,
 } from "../business/mapHydrography";
@@ -61,10 +61,14 @@ import {
   getMapFeatureAreaStyle,
 } from "../business/mapFeatureAreaStyle";
 import {
+  getMapLabelFrameStyle,
   getMapLabelLayout,
   getMapLabelStyle,
+  mapLabelText,
   mapFeatureHasLabel,
   mapLabelCanvasFont,
+  resolveMapLabelPlacements,
+  type MapLabelPlacement,
 } from "../business/mapLabels";
 import {
   getMapRouteStyle,
@@ -166,9 +170,11 @@ export function geometryFromFeature(
   canvasWidth: number,
   canvasHeight: number,
 ): Geometry {
+  const closed =
+    feature.kind === "area" || feature.props.closed === "true";
   const renderedPoints =
     feature.props.curve === "arc"
-      ? mapBrushCurvePoints(feature.points, "arc", feature.kind === "area")
+      ? mapBrushCurvePoints(feature.points, "arc", closed)
       : feature.points;
   const coordinates = renderedPoints.map((point) =>
     pointToCoordinate(point, canvasHeight),
@@ -176,7 +182,13 @@ export function geometryFromFeature(
   if (["marker", "label", "node"].includes(feature.kind)) {
     return new Point(coordinates[0] ?? [canvasWidth / 2, canvasHeight / 2]);
   }
-  if (feature.kind === "route") return new LineString(coordinates);
+  if (feature.kind === "route") {
+    return new LineString(
+      closed && coordinates.length > 1
+        ? [...coordinates, coordinates[0]!]
+        : coordinates,
+    );
+  }
   if (feature.kind === "area") {
     // 只有明确保存 radius 的旧版圆形要素才继续使用 CircleGeometry。
     // 自由画笔、画笔多边形以及弧线闭合区域必须保留真实边界，否则
@@ -201,6 +213,7 @@ function featureStyle(
   opacity: number,
   zIndex: number,
   canvasHeight: number,
+  labelPlacement?: MapLabelPlacement,
 ): Style | Style[] {
   // 兼容画布也必须消费与主场景相同的曲线事实。历史要素没有 curve
   // 时保留旧的平滑策略；显式选择直线或弧线时不再静默退化。
@@ -210,7 +223,7 @@ function featureStyle(
         feature.props.curve === "arc" ? "arc" : "line",
       )
     : smoothMapPath(feature.points);
-  if (isMapRiverFeature(feature)) {
+  if (hasMapRiverAppearance(feature)) {
     const riverStyle = getMapRiverStyle(feature);
     const smoothed = pathPoints;
     const styles: Style[] = [];
@@ -256,9 +269,14 @@ function featureStyle(
         }),
       );
     });
-    if (mapFeatureHasLabel(feature) && smoothed.length > 0) {
+    if (
+      mapFeatureHasLabel(feature) &&
+      labelPlacement?.visible !== false &&
+      smoothed.length > 0
+    ) {
       const labelStyle = getMapLabelStyle(feature);
-      const labelLayout = getMapLabelLayout(feature, smoothed);
+      const labelLayout =
+        labelPlacement?.layout ?? getMapLabelLayout(feature, smoothed);
       styles.push(
         new Style({
           geometry: new Point(
@@ -267,8 +285,8 @@ function featureStyle(
           zIndex: zIndex * 10 + 3,
           text: new Text({
             text: feature.name,
-            offsetX: labelStyle.offsetX,
-            offsetY: labelStyle.offsetY,
+            offsetX: labelPlacement ? 0 : labelStyle.offsetX,
+            offsetY: labelPlacement ? 0 : labelStyle.offsetY,
             rotation:
               ((labelStyle.rotation + labelLayout.pathRotation) * Math.PI) /
               180,
@@ -307,9 +325,14 @@ function featureStyle(
           }),
         }),
     );
-    if (mapFeatureHasLabel(feature) && smoothed.length > 0) {
+    if (
+      mapFeatureHasLabel(feature) &&
+      labelPlacement?.visible !== false &&
+      smoothed.length > 0
+    ) {
       const labelStyle = getMapLabelStyle(feature);
-      const labelLayout = getMapLabelLayout(feature, smoothed);
+      const labelLayout =
+        labelPlacement?.layout ?? getMapLabelLayout(feature, smoothed);
       styles.push(
         new Style({
           geometry: new Point(
@@ -318,8 +341,8 @@ function featureStyle(
           zIndex: zIndex * 10 + styles.length,
           text: new Text({
             text: feature.name,
-            offsetX: labelStyle.offsetX,
-            offsetY: labelStyle.offsetY,
+            offsetX: labelPlacement ? 0 : labelStyle.offsetX,
+            offsetY: labelPlacement ? 0 : labelStyle.offsetY,
             rotation:
               ((labelStyle.rotation + labelLayout.pathRotation) * Math.PI) /
               180,
@@ -361,9 +384,15 @@ function featureStyle(
       : terrain === "river"
         ? Math.max(1.5, Math.min(parsedWidth, 2.5))
         : parsedWidth;
-  const label = mapFeatureHasLabel(feature) ? feature.name : undefined;
+  const label =
+    mapFeatureHasLabel(feature) && labelPlacement?.visible !== false
+      ? feature.name
+      : undefined;
   const labelStyle = label ? getMapLabelStyle(feature) : null;
-  const labelLayout = label ? getMapLabelLayout(feature) : null;
+  const labelFrame = labelStyle ? getMapLabelFrameStyle(labelStyle) : null;
+  const labelLayout = label
+    ? (labelPlacement?.layout ?? getMapLabelLayout(feature))
+    : null;
   const componentAsset =
     feature.kind === "marker"
       ? getMapArtworkStampAsset(feature.props.component ?? "")
@@ -449,9 +478,9 @@ function featureStyle(
     }),
     text: label
       ? new Text({
-          text: feature.name,
-          offsetX: labelStyle?.offsetX ?? 0,
-          offsetY: labelStyle?.offsetY ?? 0,
+          text: mapLabelText(feature.name, labelStyle!),
+          offsetX: labelPlacement ? 0 : (labelStyle?.offsetX ?? 0),
+          offsetY: labelPlacement ? 0 : (labelStyle?.offsetY ?? 0),
           rotation:
             (((labelStyle?.rotation ?? 0) + (labelLayout?.pathRotation ?? 0)) *
               Math.PI) /
@@ -465,6 +494,23 @@ function featureStyle(
                   width: labelStyle?.haloWidth ?? 0,
                 })
               : undefined,
+          backgroundFill: labelFrame
+            ? new Fill({ color: labelFrame.fill })
+            : undefined,
+          backgroundStroke: labelFrame
+            ? new Stroke({
+                color: labelFrame.stroke,
+                width: labelFrame.lineWidth,
+              })
+            : undefined,
+          padding: labelFrame
+            ? [
+                labelStyle!.fontSize * 0.32,
+                labelStyle!.fontSize * 0.4,
+                labelStyle!.fontSize * 0.32,
+                labelStyle!.fontSize * 0.4,
+              ]
+            : undefined,
         })
       : symbol && !componentAsset
         ? new Text({
@@ -668,11 +714,18 @@ export default function MapCanvas({
     new globalThis.Map(),
   );
   const viewSizeRef = useRef<string | null>(null);
+  const labelPlacementsRef = useRef<ReadonlyMap<string, MapLabelPlacement>>(
+    new globalThis.Map(),
+  );
 
   useEffect(() => {
     selectedIdRef.current = selectedFeatureId;
     toolRef.current = tool;
     documentRef.current = document;
+    const zoom = 2 ** (mapRef.current?.getView().getZoom() ?? 0);
+    labelPlacementsRef.current = resolveMapLabelPlacements(document.features, {
+      zoom,
+    });
   }, [document, selectedFeatureId, tool]);
 
   useEffect(() => {
@@ -729,6 +782,7 @@ export default function MapCanvas({
           opacity,
           zIndex,
           documentRef.current.canvas.height,
+          labelPlacementsRef.current.get(value.id),
         );
         styleCacheRef.current.set(cacheKey, style);
         return style;
@@ -746,6 +800,17 @@ export default function MapCanvas({
         new PinchZoom({ duration: 120 }),
       ]),
       controls: [],
+    });
+    // OpenLayers 的视图缩放是对数刻度；标签服务使用线性显示比例。缩放
+    // 停止后才清空样式缓存，避免平移或滚轮每一帧重复计算静态标签层。
+    const labelLayoutRefreshKey = map.on("moveend", () => {
+      const zoom = 2 ** (map.getView().getZoom() ?? 0);
+      labelPlacementsRef.current = resolveMapLabelPlacements(
+        documentRef.current.features,
+        { zoom },
+      );
+      styleCacheRef.current.clear();
+      vector.changed();
     });
     const select = new Select({
       hitTolerance: 6,
@@ -926,6 +991,7 @@ export default function MapCanvas({
     return () => {
       window.cancelAnimationFrame(animationFrame);
       map.un("pointermove", pointerMoveKey.listener);
+      map.un("moveend", labelLayoutRefreshKey.listener);
       window.removeEventListener("resize", updateMapSize);
       resizeObserver?.disconnect();
       map.setTarget(undefined);
@@ -1129,10 +1195,7 @@ export default function MapCanvas({
       type: drawType,
       stopClick: true,
       // 河流、道路、山脉等路线沿鼠标轨迹连续取样，手感接近 Wonderdraft 笔刷。
-      freehand:
-        tool === "route" ||
-        tool === "river" ||
-        usesFreehandArea,
+      freehand: tool === "route" || tool === "river" || usesFreehandArea,
     });
     draw.on("drawend", (event) => {
       const geometry = event.feature.getGeometry();
@@ -1171,7 +1234,7 @@ export default function MapCanvas({
           ? "route"
           : tool === "component-surface-brush"
             ? "area"
-          : tool;
+            : tool;
       const curveProps: Record<string, string> =
         kind === "area" || kind === "route"
           ? { curve: settings.brushPointCurve }
@@ -1186,13 +1249,13 @@ export default function MapCanvas({
               ? "新标签"
               : tool === "river"
                 ? "新河流"
-              : usesFreehandArea
-                ? "自由画笔"
-                : tool === "area"
-                  ? "新区域"
-                  : tool === "route"
-                    ? "新路线"
-                    : "新节点",
+                : usesFreehandArea
+                  ? "自由画笔"
+                  : tool === "area"
+                    ? "新区域"
+                    : tool === "route"
+                      ? "新路线"
+                      : "新节点",
         entityRef: null,
         layerId: activeLayerId,
         points: normalizedPoints,
@@ -1203,9 +1266,7 @@ export default function MapCanvas({
             ? { ...DEFAULT_MAP_RIVER_PROPS, ...curveProps }
             : usesFreehandArea
               ? {
-                  ...(freehandClosed
-                    ? DEFAULT_MAP_FREEFORM_AREA_PROPS
-                    : {}),
+                  ...(freehandClosed ? DEFAULT_MAP_FREEFORM_AREA_PROPS : {}),
                   freehand: "true",
                   closed: freehandClosed ? "true" : "false",
                   ...curveProps,

@@ -42,7 +42,7 @@ Space 是 build-time capability：
 Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 
 - debug/test build 中运行时设置 `MYAGENTS_SPACE_MOCK_DATA=true` 时，`space_build_capability()` 返回可用能力，baseUrl 为 `https://space.mock.myagents.local`。release build 中该环境变量被忽略。
-- mock mode 仍然由 Rust Space 边界拥有：renderer 继续只调用 `src/renderer/api/spaceCloud.ts`，Tauri command/CLI helper 继续走 `src-tauri/src/space_cloud.rs`，不会在 React 组件里塞假数据。
+- mock mode 仍然由 Rust Space 边界拥有：renderer 继续只调用 `src/renderer/api/spaceCloud.ts`，Tauri command/CLI helper 继续进入 `src-tauri/src/space_cloud.rs` facade 或其明确 owner module，不会在 React 组件里塞假数据。
 - mock mode 使用进程内 deterministic 数据集，覆盖 Goals、Issues、评论、附件、Skills、Skill 文件、Registered Agents、IssueDelivery 与 claim。mutation 会更新同一份 in-memory state，便于验证创建/评论/状态/claim/complete 等交互。
 - mock mode 不读写真实 `~/.myagents/space/session.json`，不访问 `space.myagents.io`，不作为发布能力写入 CHANGELOG 或 Release notes。
 - mock mode 只用于 dev/test。生产构建仍以 `MYAGENTS_SPACE_ENABLED` / `MYAGENTS_SPACE_BASE_URL` / public client id 的 build-time capability 为准。
@@ -51,10 +51,14 @@ Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 
 | 层           | 文件                                                          | 职责                                                                                                                                                                                                                                                                                                                               |
 | ------------ | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Rust         | `src-tauri/src/space_cloud.rs`                                | Space session、HTTP proxy、registered agents、IssueDelivery poll/process、claim wrapper、Skill zip、附件上传下载                                                                                                                                                                                                                   |
-| Renderer API | `src/renderer/api/spaceCloud.ts`                              | Tauri invoke typed wrapper；不直接 `fetch` Space 服务                                                                                                                                                                                                                                                                              |
+| Rust core    | `src-tauri/src/space_cloud.rs`                                | facade；account context + user credential authority、统一 Cloud response/auth policy、HTTP transport、session persistence，以及 Agent mutation→Connector wake、Attachment 下载 credential 选择等跨域编排                                                                                                                         |
+| Rust domains | `src-tauri/src/space_cloud/{registered_agents,delivery,cli,skills,attachments}.rs` | Registered Agent model/store/management、Connector + IssueDelivery、CLI actor/context、Skill package/install、Issue attachment IO；领域模块复用根 auth/client 与既有文件安全 helper，不建立平行 authority                                                                                                                          |
+| Rust tests   | `src-tauri/src/space_cloud/tests.rs`                          | account/session/auth、跨模块持久化、Prompt、Connector、CLI、Agent selector 与 Attachment 的契约回归；模块私有实现优先就近测试                                                                                                                                                                                                     |
+| Renderer API | `src/renderer/api/spaceCloud.ts`                              | Tauri invoke typed wrapper与结构化错误投影；不直接 `fetch` Space 服务、不裁决 credential validity                                                                                                                                                                                                                                  |
 | Renderer UI  | `src/renderer/pages/Space.tsx` + `src/renderer/pages/space/*` | Space shell 与 Issues / Skills / Agents 三个 workspace，登录轮询、创建/评论/Goal 订阅、Skill 安装、本地缓存                                                                                                                                                                                                                        |
 | CLI          | `src/cli/myagents.ts` + Sidecar Admin API + Rust Management API | 每个业务命令显式 `--space <slug>`；Sidecar 从当前 project 补 stable workspace id，Rust 单点解析 User/Registered Agent actor 和 token。支持 list/whoami/Goal/assignee discovery、Issue create/read/metadata update/comment/claim/complete、top attachment add/download；CLI 不接受显式 actor/token |
+
+Rust 领域依赖固定为 `delivery → registered_agents`、`cli → registered_agents + attachments`，其余领域彼此独立并共同指向根 auth/client。`registered_agents` 不调用 `delivery`，`attachments` 也不选择 Registered Agent；需要同时修改 Agent 状态与 Connector schedule，或先裁决 User/Agent credential 再执行 Attachment 下载的 Tauri command，由根 facade 完成跨域编排。这些不是兼容 wrapper，而是显式的跨 owner 协调点。
 
 ### CLI Goal discovery 与 Issue 元数据更新
 
@@ -107,9 +111,10 @@ Registered Agent 是“执行实体”，不是设备本身：
 Registered Agent 执行请求是 token-only capability：
 
 - 本地轮询 delivery/dispatch 时只带 registered-agent token，服务端由 token 映射出 user / space / device / registered-agent 权限边界。
-- MyAgents Desktop 默认 token selector 只消费“当前 Space user + 当前 device_id”的本地 token 集合。
+- MyAgents Desktop token selector 用 `session.json` 中保留的 account user id + 当前 `device_id` 选择本地 token，不要求 user credential 仍为 `authenticated`；因此待重新登录不会停止 exact Agent connector。
 - token 存储仍在 `registered_agents.json`，但 token 对外不可见；renderer 只能看到 redacted public view。
 - 第三方/未来客户端接入时也只需要 token，不需要额外提交 userId/deviceId 参与鉴权；user/device 是服务端 token 记录的一部分。
+- Agent endpoint 的 401/revoke/disabled 只进入 existing exact Agent failure path，不修改 `session.json` 的 user credential，也不能删除 account context。
 
 ## 本地状态
 
@@ -117,11 +122,27 @@ Space 本地状态由 Rust `space_data_dir()` 按当前环境选择：
 
 - production 保持兼容路径 `~/.myagents/space/{session.json,registered_agents.json,delivery_log.json}`。
 - Dev 使用 `~/.myagents/space/dev/{session.json,registered_agents.json,delivery_log.json}`；旧 `space/staging` 数据不自动复制或删除，用户在全新 Dev 环境重新登录。
-- `session.json` — 云端 session token 与用户/accountPlan/space/membership 摘要；Rust 对外只返回 redacted public view。
+- `session.json` — redacted account context 与 tagged user credential 的同一原子状态；Rust 对外只返回 redacted auth view。
 - `registered_agents.json` — 本机注册到 Space 的 Agent 映射，包含本地 workspace path、`ownerUserId`、`deviceId`、设备摘要、订阅状态与云端 token。
 - `delivery_log.json` — 已注入 IssueDelivery 的稳定 transport receipt/audit；它只用于 ACK 重放，不参与 CLI actor 推断。connector 每轮 poll 前重放尚未完成的 Cloud ACK，单条 ACK 失败不阻塞其它 receipt 或本轮 poll。
 
 这些文件属于桌面客户端状态，不进入 SessionStore，也不由 Sidecar 管理。
+
+### User credential 生命周期
+
+`session.json` 只有一份 canonical writer，不拆 account/token 文件：
+
+- `userCredential.state = authenticated`：唯一允许持有 `sessionToken` 与 Cloud 返回的 `expiresAt`；只有 Rust 内部 `AuthenticatedSpaceSession` capability 能取出 token。
+- `userCredential.state = reauth_required`：只保留 `invalidatedSessionBindingId`，继续保留 redacted user/Space/membership/accountPlan context，禁止持有 token。
+- 文件不存在：用户明确退出或从未登录，即 `signed_out`。损坏文件是本地状态错误，不能静默解释为退出。
+
+旧扁平 `{sessionToken, expiresAt, ...}` 只在反序列化边界读取为 `authenticated`；下一次真实写盘只输出 canonical tagged schema，不双写、不维护 migration ledger。`expiresAt` 只供展示和诊断，客户端不靠本机时间提前注销；Cloud 对已授权 user-session 请求的 HTTP 401 才是 credential effective validity authority。
+
+Rust 对 user credential 的终态只有一个 transition：所有 authorized user JSON、typed command、multipart 与 raw download 响应经同一 parser/policy；HTTP 401 在现有 session file lock 内重新读取磁盘并核对请求开始时固定的 opaque binding，匹配才将 token 替换为 `reauth_required`。旧请求的 binding 已被新登录替换、文件已退出或已处于另一代状态时只返回旧请求错误，不修改当前文件。403、429、5xx、transport、取消与 decode failure 均保持 `authenticated`。
+
+`cmd_space_get_session` 对 `/api/me` 的含义是“用现有 token 验证凭据并刷新 redacted account snapshot”，不是 token refresh：成功时用 binding fence 提交摘要；401 时返回持久化后的 `reauth_required` view；网络或服务端瞬态失败继续返回磁盘上当前 view。Cloud 当前没有 refresh token、rotation 或 renew endpoint，Desktop 不增加 timer/retry queue 来模拟续期。
+
+Renderer `spaceStore` 只消费 Rust view：`authenticated` 才进入业务 bootstrap，`reauth_required` 清理当前请求/cache并复用 `SpaceLogin`；mid-session failure 还必须让错误的 `sessionBindingId` 精确匹配当前 session，避免旧 401 覆盖新登录或在 explicit logout 后复活登录页。重新登录仍走现有 desktop auth start/poll；“退出并清除本机账户”走 local-first logout，reauth 文件因无 token 不发远端 revoke。
 
 全局 Skill 安装路径不属于 Space 服务环境状态，始终是 `~/.myagents/skills`；不能从环境化后的 `space_data_dir()` 反推。
 
@@ -148,11 +169,18 @@ Legacy 兼容规则：
 ## 网络与安全
 
 - 所有 Space HTTP 请求由 Rust `reqwest` 发起；renderer 不持有 session token。认证、JSON、multipart、raw download、generic renderer proxy、delivery poll/ACK/presence 全部复用 `with_space_client_context_headers`，统一带 public client id、客户端版本、device id、platform、OS version、`Accept-Language` 与 `User-Agent`。设备事实来自进程内缓存的 `current_device_identity()`，不能由各调用方自行拼接。
+- User-session response 在 Rust 单点解析为可序列化 `SpaceCommandError`，保留 stable code、Cloud code、HTTP status、requestId、retryability、credential kind 与请求 binding；Renderer i18n 只拥有用户文案。认证 transition 只看 `credentialKind=user_session + HTTP 401`，不得匹配 Cloud/中英文 message、`expiresAt` 或通用 4xx。日志只记录 redacted binding/requestId，不记录 token。
 - 用户可控 workspace 路径进入 Rust 后必须通过 `validate_workspace_root`。
 - 写入 workspace 的附件下载由 Rust 流式累计限制 25MB，完整接收成功后才提交文件；父目录逐段 no-follow、临时文件 exclusive create。Unix 用目录句柄内 `openat/renameat`；Windows 用 `NtCreateFile(RootDirectory=parentHandle, FILE_OPEN_REPARSE_POINT)` 逐级相对打开/创建目录与 temp，最终通过带同一 `RootDirectory` 的 `SetFileInformationByHandle(FileRenameInfo)` 覆盖目标。因此 namespace 被替换或目录原地变成 junction 都不能重定向 IO，重复下载仍可安全覆盖。
 - Skill zip 安装有总大小、单文件大小、entry 数限制，并防 Zip-Slip；安装目标只允许 global 或当前 project。同名目标不自动改名：Rust 在下载前返回冲突，Renderer 明确确认后才携带 `overwrite` 重试；覆盖仍先完整解压到同级 staging，同一目标的提交经现有 file-lock 串行化后，再用短暂 sibling backup 交换目录，提交失败恢复旧目录，不做文件级合并或长期备份。
 - GUI 选择附件先调用 Rust `cmd_space_inspect_attachment_drafts`，返回本地 `{path,name,sizeBytes,mimeType}`；评论/创建草稿不预上传。提交时 Rust 再用同一底层 bounded/no-follow reader 读取：Windows workspace 路径逐级用 parent handle 相对解析，leaf 以 `FILE_OPEN_REPARSE_POINT` 打开并拒绝 reparse，避免 inspect/submit 间、validate/open 间的替换或原地 reparse；显式本地文件也复用统一 leaf opener。Cloud 只在 JSON 或 multipart 整体成功时绑定正文/评论。
 - CLI 附件只允许当前 workspace 内普通文件；数量先于读取限制为 5，单文件读取过程限制 25MB。complete 的 operation key 由 Rust 基于实际 multipart bytes 派生，Node 不预读/预哈希文件。
+
+### CLI actor 与重新登录边界
+
+- 没有 exact Session origin 的普通 CLI 是 User actor：先要求 `AuthenticatedSpaceSession` 并用 `/api/me` 刷新 account snapshot；本地 `reauth_required` 在业务 HTTP 与 workspace mutation 前稳定返回 `SPACE_REAUTH_REQUIRED`。
+- 带 exact `{spaceId, registeredAgentId}` Session origin 的 CLI 只读取缓存 account context 做 owner/role/device/workspace binding 校验，然后使用该 Agent 的 local token；不得先运行用户 `/api/me`，不得因 user credential 待重登失败，也不得 fallback 为 User actor。
+- 显式 legacy Agent id 仍服从既有 fail-closed 校验；没有 exact origin 时，本机存在 Agent token 不会自动提升 User actor。
 
 ## 用户 Profile / 头像
 

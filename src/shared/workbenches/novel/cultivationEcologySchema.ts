@@ -139,6 +139,18 @@ export const resourceRequirementSchema = z.object({
   missingConsequence: textSchema,
 });
 
+export const simulationRuleSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.literal("approved"),
+    enabled: z.boolean(),
+    requiredMethodIds: z.array(idSchema),
+    requiredAbilityIds: z.array(idSchema),
+    forbiddenActiveConstraintIds: z.array(idSchema),
+    requiredNarrativeMilestoneIds: z.array(idSchema),
+  })
+  .strict();
+
 export const levelSubStageSchema = namedSchema.extend({
   order: z.number().int().nonnegative(),
   metricThresholds: z.array(
@@ -168,6 +180,7 @@ export const levelSchema = namedSchema.extend({
   naturalAbilityIds: z.array(idSchema),
   methodIds: z.array(idSchema),
   subStages: z.array(levelSubStageSchema).default([]),
+  simulationBreakthroughRule: simulationRuleSchema.optional(),
 });
 
 export const transitionSchema = namedSchema.extend({
@@ -189,6 +202,28 @@ export const transitionSchema = namedSchema.extend({
   reversible: z.boolean(),
   qualityInheritance: textSchema.optional(),
   degenerationState: textSchema.optional(),
+  simulationRule: simulationRuleSchema.optional(),
+});
+
+export const narrativeMilestoneSchema = namedSchema.extend({
+  category: z.enum([
+    "trial",
+    "choice",
+    "revelation",
+    "relationship",
+    "loss",
+    "achievement",
+  ]),
+  satisfiedBy: z
+    .array(
+      z
+        .object({
+          kind: z.enum(["timeline-event", "chapter-fact"]),
+          id: idSchema,
+        })
+        .strict(),
+    )
+    .default([]),
 });
 
 export const progressionTrackSchema = namedSchema.extend({
@@ -603,6 +638,7 @@ export const cultivationSystemSchema = namedSchema.extend({
   foundations: z.array(foundationSchema),
   transitions: z.array(transitionSchema),
   constraints: z.array(constraintSchema),
+  narrativeMilestones: z.array(narrativeMilestoneSchema).optional(),
   audit: z.array(auditIssueSchema),
 });
 
@@ -650,6 +686,10 @@ export type Formation = z.infer<typeof formationSchema>;
 export type Transition = z.infer<typeof transitionSchema>;
 export type Foundation = z.infer<typeof foundationSchema>;
 export type Constraint = z.infer<typeof constraintSchema>;
+export type NarrativeMilestone = z.infer<typeof narrativeMilestoneSchema>;
+export type SimulationRule = NonNullable<
+  z.infer<typeof transitionSchema>["simulationRule"]
+>;
 export type AuditIssue = z.infer<typeof auditIssueSchema>;
 
 export function createEmptyCultivationEcology(): CultivationEcology {

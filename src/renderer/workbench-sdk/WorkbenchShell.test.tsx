@@ -1,9 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { i18n } from "@/i18n";
 import { defineWorkbench } from "./defineWorkbench";
 import { createWorkbenchRegistry } from "./registry";
+import type { WorkbenchRendererContext } from "./types";
 import WorkbenchShell from "./WorkbenchShell";
 
 const manifest = {
@@ -19,6 +21,18 @@ const manifest = {
     { id: "documents", label: "Documents", icon: "file-text", order: 10 },
   ],
 };
+
+function TitleSettingRenderer({
+  context,
+}: {
+  readonly context: WorkbenchRendererContext;
+}) {
+  const { setShellTitle } = context;
+  useEffect(() => {
+    setShellTitle?.("这是一部长篇小说的三十字书名示例用于验证侧栏省略");
+  }, [setShellTitle]);
+  return null;
+}
 
 describe("WorkbenchShell", () => {
   it("loads a registered module and routes navigation through the host", async () => {
@@ -47,6 +61,28 @@ describe("WorkbenchShell", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Documents" }));
     expect(onNavigate).toHaveBeenCalledWith("documents");
+  });
+
+  it("allows a renderer to replace the shell title with its project title", async () => {
+    const registry = createWorkbenchRegistry([
+      defineWorkbench(manifest, async () => ({
+        default: TitleSettingRenderer,
+      })),
+    ]);
+    render(
+      <WorkbenchShell
+        target={{ workbenchId: manifest.id, route: "overview" }}
+        workspacePath="C:\\Work\\Novel"
+        isActive
+        onNavigate={vi.fn()}
+        registry={registry}
+      />,
+    );
+
+    const title = "这是一部长篇小说的三十字书名示例用于验证侧栏省略";
+    expect(await screen.findByText(title)).toBeInTheDocument();
+    expect(screen.getByTitle(title)).toBeInTheDocument();
+    expect(screen.queryByText("Testbench")).not.toBeInTheDocument();
   });
 
   it("opens a visible child route while keeping hidden internal routes out of the menu", () => {
@@ -81,10 +117,12 @@ describe("WorkbenchShell", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "辅助" }));
-    expect(screen.getByRole("button", { name: "世界推演" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "运行控制台" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "世界推演" }));
-    expect(onNavigate).toHaveBeenCalledWith("simulation");
+    expect(screen.getByRole("button", { name: "诊断" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "内部诊断" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "诊断" }));
+    expect(onNavigate).toHaveBeenCalledWith("diagnostics");
   });
 
   it("routes full Agent Session requests through the MyAgents host", async () => {
@@ -125,6 +163,34 @@ describe("WorkbenchShell", () => {
       expect.objectContaining({
         title: "世界架构向导",
         promptId: "novel.world.guide",
+      }),
+    );
+  });
+
+  it("opens the AI assistant without auto-sending an initial message", async () => {
+    const onOpenAgentSession = vi.fn(async () => undefined);
+    const registry = createWorkbenchRegistry([
+      defineWorkbench(manifest, async () => ({ default: () => null })),
+    ]);
+    render(
+      <WorkbenchShell
+        target={{ workbenchId: manifest.id, route: "overview" }}
+        workspacePath="C:\Work\Novel"
+        isActive
+        onNavigate={vi.fn()}
+        onOpenAgentSession={onOpenAgentSession}
+        registry={registry}
+      />,
+    );
+
+    const button = await screen.findByRole("button", { name: "打开 AI 助手" });
+    expect(button).toHaveTextContent("AI");
+    fireEvent.click(button);
+    expect(onOpenAgentSession).toHaveBeenCalledWith(
+      "C:\\Work\\Novel",
+      expect.objectContaining({
+        autoSendInitialMessage: false,
+        initialMessage: "",
       }),
     );
   });
@@ -218,8 +284,7 @@ describe("WorkbenchShell", () => {
     ).toBeInTheDocument();
   });
 
-  it("keeps a direct return-to-manuscript action visible in collapsed novel navigation", () => {
-    const onNavigate = vi.fn();
+  it("does not inject a duplicate return-to-manuscript shortcut", () => {
     const novelManifest = {
       ...manifest,
       id: "io.myagents.novel-test",
@@ -229,25 +294,23 @@ describe("WorkbenchShell", () => {
       ],
     };
     const registry = createWorkbenchRegistry([
-      defineWorkbench(novelManifest, async () => ({ default: () => null }), {
-        shell: { defaultNavigationCollapsed: true },
-      }),
+      defineWorkbench(novelManifest, async () => ({ default: () => null })),
     ]);
+
     render(
       <WorkbenchShell
         target={{ workbenchId: novelManifest.id, route: "documents" }}
         workspacePath="C:\\Work\\Novel"
         isActive
-        onNavigate={onNavigate}
+        onNavigate={vi.fn()}
         registry={registry}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "返回正文" }));
-    expect(onNavigate).toHaveBeenCalledWith("manuscript");
-    fireEvent.click(screen.getByRole("button", { name: "展开工作台导航" }));
-    fireEvent.click(screen.getByRole("button", { name: "返回正文" }));
-    expect(onNavigate).toHaveBeenCalledTimes(2);
+    expect(
+      screen.queryByRole("button", { name: "返回正文" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "正文" })).toBeInTheDocument();
   });
 
   it("contains unknown and incompatible workbenches inside the shell", () => {

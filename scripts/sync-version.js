@@ -3,7 +3,7 @@
  * 由 npm version 钩子自动调用
  *
  * 数据源: package.json (单一数据源)
- * 同步目标: src-tauri/tauri.conf.json, src-tauri/Cargo.toml
+ * 同步目标: src-tauri/tauri.conf.json、App Cargo.toml、Document Worker Cargo.toml
  */
 
 import { readFileSync, writeFileSync } from 'fs';
@@ -41,5 +41,15 @@ cargoContent = cargoContent.replace(
 );
 writeFileSync(cargoPath, cargoContent, 'utf-8');
 console.log('  ✓ src-tauri/Cargo.toml');
+
+// 独立 Document Worker 随 App 同版本发布，也必须跟随唯一版本源。
+const workerCargoPath = join(rootDir, 'src-tauri/document-worker/Cargo.toml');
+let workerCargoContent = readFileSync(workerCargoPath, 'utf-8');
+workerCargoContent = workerCargoContent.replace(
+    /^version = "[0-9]+\.[0-9]+\.[0-9]+"/m,
+    `version = "${version}"`
+);
+writeFileSync(workerCargoPath, workerCargoContent, 'utf-8');
+console.log('  ✓ src-tauri/document-worker/Cargo.toml');
 
 console.log(`\n版本号已同步到 ${version}`);

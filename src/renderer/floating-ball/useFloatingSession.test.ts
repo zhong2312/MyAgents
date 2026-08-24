@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { extractMessageText, parseSessionHistory } from './useFloatingSession';
+import {
+    applyFloatingSubagentLifecycle,
+    deriveActivities,
+    extractMessageText,
+    parseSessionHistory,
+    type FbAssistantMsg,
+} from './useFloatingSession';
 import { buildFloatingBallContextReminder } from '../../shared/systemReminder';
 
 // extractMessageText 是伴侣窗历史回填的唯一文本解码器——SessionMessage.content
@@ -37,6 +43,50 @@ describe('extractMessageText', () => {
     it('drops blocks without text instead of rendering "undefined"', () => {
         const content = JSON.stringify([{ type: 'thinking' }, { type: 'text', text: '答案' }]);
         expect(extractMessageText(content)).toBe('答案');
+    });
+});
+
+describe('Companion sub-agent lifecycle projection', () => {
+    const message = (): FbAssistantMsg => ({
+        id: 'live-assistant',
+        role: 'ai',
+        content: [{
+            type: 'tool_use',
+            tool: {
+                id: 'spawn-card',
+                name: 'CollabAgent',
+                input: { tool: 'spawnAgent' },
+                streamIndex: 0,
+                isLoading: false,
+            },
+        }],
+    });
+
+    it('keeps ticking from explicit lifecycle after the spawn tool itself completes', () => {
+        const running = applyFloatingSubagentLifecycle(message(), 'spawn-card', {
+            status: 'running',
+            startedAt: 100,
+        });
+
+        expect(deriveActivities(running)).toEqual([
+            expect.objectContaining({ id: 'spawn-card', running: true }),
+        ]);
+
+        const completed = applyFloatingSubagentLifecycle(running, 'spawn-card', {
+            status: 'completed',
+            startedAt: 100,
+            finishedAt: 250,
+        });
+        expect(deriveActivities(completed)[0].running).toBe(false);
+        expect(completed.content[0].tool?.subagentLifecycle).toEqual({
+            status: 'completed',
+            startedAt: 100,
+            finishedAt: 250,
+        });
+        expect(applyFloatingSubagentLifecycle(completed, 'spawn-card', {
+            status: 'running',
+            startedAt: 300,
+        })).toBe(completed);
     });
 });
 

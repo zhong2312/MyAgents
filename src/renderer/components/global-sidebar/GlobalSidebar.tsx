@@ -74,9 +74,9 @@ import {
   type WorkspaceTemplate,
 } from '@/config/types';
 import {
-  disableAgentAndStopChannels,
-  enableAgentAndStartChannels,
   getAgentById,
+  setAgentEnabledForLifecycle,
+  stopAgentChannelsForLifecycle,
 } from '@/config/services/agentConfigService';
 import {
   archiveProject,
@@ -302,9 +302,26 @@ function HistorySearchOverlayFallback({ onClose }: { onClose: () => void }) {
           <X className="h-4 w-4" />
         </button>
       </div>
-      <div className="flex h-8 items-center rounded-md border border-[var(--line)] px-2.5 text-[var(--ink-muted)]/50">
-        <Search className="mr-2 h-3.5 w-3.5" />
-        <span className="text-sm">{t('historyOverlay.searchPlaceholder')}</span>
+      <div className="flex h-8 items-center justify-between gap-4">
+        <div
+          aria-hidden="true"
+          className="flex items-center gap-1"
+          data-history-search-fallback-filters
+        >
+          <span className="rounded-full bg-[var(--button-primary-bg)] px-2.5 py-1 text-xs font-medium text-[var(--button-primary-text)]">
+            {t('historyOverlay.filters.all')}
+          </span>
+          <span className="rounded-full px-2.5 py-1 text-xs font-medium text-[var(--ink-muted)]">
+            {t('historyOverlay.filters.favorite')}
+          </span>
+        </div>
+        <div
+          className="flex h-full w-[30%] min-w-72 shrink-0 items-center justify-between gap-3 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 text-[var(--ink-muted)]/50"
+          data-history-search-fallback-compact
+        >
+          <span className="truncate text-sm">{t('historyOverlay.searchPlaceholder')}</span>
+          <Search className="h-3.5 w-3.5 shrink-0" />
+        </div>
       </div>
       <div aria-busy="true" className="flex min-h-0 flex-1 items-center justify-center">
         <Loader2 className="h-4 w-4 animate-spin text-[var(--ink-muted)]/50" />
@@ -692,7 +709,8 @@ export default memo(function GlobalSidebar({
       const wasEnabled = agent?.enabled === true;
       const archived = await archiveProject(latest.id, { agentEnabledBeforeArchive: wasEnabled });
       if (!archived) throw new Error(`Project ${latest.id} not found`);
-      if (agent && wasEnabled) await disableAgentAndStopChannels(agent);
+      if (agent && wasEnabled) await setAgentEnabledForLifecycle(agent.id, false);
+      if (agent) await stopAgentChannelsForLifecycle(agent);
       await refreshConfig();
       toastRef.current.success(tLauncher('toasts.workspaceArchived'));
     } catch (error) {
@@ -713,7 +731,7 @@ export default memo(function GlobalSidebar({
       if (!restored) throw new Error(`Project ${latest.id} not found`);
       if (shouldRestoreAgent && latest.agentId) {
         try {
-          await enableAgentAndStartChannels(latest.agentId);
+          await setAgentEnabledForLifecycle(latest.agentId, true);
         } catch (error) {
           await archiveProject(latest.id, {
             archivedAtIso: latest.archivedAt,
@@ -1208,7 +1226,6 @@ export default memo(function GlobalSidebar({
             <HistorySearchOverlayContent
               projects={activeProjects}
               taskCenterData={taskCenterData}
-              initialMode="search"
               onClose={handleSearchClose}
               onOpenSession={(session, project) => { void handleOpenSession(session, project); }}
             />
@@ -1688,8 +1705,8 @@ function WorkspaceRow({
       role="treeitem"
       aria-expanded={expanded}
       aria-current={active ? 'page' : undefined}
-      className={`group/workspace flex h-9 select-none items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] ${
-        active ? 'bg-[var(--hover-bg)]' : ''
+      className={`group/workspace relative flex h-9 select-none items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] focus-within:bg-[var(--hover-bg)] ${
+        active || menuOpen ? 'bg-[var(--hover-bg)]' : ''
       }`}
       data-global-sidebar-workspace-row
       onMouseDown={(event) => {
@@ -1721,9 +1738,16 @@ function WorkspaceRow({
           {displayName}
         </span>
       </button>
-      {/* The scroll owner supplies 8px; this local 8px keeps controls outside Fluent's 16px overlay hit region. */}
+      {/* Overlay the hover actions instead of reserving row width. The opaque
+          end of the Theme-aware gradient hides any title underneath; its
+          transparent lead-in avoids a hard vertical seam. The scroll owner
+          supplies 8px, and the local right padding keeps controls outside
+          Fluent's 16px overlay hit region. */}
       <div
-        className={`flex shrink-0 items-center pr-2 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}
+        className={`pointer-events-none absolute inset-y-0 right-0 flex items-center pl-6 pr-2 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}
+        style={{
+          background: 'linear-gradient(to right, var(--global-sidebar-bg-a0) 0, color-mix(in srgb, var(--global-sidebar-bg) 90%, var(--accent) 10%) 1.5rem)',
+        }}
         data-global-sidebar-workspace-actions
       >
         <Tip label={tLauncher('workspaceCard.more')} position={actionTipPosition} align="end" disabled={menuOpen}>
@@ -1731,7 +1755,7 @@ function WorkspaceRow({
             ref={menuRef}
             type="button"
             onClick={() => setMenu(!menuOpen)}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            className={`flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
             aria-label={tLauncher('workspaceCard.more')}
           >
             <MoreHorizontal className="h-3.5 w-3.5" />
@@ -1741,7 +1765,7 @@ function WorkspaceRow({
           <button
             type="button"
             onClick={onOpenWorkspace}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            className={`flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
             aria-label={t('globalSidebar.newChatHere')}
           >
             <MessageSquarePlus className="h-3.5 w-3.5" />

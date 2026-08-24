@@ -6,10 +6,11 @@
  * to FileActionContext; right-click opens the shared file menu.
  * Audio file paths get an inline play/stop button.
  */
-import { useFileAction } from '@/context/FileActionContext';
+import { useFileAction, useFileTargetInfo } from '@/context/FileActionContext';
+import { useOpenWebLink } from '@/context/BrowserPanelContext';
 import { isAudioPath } from '@/utils/audioPlayer';
 import { useAudioPlayer } from '@/hooks/useAudioPlayer';
-import { looksLikeFilePath } from '@/utils/pathDetection';
+import { classifyInlineCodeTarget } from '@/utils/pathDetection';
 import { resolveAgainstWorkspace, resolveFileActionTarget } from '@/utils/workspaceFileLinks';
 import { Play, Pause } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -55,10 +56,37 @@ function AudioPlayButton({ filePath }: { filePath: string }) {
 export default function InlineCode({ children }: InlineCodeProps) {
     const { t } = useTranslation('app');
     const fileAction = useFileAction(); // null outside Chat
+    const openWebLink = useOpenWebLink();
     const text = extractText(children);
+    const inlineTarget = classifyInlineCodeTarget(text);
+    const actionTarget = fileAction && inlineTarget.kind === 'file'
+        ? resolveFileActionTarget(inlineTarget.path, fileAction.workspacePath, { parseLineReference: true })
+        : null;
+    const pathInfo = useFileTargetInfo(actionTarget);
 
-    // Fast path: no context or not a path candidate → plain code
-    if (!fileAction || !looksLikeFilePath(text)) {
+    if (inlineTarget.kind === 'web') {
+        const handleWebClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+            e.preventDefault();
+            const selection = window.getSelection();
+            if (selection?.toString()) return;
+            openWebLink(inlineTarget.url, { forceExternal: e.metaKey || e.ctrlKey });
+        };
+
+        return (
+            <a
+                href={inlineTarget.url}
+                onClick={handleWebClick}
+                className="inline text-inherit no-underline"
+                style={{ userSelect: 'text' }}
+            >
+                <code className={INTERACTIVE_CLASS}>{children}</code>
+            </a>
+        );
+    }
+
+    // File links are a Chat-owned capability. Other surfaces keep inferred
+    // paths as ordinary inline code even though web URLs remain normal links.
+    if (!fileAction || inlineTarget.kind !== 'file') {
         return <code className={BASE_CLASS}>{children}</code>;
     }
 
@@ -68,45 +96,54 @@ export default function InlineCode({ children }: InlineCodeProps) {
     // (e.g. `/Users/me/ws/CLAUDE.md`) silently stayed a plain <code>. Mirrors
     // the file-tool chip (tools/FilePath) so both surfaces resolve identically.
     // The chip still DISPLAYS the original text (`children`).
-    const actionTarget = resolveFileActionTarget(text, fileAction.workspacePath);
     if (!actionTarget) {
         return <code className={BASE_CLASS}>{children}</code>;
     }
 
-    // Ask context for cached result (may trigger a batched backend request)
-    const pathInfo = fileAction.checkFileTarget(actionTarget);
-
-    if (!pathInfo) {
-        // Keep the first paint quiet while the batched existence check resolves.
+    if (!pathInfo?.exists) {
+        // pending, missing, rejected and check failures are all ordinary code.
+        // The dashed underline is a verified capability, not a path heuristic.
         return <code className={BASE_CLASS}>{children}</code>;
     }
 
-    // A recognized but unavailable target remains actionable: primary click
-    // re-checks and explains the failure, while right-click preserves the
-    // product menu (copy/reference/folder actions can still be useful).
-    const isAudio = pathInfo.exists && isAudioPath(text);
+    const isAudio = isAudioPath(inlineTarget.path);
 
-    const handleClick = (e: React.MouseEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
+    const openPrimary = (forceExternal: boolean) => {
         fileAction.openFileTarget(actionTarget, {
             displayPath: text,
-            forceExternal: e.metaKey || e.ctrlKey,
+            forceExternal,
         });
+    };
+
+    const handleClick = (e: React.MouseEvent) => {
+        if (window.getSelection()?.toString()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        openPrimary(e.metaKey || e.ctrlKey);
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        e.stopPropagation();
+        openPrimary(e.metaKey || e.ctrlKey);
     };
 
     const handleContextMenu = (e: React.MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        fileAction.openFileMenu(e.clientX, e.clientY, actionTarget.path, pathInfo.type, text, {
-            scope: actionTarget.scope,
+        fileAction.openFileTargetMenu(e.clientX, e.clientY, actionTarget, {
+            displayPath: text,
         });
     };
 
     const codeEl = (
         <code
             className={INTERACTIVE_CLASS}
+            role="link"
+            tabIndex={0}
             onClick={handleClick}
+            onKeyDown={handleKeyDown}
             onContextMenu={handleContextMenu}
             title={pathInfo.type === 'dir'
                 ? t('inlineCode.folderTitle', { path: text })

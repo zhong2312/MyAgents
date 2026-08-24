@@ -28,6 +28,29 @@ const INITIAL_BACKOFF_SECS: u64 = 1;
 /// Max backoff for reconnect (seconds)
 const MAX_BACKOFF_SECS: u64 = 30;
 
+/// `reqwest::Error` Display output includes the request URL. Telegram embeds
+/// the bot token in that URL, so transport errors must cross into product
+/// errors as a bounded category rather than as the raw error chain.
+fn safe_telegram_transport_error(context: &str, error: &reqwest::Error) -> TelegramError {
+    if error.is_timeout() {
+        return TelegramError::NetworkTimeout;
+    }
+    let category = if error.is_connect() {
+        "connection error"
+    } else if error.is_builder() {
+        "invalid request"
+    } else if error.is_request() {
+        "request error"
+    } else if error.is_body() {
+        "response body error"
+    } else if error.is_decode() {
+        "response decode error"
+    } else {
+        "transport error"
+    };
+    TelegramError::Other(format!("{} failed: {}", context, category))
+}
+
 // MessageCoalescer constants
 const DEFAULT_DEBOUNCE_MS: u64 = 500;
 const DEFAULT_FRAGMENT_MERGE_MS: u64 = 1500;
@@ -293,16 +316,13 @@ impl TelegramAdapter {
                 .json(body)
                 .send()
                 .await
-                .map_err(|e| {
-                    if e.is_timeout() {
-                        TelegramError::NetworkTimeout
-                    } else {
-                        TelegramError::Other(format!("HTTP error: {}", e))
-                    }
-                })?;
+                .map_err(|error| safe_telegram_transport_error("Telegram API request", &error))?;
 
             let status = resp.status();
-            let body_text = resp.text().await.unwrap_or_default();
+            let body_text = resp
+                .text()
+                .await
+                .map_err(|error| safe_telegram_transport_error("Telegram API response", &error))?;
 
             if status.as_u16() == 429 {
                 // Rate limited
@@ -397,16 +417,13 @@ impl TelegramAdapter {
             .multipart(form)
             .send()
             .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    TelegramError::NetworkTimeout
-                } else {
-                    TelegramError::Other(format!("HTTP error: {}", e))
-                }
-            })?;
+            .map_err(|error| safe_telegram_transport_error("Telegram API request", &error))?;
 
         let status = resp.status();
-        let body_text = resp.text().await.unwrap_or_default();
+        let body_text = resp
+            .text()
+            .await
+            .map_err(|error| safe_telegram_transport_error("Telegram API response", &error))?;
 
         if status.as_u16() == 429 {
             let retry_after = serde_json::from_str::<Value>(&body_text)
@@ -1083,7 +1100,7 @@ impl TelegramAdapter {
             .get(&url)
             .send()
             .await
-            .map_err(|e| TelegramError::Other(format!("File download error: {}", e)))?;
+            .map_err(|error| safe_telegram_transport_error("Telegram file download", &error))?;
         if !resp.status().is_success() {
             return Err(TelegramError::Other(format!(
                 "File download HTTP {}",
@@ -1093,7 +1110,7 @@ impl TelegramAdapter {
         let bytes = resp
             .bytes()
             .await
-            .map_err(|e| TelegramError::Other(format!("File read error: {}", e)))?;
+            .map_err(|error| safe_telegram_transport_error("Telegram file response", &error))?;
 
         // Double-check actual downloaded size
         if bytes.len() > MAX_FILE_DOWNLOAD_SIZE {
@@ -1761,6 +1778,25 @@ impl super::adapter::ImStreamAdapter for TelegramAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_error_projection_never_includes_the_token_bearing_url() {
+        let token = "123456789:future-secret-token";
+        let error = crate::local_http::builder()
+            .build()
+            .expect("test client")
+            .get(format!(
+                "https://api.telegram.org:invalid/bot{}/getMe",
+                token
+            ))
+            .build()
+            .expect_err("invalid port must fail request construction");
+
+        let projected = safe_telegram_transport_error("Telegram API request", &error).to_string();
+        assert_eq!(projected, "Telegram API request failed: invalid request");
+        assert!(!projected.contains(token));
+        assert!(!projected.contains("api.telegram.org"));
+    }
 
     #[test]
     fn test_split_message_short() {

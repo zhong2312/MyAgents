@@ -26,6 +26,11 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 use crate::sidecar::ManagedSidecar;
 
+/// Project-owned GitHub Release endpoint used by the desktop updater.
+/// Keep this in sync with `plugins.updater.endpoints` in tauri.conf.json.
+const UPDATE_MANIFEST_BASE_URL: &str =
+    "https://github.com/zhong2312/MyAgents/releases/latest/download";
+
 /// Global flag to prevent concurrent update checks/downloads
 static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
@@ -39,7 +44,7 @@ static DOWNLOADED_VERSION: std::sync::Mutex<Option<String>> = std::sync::Mutex::
 ///
 /// **Why this exists:** Tauri's `Update::install(bytes)` is a method on `Update`,
 /// but the only public way to obtain an `Update` is `updater.check().await`,
-/// which makes a fresh HTTPS round-trip to `download.myagents.io`. On Windows
+/// which makes a fresh HTTPS round-trip to the project GitHub Release. On Windows
 /// (where the install path is split across download → click → install), this
 /// extra round-trip at click-time means a flaky/blocked network silently kills
 /// the install — the user sees the "重启更新" button do nothing.
@@ -502,8 +507,8 @@ async fn check_and_download_silently(app: &AppHandle) -> Result<Option<String>, 
     logger::info(
         app,
         format!(
-            "[Updater] Checking for updates... Current: v{}, Target: {}, Endpoint: https://download.myagents.io/update/{}.json",
-            current_version, target, target
+            "[Updater] Checking for updates... Current: v{}, Target: {}, Endpoint: {}/{}.json",
+            current_version, target, UPDATE_MANIFEST_BASE_URL, target
         ),
     );
 
@@ -1135,7 +1140,7 @@ pub async fn test_update_connectivity(app: AppHandle) -> Result<String, String> 
     // Detect architecture
     let target = get_update_target();
 
-    let url = format!("https://download.myagents.io/update/{}.json", target);
+    let url = format!("{}/{}.json", UPDATE_MANIFEST_BASE_URL, target);
     logger::info(
         &app,
         format!("[Updater] Testing HTTP connectivity to: {}", url),

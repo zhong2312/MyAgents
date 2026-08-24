@@ -33,7 +33,6 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Route,
-  Sparkles,
   Settings,
   Users,
   Waypoints,
@@ -248,6 +247,24 @@ export default function WorkbenchShell({
   const [isNavigationCollapsed, setIsNavigationCollapsed] = useState(
     () => definition?.shell?.defaultNavigationCollapsed ?? false,
   );
+  const shellTitleKey = `${manifest?.id ?? ""}\u0000${workspacePath}`;
+  const [shellTitleState, setShellTitleState] = useState<{
+    readonly key: string;
+    readonly title: string | null;
+  }>({ key: shellTitleKey, title: null });
+  const setShellTitle = useCallback(
+    (title: string | null) => {
+      const normalized = title?.trim();
+      setShellTitleState({
+        key: shellTitleKey,
+        title: normalized || null,
+      });
+    },
+    [shellTitleKey],
+  );
+  const shellTitle =
+    shellTitleState.key === shellTitleKey ? shellTitleState.title : null;
+  const displayTitle = shellTitle ?? manifest?.name ?? "工作台";
   const [isOpeningProjectAssistant, setIsOpeningProjectAssistant] =
     useState(false);
   const routeIds = useMemo(
@@ -386,10 +403,11 @@ export default function WorkbenchShell({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `${workbenchName} · AI 助手`,
         promptId: `${workbenchId}.assistant`,
+        autoSendInitialMessage: false,
         systemPrompt: `你是“${workbenchName}”项目的通用 AI 助手。
 
 先确认作者当前要推进的目标，再结合工作台可用能力给出简洁、可执行的建议。不得擅自修改项目事实；需要写入时，先说明变更范围并等待作者确认。`,
-        initialMessage: `你正在协助作者处理“${workspaceName}”项目中的创作任务。先确认作者当前要推进的目标，再给出简洁、可执行的建议。`,
+        initialMessage: "",
         presentation: "dialog",
         conversationKey: `${workbenchId}.assistant`,
         historyGroupPath: [workbenchName, "AI 助手"],
@@ -403,7 +421,6 @@ export default function WorkbenchShell({
     manifest?.name,
     onOpenAgentSession,
     openAgentSession,
-    workspaceName,
   ]);
 
   if (!target) {
@@ -450,6 +467,7 @@ export default function WorkbenchShell({
     route,
     isActive,
     storage,
+    setShellTitle,
     agentSessions: Object.freeze({
       isAvailable: Boolean(onOpenAgentSession),
       open: openAgentSession,
@@ -506,24 +524,13 @@ export default function WorkbenchShell({
                 <PanelLeftClose className="h-4 w-4" />
               )}
             </button>
-            {routeIds.has("manuscript") && route !== "manuscript" && (
-              <button
-                type="button"
-                aria-label="返回正文"
-                title="返回正文"
-                onClick={() => navigate("manuscript")}
-                className={`flex h-8 flex-shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] ${
-                  isNavigationCollapsed ? "w-8" : "gap-1.5 px-2 text-xs"
-                }`}
-              >
-                <FileText className="h-4 w-4" />
-                {!isNavigationCollapsed && <span>回到正文</span>}
-              </button>
-            )}
             {!isNavigationCollapsed && (
               <div className="min-w-0">
-                <div className="truncate text-sm font-semibold text-[var(--ink)]">
-                  {manifest.name}
+                <div
+                  className="truncate text-sm font-semibold text-[var(--ink)]"
+                  title={displayTitle}
+                >
+                  {displayTitle}
                 </div>
                 <div
                   className="mt-0.5 truncate text-xs text-[var(--ink-muted)]"
@@ -553,7 +560,7 @@ export default function WorkbenchShell({
                 {isOpeningProjectAssistant ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <Sparkles className="h-4 w-4" />
+                  <span className="text-xs font-semibold leading-none">AI</span>
                 )}
               </button>
             )}

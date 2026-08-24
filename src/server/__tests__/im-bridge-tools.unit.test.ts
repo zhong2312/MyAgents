@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   fetch: vi.fn(),
-  handlers: new Map<string, (params: { args: Record<string, unknown> }) => Promise<unknown>>(),
+  handlers: new Map<string, (params: { args: Record<string, unknown> }, extra?: unknown) => Promise<unknown>>(),
   createServer: vi.fn((config: unknown) => ({ type: 'sdk', name: 'im-bridge-tools', config })),
 }));
 
@@ -24,7 +24,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
     name: string,
     _description: string,
     _schema: unknown,
-    handler: (params: { args: Record<string, unknown> }) => Promise<unknown>,
+    handler: (params: { args: Record<string, unknown> }, extra?: unknown) => Promise<unknown>,
   ) => {
     mocks.handlers.set(name, handler);
     return { name };
@@ -196,5 +196,21 @@ describe('IM Bridge stable tool surface', () => {
         isOwner: true,
       }),
     ]);
+  });
+
+  it('passes the Host call cancellation signal to the Bridge request', async () => {
+    await ensureImBridgeToolSurface({
+      bridgePort: 4312,
+      pluginId: 'feishu',
+      enabledToolGroups: ['docs'],
+    }, () => ({ senderId: 'user-1' }));
+    const controller = new AbortController();
+
+    await mocks.handlers.get('search_docs')?.({ args: { query: 'cancel' } }, {
+      signal: controller.signal,
+    });
+
+    const bridgeCall = mocks.fetch.mock.calls.find(call => String(call[0]).includes('/mcp/call-tool'));
+    expect(bridgeCall?.[2]).toMatchObject({ parentSignal: controller.signal });
   });
 });

@@ -64,10 +64,10 @@ if (currentProviderEnv?.baseUrl) {
 Grok bearer 的边界：
 
 1. Rust 独立存储 `~/.myagents/credentials/grok-oauth.json`，用文件锁、fresh-read、原子替换与平台权限加固管理 rotating refresh token。
-2. Sidecar 不缓存 bearer。Bridge 的 async registry resolver 在每次上游请求前，经 localhost Management API 获取当前 access token；请求带 `MYAGENTS_SESSION_ID` 与 `X-MyAgents-Sidecar-Generation`，Rust 只接受当前 live Sidecar identity。
+2. Sidecar 不缓存 bearer。Bridge 的 async registry resolver 在每次上游请求前，经 localhost Management API 获取当前 access token；请求带进程出生时注入的 `MYAGENTS_SIDECAR_ID` 与 `X-MyAgents-Sidecar-Generation`，Rust 只接受当前 live Sidecar process identity。该身份同时覆盖 canonical Global 与 Session Sidecar，不能用可变的 Product Session id 代替。
 3. Bridge 遇到首个 401 才请求一次强制 refresh，并以字节等价的 request body 重试；第二个 401 quarantine 对应 credential version。403/429 只记录 entitlement/rate 状态，绝不 refresh 或删除 grant。
 4. renderer 只调用 Tauri auth/model commands，永远拿不到 bearer。模型目录复用 `ModelManagementPanel`，由宿主 `discoveryAction` 调 Rust `/v1/models`，再进入共享 OpenAI model-list parser。
-5. OAuth 成功不等于“已验证”。验证 Sidecar 使用带 expected grant lineage 的 `verification` bearer purpose；只有 builtin SDK 经现有 Responses Bridge 收到 terminal success 后，Tauri verification owner 才按同一 lineage 提交 `providerVerifyStatus[xai-sub]=valid`。普通 Bridge 2xx 不写验证状态；`execution` purpose 只允许已 valid（或既有 valid 后的 rate/network 临时态）的 grant。
+5. OAuth 成功不等于“已验证”。Global Sidecar 的 one-shot 验证使用带 expected grant lineage 的 `verification` bearer purpose；只有 builtin SDK 经现有 Responses Bridge 收到 terminal success 后，Tauri verification owner 才按同一 lineage 提交 `providerVerifyStatus[xai-sub]=valid`。它不创建 Product Session，也不借用 Session Sidecar；普通 Bridge 2xx 不写验证状态，`execution` purpose 只允许已 valid（或既有 valid 后的 rate/network 临时态）的 grant。
 
 ### 3. API Key 存储与读取
 
@@ -158,7 +158,9 @@ OpenAI-protocol providers use the bridge as the only request-shape owner for bot
 
 - active session：`cacheAffinity: { sessionId, promptCacheKeyMode:'session' }`，由 `openai-bridge/prompt-cache.ts` hash 成 protocol-scoped `prompt_cache_key`（`myagents:responses:<hash>` / `myagents:chat_completions:<hash>`），不包含 raw `sessionId`、workspace path、apiKey、baseUrl、prompt 内容。
 - one-shot bridge（provider verify / title / supported-model probing / vision 等）：不设置 `cacheAffinity`，避免短生命周期调用污染 chat session cache routing。
-- 不支持 `prompt_cache_key` 的上游：`openai-bridge/handler.ts` 只在 400/422 且错误明确表示 unknown / unsupported / unrecognized / unexpected `prompt_cache_key` 参数时，去掉该字段重试一次，并在当前 bridge token 的 registry entry 上禁用后续注入；不写入 provider 全局配置。
+- SDK request 中的 `cache_control` 是 breakpoint source intent；Bridge 只在 active session 把它投影到目标协议明确支持的 content part。Responses 的 system blocks 使用无状态 `developer` message + `input_text` parts，Chat 使用 structured system content。Responses 支持 `input_text` / `input_image`；Chat 支持 `text` / `image_url`，因此历史 assistant text 与 tool-result text 也可原样投影。tool definitions、Responses function outputs / assistant outputs 等不支持该 target field 的位置不伪造 marker 或补充消息，继续依赖 provider 的 implicit caching。
+- implicit caching 始终是默认机制：不发送 `prompt_cache_options.mode:'explicit'`。显式 breakpoint 只是 source marker 的局部投影，不从消息长度、role 或工具形态推断。
+- `prompt_cache_key` 与 explicit breakpoint 是两个独立 compatibility capability。`openai-bridge/handler.ts` 只在 400/422 且错误精确指向对应字段或 breakpoint 必需 request shape 时，各自去掉对应能力并最多重试一次；重试从原始 Anthropic request 重新翻译。downgrade 只保存在当前 bridge token 的 registry entry，token 注销即释放，不写 provider 配置或持久化 capability matrix。
 - 默认不发送 `store:true`、`previous_response_id`、`conversation`、`prompt_cache_retention`。这些属于 provider capability / 数据保留语义，不是缓存命中率修复的默认路径。
 - 错误日志和 SDK/UI 透出的 upstream error body 必须先脱敏：不得输出 `myagents:responses:<hash>` / `myagents:chat_completions:<hash>`、apiKey、raw session id 或被上游回显的 request body / prompt。
 
@@ -241,7 +243,7 @@ if (providerChanged && querySession) {
   }
 
   if (crossesProviderHistoryBoundary) {
-    resetForProviderHistoryBoundary(); // sessionRegistered=false，下一次 query({ sessionId }) fresh start
+    await resetForProviderHistoryBoundary(); // Product A 不变；持久化 fresh sdkSessionId=S2
   }
 
   // schedulePreWarm() 会在 finally 中自动触发
@@ -250,8 +252,8 @@ if (providerChanged && querySession) {
 
 ### 注意事项
 
-- **应用层 session 保留**：`sessionId`、`messages` 不变
-- **SDK 层 session 重建**：`querySession` 通过 pre-warm 重新创建
+- **应用层 session 保留**：Product `sessionId`、messages、cursor、title/config 与 Sidecar owner 全部不变
+- **SDK 层 session 重建**：只把同一 Product Session 的 `sdkSessionId` 换成 S2，随后精确 create/resume S2
 - **跨回合状态清理**：`streamIndexToToolId`、`toolResultIndexToId`、`childToolToParent` 由 `builtin-session/turn-lifecycle.ts` 的 terminal cleanup 触发清理（`agent-session.ts` 只组装清理回调）
 - **统一中止**：所有需要终止 session 的场景必须使用 `abortPersistentSession()`，它同时唤醒 generator 的 Promise 门控并调用 `interrupt()`
 
@@ -264,18 +266,18 @@ if (providerChanged && querySession) {
 Anthropic 官方 API 会在 thinking block 中嵌入签名，resume session 时校验签名。普通第三方供应商（DeepSeek、GLM 等）默认进入 portable protocol family：provider env 变化仍会重启 SDK subprocess，但重启后可以 resume 旧 transcript，保留用户在同一会话中切换模型 / provider 的工作流。
 
 从第三方供应商切换到 Anthropic 官方后 resume session 会报错：`Invalid signature in thinking block`
-如果未来确认某个 provider / model / endpoint 无法 replay 其他历史，才把它加入 `src/shared/providerHistory.ts::ISOLATED_PROVIDER_HISTORY_KEYS`。进入或离开 isolated entry 时，前端必须提示"创建新会话"，后端必须 fresh SDK session reset；isolated entries 之间也不能共享 transcript。
+如果未来确认某个 provider / model / endpoint 无法 replay 其他历史，才把它加入 `src/shared/providerHistory.ts::ISOLATED_PROVIDER_HISTORY_KEYS`。进入或离开 isolated entry 时，前端提示“将重置模型上下文”，后端只 fresh SDK execution identity；Product Session 与可见历史仍保持不变。isolated entries 之间不能共享 SDK transcript。
 
 ### Resume 规则
 
 | From | To | Resume | 原因 |
 |------|-----|--------|------|
-| 三方 portable | Anthropic 官方 | ❌ 新 session | Anthropic signed history 边界不同 |
-| Anthropic 官方 | 三方 portable | ❌ 新 session | Anthropic signed history 边界不同 |
+| 三方 portable | Anthropic 官方 | ❌ fresh SDK identity | Anthropic signed history 边界不同 |
+| Anthropic 官方 | 三方 portable | ❌ fresh SDK identity | Anthropic signed history 边界不同 |
 | 三方 portable A | 三方 portable B | ✅ resume | 保留同一会话内切换 GLM / DeepSeek 等普通三方模型的工作流 |
 | Anthropic-protocol 三方 | OpenAI-bridge 三方 | ✅ resume | SDK transcript 仍是 Anthropic 形态；OpenAI bridge 只在请求边界翻译 |
-| 任意 non-isolated | isolated entry | ❌ 新 session | 已知该 entry 不支持跨边界 replay |
-| isolated entry A | isolated entry B | ❌ 新 session | isolated entries 不互串 transcript |
+| 任意 non-isolated | isolated entry | ❌ fresh SDK identity | 已知该 entry 不支持跨边界 replay |
+| isolated entry A | isolated entry B | ❌ fresh SDK identity | isolated entries 不互串 SDK transcript |
 | Anthropic 订阅 | Anthropic API Key | ✅ resume | 签名兼容 |
 
 ### 区分标准

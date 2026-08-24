@@ -9,6 +9,8 @@
 // Authentication: entirely delegated to the user's local gemini CLI state (we do NOT manage API keys)
 
 import { spawn, type Subprocess, type SubprocessStdin } from '../utils/subprocess';
+import { execFileSync } from 'node:child_process';
+import { homedir } from 'node:os';
 import {
   writeFileSync,
   existsSync,
@@ -139,6 +141,8 @@ async function extractGeminiBasePrompt(version: string): Promise<string | null> 
         ...augmentedProcessEnv(),
         GEMINI_WRITE_SYSTEM_MD: cachePath,
       },
+      detached: process.platform !== 'win32',
+      windowsHide: true,
     });
 
     const deadline = Date.now() + 10_000;
@@ -155,10 +159,21 @@ async function extractGeminiBasePrompt(version: string): Promise<string | null> 
   } catch (err) {
     console.warn('[gemini] extract spawn error:', err);
   } finally {
-    try {
-      proc?.kill(9);
-    } catch {
-      /* ignore */
+    if (proc) {
+      await killWithEscalation({
+        pid: proc.pid,
+        kill: signal => proc?.kill(signal),
+        waitForExit: () => proc?.exited ?? Promise.resolve(-1),
+      }, {
+        gracefulMs: 500,
+        hardMs: 500,
+        killTree: true,
+        onStep: (step, info) => {
+          if (step === 'orphan') {
+            console.warn(`[gemini] Base-prompt extraction pid=${info.pid} did not exit; orphan risk remains`);
+          }
+        },
+      });
     }
   }
 
@@ -520,6 +535,132 @@ class GeminiProcess implements RuntimeProcess {
 let modelCache: { models: RuntimeModelInfo[]; timestamp: number } | null = null;
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 
+function geminiConfigDir(): string {
+  const configHome = process.env.GEMINI_CLI_HOME
+    || process.env.HOME
+    || process.env.USERPROFILE
+    || homedir();
+  return join(configHome, '.gemini');
+}
+
+function hasNonEmptyEnv(name: string): boolean {
+  const value = process.env[name]?.trim();
+  return !!value && value !== '0' && value.toLowerCase() !== 'false';
+}
+
+function hasGeminiNonInteractiveAuthEnv(): boolean {
+  if ([
+    'GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'GOOGLE_APPLICATION_CREDENTIALS',
+    'GOOGLE_GENAI_USE_VERTEXAI',
+  ].some(hasNonEmptyEnv)) return true;
+  // GCA selects an auth flow; it is credential evidence only when the
+  // non-interactive access token consumed by that flow is also present.
+  return hasNonEmptyEnv('GOOGLE_GENAI_USE_GCA')
+    && hasNonEmptyEnv('GOOGLE_CLOUD_ACCESS_TOKEN');
+}
+
+function hasGeminiOAuthCredentialEvidence(configDir: string): boolean {
+  if (
+    existsSync(join(configDir, 'gemini-credentials.json'))
+    || existsSync(join(configDir, 'oauth_creds.json'))
+  ) {
+    return true;
+  }
+  if (process.platform !== 'darwin') return false;
+  try {
+    execFileSync('/usr/bin/security', [
+      'find-generic-password',
+      '-s', 'gemini-cli-oauth',
+      '-a', 'main-account',
+    ], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      timeout: 1_500,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Guard temporary ACP discovery against Gemini CLI's interactive auth refresh.
+ * We inspect only configuration shape and credential existence; secret contents
+ * never enter process output or logs.
+ */
+export function assertGeminiModelDiscoveryAuthConfigured(): void {
+  if (hasGeminiNonInteractiveAuthEnv()) return;
+
+  const configDir = geminiConfigDir();
+  let selectedType = '';
+  try {
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')) as {
+      security?: { auth?: { selectedType?: unknown } };
+    };
+    selectedType = typeof settings.security?.auth?.selectedType === 'string'
+      ? settings.security.auth.selectedType.trim()
+      : '';
+  } catch {
+    // Missing or unreadable settings are handled by the explicit error below.
+  }
+
+  if (!selectedType) {
+    throw new Error(
+      'Gemini model discovery requires an existing non-interactive authentication configuration. '
+      + 'Run `gemini` in a normal terminal to authenticate, then retry.',
+    );
+  }
+  if (selectedType === 'oauth-personal' && !hasGeminiOAuthCredentialEvidence(configDir)) {
+    throw new Error(
+      'Gemini OAuth is selected but no stored credential was found. '
+      + 'Run `gemini` in a normal terminal to complete login before model discovery.',
+    );
+  }
+}
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error(typeof signal.reason === 'string' ? signal.reason : 'Gemini model discovery aborted');
+}
+
+function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    void promise.then(
+      value => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      error => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function boundedWait(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, timeoutMs);
+    timer.unref?.();
+    void promise.then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+    );
+  });
+}
+
 /** Build a RuntimeModelInfo[] from a Gemini ACP `session/new` (or `session/load`)
  *  response's `models` field. Shared by `queryModelsViaAcp` and `startSession` so
  *  the prewarm path can prime modelCache from its own session/new RPC, eliminating
@@ -547,6 +688,71 @@ function buildModelListFromAcpResponse(modelsField: {
     isDefault: false,
   }));
   return [defaultEntry, ...discovered];
+}
+
+/**
+ * Discover Gemini models through a short-lived ACP session without ever
+ * delegating first-run login to a background process.
+ */
+export async function queryGeminiModelsViaAcp(signal?: AbortSignal): Promise<RuntimeModelInfo[]> {
+  assertGeminiModelDiscoveryAuthConfigured();
+  if (signal?.aborted) throw abortReason(signal);
+
+  const cwd = process.env.HOME || process.env.USERPROFILE || homedir() || process.cwd();
+  const proc = spawn([resolveCommand('gemini'), '--acp'], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    stdin: 'pipe',
+    cwd,
+    env: augmentedProcessEnv(),
+    detached: process.platform !== 'win32',
+    windowsHide: true,
+  });
+  const geminiProc = new GeminiProcess(proc);
+  const rpc = geminiProc.rpc;
+  const readerDone = rpc.startReading();
+  const stderrDone = drainGeminiStderr(proc, '[gemini-stderr/queryModels]');
+
+  try {
+    await raceWithAbort(new Promise<void>(resolve => {
+      const timer = setTimeout(resolve, 50);
+      timer.unref?.();
+    }), signal);
+    await raceWithAbort(
+      rpc.call('initialize', { protocolVersion: 1, clientCapabilities: {} }, 30_000),
+      signal,
+    );
+    const result = (await raceWithAbort(rpc.call(
+      'session/new',
+      { cwd, mcpServers: [] },
+      30_000,
+    ), signal)) as {
+      models?: {
+        availableModels?: Array<{ modelId: string; name: string; description?: string }>;
+        currentModelId?: string;
+      };
+    };
+    const models = buildModelListFromAcpResponse(result.models);
+    modelCache = { models, timestamp: Date.now() };
+    return models;
+  } finally {
+    rpc.destroy();
+    await boundedWait(geminiProc.closeStdin(), 250);
+    await killWithEscalation(geminiProc, {
+      gracefulMs: 1_000,
+      hardMs: 1_000,
+      killTree: true,
+      onStep: (step, info) => {
+        if (step === 'orphan') {
+          console.warn(`[gemini] Temporary model discovery pid=${info.pid} did not exit; orphan risk remains`);
+        }
+      },
+    });
+    await Promise.all([
+      boundedWait(readerDone, 1_000),
+      boundedWait(stderrDone, 1_000),
+    ]);
+  }
 }
 
 // ─── Permission mode helpers ───
@@ -641,7 +847,8 @@ export class GeminiRuntime implements AgentRuntime {
     return { installed: false };
   }
 
-  async queryModels(): Promise<RuntimeModelInfo[]> {
+  async queryModels(options: { signal?: AbortSignal } = {}): Promise<RuntimeModelInfo[]> {
+    if (options.signal?.aborted) throw abortReason(options.signal);
     // 1. Fresh cache hit
     if (modelCache && Date.now() - modelCache.timestamp < MODEL_CACHE_TTL_MS) {
       return modelCache.models;
@@ -654,7 +861,7 @@ export class GeminiRuntime implements AgentRuntime {
     //    with each other for CPU/auth refresh).
     if (this.currentSessionNewPromise) {
       try {
-        return await this.currentSessionNewPromise;
+        return await raceWithAbort(this.currentSessionNewPromise, options.signal);
       } catch {
         // Fall through to spawn-temporary fallback if the prewarm RPC died.
       }
@@ -681,10 +888,13 @@ export class GeminiRuntime implements AgentRuntime {
     const POLL_INTERVAL_MS = 50;
     const deadline = Date.now() + RACE_DEADLINE_MS;
     while (Date.now() < deadline) {
-      await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
+      await raceWithAbort(new Promise<void>((r) => {
+        const timer = setTimeout(r, POLL_INTERVAL_MS);
+        timer.unref?.();
+      }), options.signal);
       if (this.currentSessionNewPromise) {
         try {
-          return await this.currentSessionNewPromise;
+          return await raceWithAbort(this.currentSessionNewPromise, options.signal);
         } catch {
           break; // Fall through to step 4
         }
@@ -695,68 +905,12 @@ export class GeminiRuntime implements AgentRuntime {
     //    writes modelCache itself before returning, so subsequent calls
     //    within the TTL skip this branch.
     try {
-      return await this.queryModelsViaAcp();
+      return await queryGeminiModelsViaAcp(options.signal);
     } catch (err) {
       console.error('[gemini] Failed to query models:', err);
-      return modelCache?.models ?? [];
-    }
-  }
-
-  /**
-   * Spawn a short-lived `gemini --acp`, handshake via initialize + session/new,
-   * read available models from the response, then kill.
-   */
-  private async queryModelsViaAcp(): Promise<RuntimeModelInfo[]> {
-    // Use HOME as cwd — queryModels runs outside any workspace context and gemini can
-    // otherwise get confused trying to load project-level config.
-    const cwd = process.env.HOME || process.cwd();
-    const proc = spawn([resolveCommand('gemini'), '--acp'], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-      stdin: 'pipe',
-      cwd,
-      env: augmentedProcessEnv(),
-    });
-
-    const rpc = new JsonRpcClient(proc);
-    const readerDone = rpc.startReading();
-    // Drain stderr — without this, gemini blocks on a full pipe buffer
-    // when it logs during init (OAuth/proxy/debug). See drainGeminiStderr.
-    const stderrDone = drainGeminiStderr(proc, '[gemini-stderr/queryModels]');
-
-    // Yield to the microtask queue so the reader loop enters its first `await read()`
-    // before we start writing. Without this, the first write may race with subprocess
-    // startup and the response can arrive before we've registered the pending handler.
-    await new Promise((r) => setTimeout(r, 50));
-
-    try {
-      // Bump timeouts here because Gemini CLI cold-start (Node.js + auth refresh) can
-      // take 3-8s on first run; 30s gives enough headroom while still catching real hangs.
-      await rpc.call('initialize', { protocolVersion: 1, clientCapabilities: {} }, 30_000);
-
-      const result = (await rpc.call(
-        'session/new',
-        { cwd, mcpServers: [] },
-        30_000,
-      )) as {
-        models?: {
-          availableModels?: Array<{ modelId: string; name: string; description?: string }>;
-          currentModelId?: string;
-        };
-      };
-
-      const models = buildModelListFromAcpResponse(result.models);
-      modelCache = { models, timestamp: Date.now() };
-      return models;
-    } finally {
-      rpc.destroy();
-      try {
-        proc.kill();
-      } catch {
-        /* ignore */
-      }
-      await readerDone.catch(() => {});
-      await stderrDone.catch(() => {});
+      if (options.signal?.aborted) throw abortReason(options.signal);
+      if (modelCache) return modelCache.models;
+      throw err;
     }
   }
 
@@ -1016,19 +1170,19 @@ export class GeminiRuntime implements AgentRuntime {
       //     { stopReason, _meta.quota } when done.
       //
       //     dispatchPrompt flips replayMode to false internally before sending
-      //     the live prompt. When there's no initialMessage, we must flip it
+      //     the live prompt. When there's no initialTurn, we must flip it
       //     here instead, so the first user-sendMessage call doesn't race
-      //     against any delayed replay notifications (an initialMessage-less
+      //     against any delayed replay notifications (an initialTurn-less
       //     startSession is used for pre-warm-style IM scenarios where the
       //     peer session is restored but the first user message hasn't
       //     arrived yet). Without this, session/update events arriving
       //     between startSession's return and sendMessage's first prompt
       //     dispatch would be silently dropped as replay.
-      if (options.initialMessage) {
+      if (options.initialTurn) {
         this.dispatchPrompt(
           geminiProc,
-          options.initialMessage,
-          options.initialImages,
+          options.initialTurn.message,
+          options.initialTurn.images,
           wrappedOnEvent,
         );
       } else {

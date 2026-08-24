@@ -1,0 +1,47 @@
+[
+  {
+    "name": "healthy",
+    "evidence": { "folderName": "pdf", "declaredName": "pdf", "canonicalPresent": true, "canonicalReadable": true, "trustedSource": true, "unsuffixedSiblingPresent": false, "reservedEntrySiblingPresent": false, "stable": true },
+    "expected": { "disposition": "admitted", "reasons": [] }
+  },
+  {
+    "name": "missing canonical",
+    "evidence": { "folderName": "pdf", "declaredName": null, "canonicalPresent": false, "canonicalReadable": false, "trustedSource": true, "unsuffixedSiblingPresent": false, "reservedEntrySiblingPresent": false, "stable": true },
+    "expected": { "disposition": "blocked", "reasons": ["missing_canonical_entry"] }
+  },
+  {
+    "name": "collision directory repeats base identity",
+    "evidence": { "folderName": "pdf(1)", "declaredName": "pdf", "canonicalPresent": true, "canonicalReadable": true, "trustedSource": true, "unsuffixedSiblingPresent": false, "reservedEntrySiblingPresent": false, "stable": true },
+    "expected": { "disposition": "blocked", "reasons": ["collision_directory_identity"] }
+  },
+  {
+    "name": "windows collision identity ignores case",
+    "evidence": { "folderName": "PDF(1)", "declaredName": "pdf", "identityCaseInsensitive": true, "canonicalPresent": true, "canonicalReadable": true, "trustedSource": true, "unsuffixedSiblingPresent": false, "reservedEntrySiblingPresent": false, "stable": true },
+    "expected": { "disposition": "blocked", "reasons": ["collision_directory_identity"] }
+  },
+  {
+    "name": "collision directory beside base",
+    "evidence": { "folderName": "pdf (2)", "declaredName": "pdf-copy", "canonicalPresent": true, "canonicalReadable": true, "trustedSource": true, "unsuffixedSiblingPresent": true, "reservedEntrySiblingPresent": false, "stable": true },
+    "expected": { "disposition": "blocked", "reasons": ["collision_directory_sibling"] }
+  },
+  {
+    "name": "legitimate suffix is warning only",
+    "evidence": { "folderName": "chapter(2)", "declaredName": "chapter-two", "canonicalPresent": true, "canonicalReadable": true, "trustedSource": true, "unsuffixedSiblingPresent": false, "reservedEntrySiblingPresent": false, "stable": true },
+    "expected": { "disposition": "warning", "reasons": ["unproven_suffix_directory"] }
+  },
+  {
+    "name": "reserved entry sibling is warning only",
+    "evidence": { "folderName": "pdf", "declaredName": "pdf", "canonicalPresent": true, "canonicalReadable": true, "trustedSource": true, "unsuffixedSiblingPresent": false, "reservedEntrySiblingPresent": true, "stable": true },
+    "expected": { "disposition": "warning", "reasons": ["reserved_entry_sibling"] }
+  },
+  {
+    "name": "untrusted source",
+    "evidence": { "folderName": "alias", "declaredName": "alias", "canonicalPresent": true, "canonicalReadable": true, "trustedSource": false, "unsuffixedSiblingPresent": false, "reservedEntrySiblingPresent": false, "stable": true },
+    "expected": { "disposition": "blocked", "reasons": ["untrusted_global_source"] }
+  },
+  {
+    "name": "unstable slot",
+    "evidence": { "folderName": "pdf", "declaredName": "pdf", "canonicalPresent": true, "canonicalReadable": true, "trustedSource": true, "unsuffixedSiblingPresent": false, "reservedEntrySiblingPresent": false, "stable": false },
+    "expected": { "disposition": "blocked", "reasons": ["inventory_unstable"] }
+  }
+]

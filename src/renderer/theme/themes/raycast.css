@@ -23,6 +23,7 @@ html[data-theme-id='raycast'][data-color-scheme='light'] {
   --ink-faint: #c5c5c5;
   --paper: #ffffff;
   --global-sidebar-bg: #f9f9f9;
+  --global-sidebar-bg-a0: rgb(249 249 249 / 0);
   --paper-elevated: #ffffff;
   --message-user-bg: #fffafa;
   --paper-inset: #ededed;
@@ -133,6 +134,7 @@ html[data-theme-id='raycast'][data-color-scheme='dark'] {
   --ink-faint: #3e3e3e;
   --paper: #101010;
   --global-sidebar-bg: #0e0e0e;
+  --global-sidebar-bg-a0: rgb(14 14 14 / 0);
   --paper-elevated: #1a1a1a;
   --message-user-bg: #211b1b;
   --paper-inset: #090909;

@@ -4,12 +4,14 @@ import {
   refreshWorkspaceFileIndex,
   searchWorkspaceFiles,
   type FileSearchHit,
+  type FolderSearchHit,
 } from '@/api/searchClient';
 import {
   activeTargetStillExists,
   defaultExpandedFilesForHits,
   mergeExpandedFilesAfterRefresh,
   normalizeFileSearchHits,
+  normalizeFolderSearchHits,
   type ActiveSearchTarget,
 } from '@/utils/workspaceSearchNavigation';
 
@@ -22,7 +24,11 @@ export function useDirectorySearch(agentDir: string) {
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [isRefreshingSearch, setIsRefreshingSearch] = useState(false);
-  const [searchResults, setSearchResults] = useState<FileSearchHit[]>([]);
+  const [searchHits, setSearchHits] = useState<{
+    folderResults: FolderSearchHit[];
+    searchResults: FileSearchHit[];
+  }>({ folderResults: [], searchResults: [] });
+  const { folderResults, searchResults } = searchHits;
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
   const [activeSearchTarget, setActiveSearchTarget] =
     useState<ActiveSearchTarget | null>(null);
@@ -85,7 +91,7 @@ export function useDirectorySearch(agentDir: string) {
     const query = debouncedSearchQuery.trim();
     if (query === "") {
       searchRequestIdRef.current += 1;
-      setSearchResults([]);
+      setSearchHits({ folderResults: [], searchResults: [] });
       setIsSearching(false);
       setIsRefreshingSearch(false);
       setExpandedFiles(new Set());
@@ -111,7 +117,7 @@ export function useDirectorySearch(agentDir: string) {
     const runSearch = async () => {
       setIsSearching(true);
       setIsRefreshingSearch(false);
-      setSearchResults([]);
+      setSearchHits({ folderResults: [], searchResults: [] });
       setExpandedFiles(new Set());
       setActiveSearchTarget(null);
       setSearchContextMenu(null);
@@ -119,7 +125,10 @@ export function useDirectorySearch(agentDir: string) {
         const result = await searchWorkspaceFiles(query, agentDir);
         if (isCurrent()) {
           const hits = normalizeFileSearchHits(result.hits);
-          setSearchResults(hits);
+          setSearchHits({
+            folderResults: normalizeFolderSearchHits(result.folderHits),
+            searchResults: hits,
+          });
           setExpandedFiles(defaultExpandedFilesForHits(hits));
           setActiveSearchTarget((prev) =>
             activeTargetStillExists(prev, hits) ? prev : null,
@@ -128,7 +137,7 @@ export function useDirectorySearch(agentDir: string) {
       } catch (err) {
         if (isCurrent()) {
           console.error("File search failed:", err);
-          setSearchResults([]);
+          setSearchHits({ folderResults: [], searchResults: [] });
           setExpandedFiles(new Set());
         }
         return;
@@ -142,25 +151,26 @@ export function useDirectorySearch(agentDir: string) {
       if (!isCurrent()) return;
       setIsRefreshingSearch(true);
       try {
-        const [, changedFiles] = await refreshSearchIndex();
+        await refreshSearchIndex();
         if (!isCurrent()) return;
-        if (changedFiles > 0) {
-          const refreshed = await searchWorkspaceFiles(query, agentDir);
-          if (isCurrent()) {
-            const previousHits = searchResultsRef.current;
-            const hits = normalizeFileSearchHits(refreshed.hits);
-            setSearchResults(hits);
-            setExpandedFiles((prev) =>
-              mergeExpandedFilesAfterRefresh(
-                prev,
-                previousHits,
-                hits,
-              ),
-            );
-            setActiveSearchTarget((prev) =>
-              activeTargetStillExists(prev, hits) ? prev : null,
-            );
-          }
+        const refreshed = await searchWorkspaceFiles(query, agentDir);
+        if (isCurrent()) {
+          const previousHits = searchResultsRef.current;
+          const hits = normalizeFileSearchHits(refreshed.hits);
+          setSearchHits({
+            folderResults: normalizeFolderSearchHits(refreshed.folderHits),
+            searchResults: hits,
+          });
+          setExpandedFiles((prev) =>
+            mergeExpandedFilesAfterRefresh(
+              prev,
+              previousHits,
+              hits,
+            ),
+          );
+          setActiveSearchTarget((prev) =>
+            activeTargetStillExists(prev, hits) ? prev : null,
+          );
         }
       } catch (err) {
         if (isCurrent()) {
@@ -194,6 +204,7 @@ export function useDirectorySearch(agentDir: string) {
     setSearchQuery,
     isSearching,
     isRefreshingSearch,
+    folderResults,
     searchResults,
     expandedFiles,
     setExpandedFiles,

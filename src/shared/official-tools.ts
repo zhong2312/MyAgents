@@ -7,6 +7,24 @@ export interface ImageUnderstandingToolSettings {
   model?: string;
 }
 
+export type ImageUnderstandingCapabilityConfidence = 'declared' | 'inferred' | 'unknown';
+
+export type ImageUnderstandingCapabilitySource =
+  | 'provider'
+  | 'preset'
+  | 'custom'
+  | 'discovered'
+  | 'litellm';
+
+export interface ImageUnderstandingModelOption {
+  providerId: string;
+  providerName: string;
+  model: string;
+  modelName: string;
+  capabilityConfidence: ImageUnderstandingCapabilityConfidence;
+  capabilitySource?: ImageUnderstandingCapabilitySource;
+}
+
 export interface OfficialToolSettings {
   imageUnderstanding?: ImageUnderstandingToolSettings;
 }
@@ -55,4 +73,34 @@ export function isImageUnderstandingToolConfigured(
   const providerId = settings?.imageUnderstanding?.providerId?.trim();
   const model = settings?.imageUnderstanding?.model?.trim();
   return Boolean(providerId && model);
+}
+
+/**
+ * Read only an offering row's explicit image-input declaration.
+ *
+ * `undefined` is intentional: historical/custom model rows commonly omit
+ * `inputModalities`, and an empty/invalid list carries no capability evidence.
+ * Callers must not collapse that unknown state into explicit text-only.
+ */
+export function getExplicitImageInputSupport(
+  model: { inputModalities?: unknown } | null | undefined,
+): boolean | undefined {
+  if (!model || !Array.isArray(model.inputModalities)) return undefined;
+  const modalities = model.inputModalities
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .map(value => value.trim().toLowerCase());
+  if (modalities.length === 0) return undefined;
+  return modalities.includes('image');
+}
+
+/**
+ * Product policy for an explicitly selected image-understanding helper model:
+ * unknown rows remain selectable (saving is the user's confirmation), while an
+ * offering that explicitly excludes image input remains unavailable.
+ */
+export function isImageUnderstandingModelSelectable(
+  model: { inputModalities?: unknown } | null | undefined,
+): boolean {
+  if (!model) return false;
+  return getExplicitImageInputSupport(model) !== false;
 }

@@ -28,7 +28,7 @@ export interface DirectoryPanelProps {
   projectIcon?: string;
   projectDisplayName?: string;
   currentSessionId?: string | null;
-  onSelectSession?: (sessionId: string) => void;
+  onSelectSession?: (sessionId: string, title: string) => void;
   provider?: Provider | null;
   providers?: Provider[];
   onProviderChange?: (providerId: string, targetModel?: string) => void;

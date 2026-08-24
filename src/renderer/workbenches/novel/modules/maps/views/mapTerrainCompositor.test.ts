@@ -11,6 +11,7 @@ import {
   mapTerrainCompositeIntersectsBrush,
   mapTerrainCompositeHasLandAt,
   mapTerrainCompositeHasSurfaceAt,
+  mapTerrainCompositeRasterSize,
   mapTerrainCompositeSourceKey,
   mapTerrainRegionColorMix,
   sampleMapTerrainRelief,
@@ -64,6 +65,19 @@ function addSceneStroke(
 }
 
 describe("地图地表合成", () => {
+  it("拖动预览可降低栅格成本，正式合成仍使用完整精度", () => {
+    expect(mapTerrainCompositeRasterSize(2_048, 1_024)).toEqual({
+      width: 2_048,
+      height: 1_024,
+    });
+    expect(
+      mapTerrainCompositeRasterSize(2_048, 1_024, { maxSurfaceEdge: 512 }),
+    ).toEqual({ width: 512, height: 256 });
+    expect(
+      mapTerrainCompositeRasterSize(8_192, 4_096, { maxSurfaceEdge: 512 }),
+    ).toEqual({ width: 512, height: 256 });
+  });
+
   it("忽略不参与地表合成的植被素材笔触", () => {
     const document = createDocument();
     const withVegetation = addSceneStroke(document, "scene-vegetation", {

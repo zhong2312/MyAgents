@@ -52,10 +52,16 @@ export function SpaceLogin({
   authBusy,
   authFlow,
   onLogin,
+  reauthRequired = false,
+  accountName,
+  onForgetAccount,
 }: {
   authBusy: boolean;
   authFlow: { token: string; expiresAt: number } | null;
   onLogin: () => void;
+  reauthRequired?: boolean;
+  accountName?: string | null;
+  onForgetAccount?: () => void;
 }) {
   const { t } = useTranslation("app");
   return (
@@ -82,7 +88,9 @@ export function SpaceLogin({
               {t("space.login.title")}
             </h1>
             <p className="text-sm text-[var(--ink-muted)]">
-              {t("space.login.description")}
+              {reauthRequired
+                ? t("space.login.reauthDescription", { name: accountName })
+                : t("space.login.description")}
             </p>
           </div>
         </div>
@@ -104,6 +112,16 @@ export function SpaceLogin({
         <p className="mt-3 text-center text-xs text-[var(--ink-muted)]">
           {t("space.login.returnHint")}
         </p>
+        {reauthRequired && onForgetAccount ? (
+          <button
+            type="button"
+            disabled={authBusy}
+            onClick={onForgetAccount}
+            className="mt-3 flex h-9 w-full items-center justify-center rounded-lg text-sm text-[var(--ink-muted)] hover:bg-[var(--button-secondary-bg-hover)] hover:text-[var(--ink)] disabled:opacity-60"
+          >
+            {t("space.login.forgetAccount")}
+          </button>
+        ) : null}
       </div>
     </div>
   );

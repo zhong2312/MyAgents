@@ -23,6 +23,7 @@ html[data-theme-id='linear'][data-color-scheme='light'] {
   --ink-faint: #c3c3ca;
   --paper: #fcfcfd;
   --global-sidebar-bg: #f8f8fa;
+  --global-sidebar-bg-a0: rgb(248 248 250 / 0);
   --paper-elevated: #ffffff;
   --message-user-bg: #ffffff;
   --paper-inset: #ececf1;
@@ -133,6 +134,7 @@ html[data-theme-id='linear'][data-color-scheme='dark'] {
   --ink-faint: #3b3c44;
   --paper: #0f0f11;
   --global-sidebar-bg: #0d0d0f;
+  --global-sidebar-bg-a0: rgb(13 13 15 / 0);
   --paper-elevated: #18181b;
   --message-user-bg: #1d1d21;
   --paper-inset: #09090b;

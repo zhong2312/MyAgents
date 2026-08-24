@@ -442,9 +442,10 @@ pub async fn cmd_search_workspace_files(
     let query = query.trim();
     if query.is_empty() {
         return Ok(FileSearchResult {
+            folder_hits: vec![],
             hits: vec![],
+            total_folders: 0,
             total_files: 0,
-            total_matches: 0,
             query_time_ms: 0.0,
         });
     }

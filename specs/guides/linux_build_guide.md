@@ -50,7 +50,9 @@ sudo apt-get install -y \
 - `scripts/download_nodejs.sh` 下载 Node.js v24 Linux x64/arm64 tarball（按 `uname -m` 自动选择）
 - `npm install` 拉取依赖（包括 SDK platform optional dep `@anthropic-ai/claude-agent-sdk-linux-<arch>`）
 - Rust `cargo fetch`
-- 克隆 mino 默认工作区
+- 准备当前架构的离线文档 Worker、OCR、ONNX Runtime 与 PDFium；资源缓存跨 `npm run clean` 复用
+
+Mino 默认工作区模板已提交在 `bundled-workspaces/mino/`，setup 和构建不再下载外部模板仓库。
 
 ## 构建
 
@@ -91,13 +93,13 @@ AppImage 和 deb 内部都包含：
 
 | 组件 | 路径（app 内） |
 |------|--------------|
-| Sidecar / Bridge / CLI | `resources/server-dist.js` / `resources/plugin-bridge-dist.mjs` / `resources/cli/myagents.js` |
+| Sidecar / Bridge / CLI | `resources/server-dist.js` / `resources/plugin-bridge-dist.mjs` / `resources/cli/myagents.cjs` |
 | Node.js v24（含 npm/npx） | `resources/nodejs/bin/node`（+ `lib/node_modules/npm`） |
 | Claude Agent SDK native binary | `resources/claude-agent-sdk/claude`（~210 MB，SDK team 静态链接） |
-| mino 默认工作区 | `resources/mino/` |
-| bundled skills / agents | `resources/bundled-skills/` / `resources/bundled-agents/` |
+| mino 默认工作区模板 | `resources/bundled-workspaces/mino/` |
+| bundled skills / agents / workspaces | `resources/bundled-skills/` / `resources/bundled-agents/` / `resources/bundled-workspaces/` |
 
-`resources/mino/` 只承载默认工作区的文件内容。Mino project 的 Agent 默认开启、heartbeat、memory 自动更新等产品策略不写入外部 Mino 模板仓库，而是由应用内 `src/shared/config-types.ts::PRESET_TEMPLATES[].agentDefaults` 声明，Launcher / Config migration 在创建 `AgentConfig` 时复制这些默认值。
+`resources/bundled-workspaces/mino/` 只承载默认工作区的文件内容。Mino project 的 Agent 默认开启、heartbeat、memory 自动更新等产品策略仍由应用内 `src/shared/config-types.ts::PRESET_TEMPLATES[].agentDefaults` 声明，Launcher / Config migration 在创建 `AgentConfig` 时复制这些默认值。安装包模板只创建新实例，不覆盖用户已有工作区。
 
 **不内置**：
 - `git` — 大多数发行版默认安装；缺失时 Claude Code 工具会降级

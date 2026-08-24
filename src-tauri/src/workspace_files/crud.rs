@@ -8,7 +8,10 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::path_safety::{resolve_inside_workspace, validate_item_name, validate_workspace_root};
+use super::path_safety::{
+    reject_managed_global_skill_mutation, resolve_inside_workspace, validate_item_name,
+    validate_workspace_root,
+};
 
 /// Symlink-aware existence probe. `Path::exists()` follows symlinks, which
 /// returns `false` for a broken symlink — see CLAUDE.md v0.2.5 red-line. For
@@ -61,6 +64,7 @@ pub async fn cmd_workspace_new_file(
         return Err("Parent directory does not exist".to_string());
     }
     let target = parent.join(name.trim());
+    reject_managed_global_skill_mutation(&workspace_root, &target)?;
     if slot_occupied(&target) {
         return Err("File already exists".to_string());
     }
@@ -89,6 +93,7 @@ pub async fn cmd_workspace_new_folder(
         return Err("Parent directory does not exist".to_string());
     }
     let target = parent.join(name.trim());
+    reject_managed_global_skill_mutation(&workspace_root, &target)?;
     if slot_occupied(&target) {
         return Err("Folder already exists".to_string());
     }
@@ -120,6 +125,8 @@ pub async fn cmd_workspace_rename(
         .parent()
         .ok_or_else(|| "No parent directory".to_string())?;
     let new_resolved = parent.join(new_name.trim());
+    reject_managed_global_skill_mutation(&workspace_root, &old_resolved)?;
+    reject_managed_global_skill_mutation(&workspace_root, &new_resolved)?;
     if slot_occupied(&new_resolved) {
         return Err("Target name already exists".to_string());
     }
@@ -146,6 +153,7 @@ pub async fn cmd_workspace_move(
     }
     let workspace_root = validate_workspace_root(&workspace)?;
     let target = resolve_inside_workspace(&workspace_root, target_dir.trim())?;
+    reject_managed_global_skill_mutation(&workspace_root, &target)?;
     if !target.is_dir() {
         return Err("Target must be an existing directory".to_string());
     }
@@ -164,6 +172,10 @@ pub async fn cmd_workspace_move(
         };
         if !slot_occupied(&resolved_src) {
             errors.push(format!("Not found: {}", trimmed));
+            continue;
+        }
+        if let Err(error) = reject_managed_global_skill_mutation(&workspace_root, &resolved_src) {
+            errors.push(format!("Cannot move {}: {}", trimmed, error));
             continue;
         }
         // Block moving a dir into itself / its descendant. Use Path::starts_with
@@ -224,6 +236,11 @@ pub async fn cmd_workspace_move(
                 ));
                 continue;
             }
+        }
+
+        if let Err(error) = reject_managed_global_skill_mutation(&workspace_root, &destination) {
+            errors.push(format!("Cannot move {}: {}", trimmed, error));
+            continue;
         }
 
         if let Err(e) = fs::rename(&resolved_src, &destination) {

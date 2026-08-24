@@ -13,7 +13,7 @@ interface WorkbenchReferencePanelProps {
   readonly streamingMessage?: Message | null;
   readonly workspacePath?: string;
   readonly currentSessionId?: string | null;
-  readonly onSelectSession?: (sessionId: string) => void;
+  readonly onSelectSession?: (sessionId: string, title: string) => void;
 }
 
 type Reference = {

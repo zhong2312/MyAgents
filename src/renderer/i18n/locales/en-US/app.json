@@ -168,7 +168,10 @@
     "expand": "Expand Agent status panel",
     "collapse": "Collapse Agent status panel",
     "background": "Background",
-    "backgroundTooltip": "[Background]"
+    "backgroundTooltip": "[Background]",
+    "completed": "Completed",
+    "failed": "Failed",
+    "interrupted": "Stopped"
   },
   "workspaceTree": {
     "collapseFolder": "Collapse folder",
@@ -259,6 +262,19 @@
       "retry": "Retry",
       "fork": "Fork",
       "rewind": "Rewind"
+    },
+    "turnFileEdits": {
+      "summary": "Edited {{count}} file(s) this turn",
+      "title": "Files edited this turn",
+      "edited": "Edited",
+      "deleted": "Deleted",
+      "status": {
+        "modified": "Modified",
+        "added": "Added",
+        "deleted": "Deleted",
+        "renamed": "Renamed",
+        "edited": "Edited"
+      }
     },
     "systemTags": {
       "heartbeat": "Heartbeat",
@@ -396,6 +412,8 @@
       "eyebrow": "Official Space",
       "title": "MyAgents Community",
       "description": "Sign in to the official Space with Google",
+      "reauthDescription": "The sign-in for {{name}} is no longer valid. Sign in again to continue.",
+      "forgetAccount": "Sign out and forget this account",
       "waiting": "Waiting for browser authorization",
       "continueWithGoogle": "Continue with Google",
       "returnHint": "MyAgents will reopen automatically after authorization."

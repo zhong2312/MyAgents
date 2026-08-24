@@ -29,6 +29,17 @@ describe('observedContextTokens', () => {
 
     expect(observedContextTokens(usage)).toBe(6_000);
   });
+
+  it('reconstructs OpenAI total input from Bridge-normalized Anthropic partitions exactly once', () => {
+    const usage: MessageUsage = {
+      inputTokens: 200,
+      outputTokens: 75,
+      cacheReadTokens: 2_000,
+      cacheCreationTokens: 400,
+    };
+
+    expect(observedContextTokens(usage)).toBe(2_600);
+  });
 });
 
 describe('resolveContextOccupancyTokens (#323 — /compact must not show 100% / impossible tokens)', () => {

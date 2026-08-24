@@ -60,6 +60,92 @@ describe("fantasy map style adapter", () => {
     expect(localized[0]?.props.azgaarShowLabel).toBe("true");
   });
 
+  it("优先使用地图规划中的 Agent 中文命名，而非兼容名称池", () => {
+    const name = fantasyChineseName(
+      feature({
+        kind: "area",
+        name: "Northern State",
+        props: { azgaarLayer: "state" },
+      }),
+      "plan-name-seed",
+      0,
+      {
+        entries: [
+          {
+            id: "north-state-name",
+            role: "state",
+            name: "北荒道",
+            rationale: "世界架构中的北方州域。",
+          },
+        ],
+      },
+    );
+    expect(name).toBe("北荒道");
+  });
+
+  it("将兼容生成器的中文通用占位名替换为正式命名目录", () => {
+    const [localized] = localizeFantasyMapFeatures(
+      [
+        feature({
+          kind: "route",
+          name: "河流 1",
+          props: { terrain: "river", generatedName: "true" },
+        }),
+      ],
+      "semantic-name-seed",
+      {
+        entries: [
+          {
+            id: "canglan-river",
+            role: "river",
+            name: "沧澜河",
+            rationale: "规划中的中州主河。",
+          },
+        ],
+      },
+    );
+    expect(localized?.name).toBe("沧澜河");
+    expect(localized?.props).not.toHaveProperty("generatedName");
+  });
+
+  it("按规划实体角色生成不同的中文标签层级", () => {
+    const localized = localizeFantasyMapFeatures(
+      [
+        feature({
+          kind: "marker",
+          name: "玄冰宫",
+          props: { entityRole: "sect", importance: "4" },
+        }),
+        feature({
+          kind: "route",
+          name: "天池河",
+          props: { entityRole: "waterway", terrain: "river" },
+        }),
+        feature({
+          kind: "route",
+          name: "北境雪岭",
+          props: { entityRole: "mountain", terrain: "mountain" },
+        }),
+      ],
+      "label-hierarchy",
+    );
+    expect(localized[0]?.props).toMatchObject({
+      labelFont: "cartographer",
+      labelSize: "16",
+      labelPriority: "4",
+    });
+    expect(localized[1]?.props).toMatchObject({
+      labelFont: "cartographer",
+      labelFollowPath: "true",
+      labelItalic: "true",
+      labelHaloColor: "#edf3ed",
+    });
+    expect(localized[2]?.props).toMatchObject({
+      labelFont: "atlas-serif",
+      labelFollowPath: "true",
+    });
+  });
+
   it("对中文名称保持幂等，并为缺少中文名的要素提供确定性名称", () => {
     const input = feature({
       kind: "area",

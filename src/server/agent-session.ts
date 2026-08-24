@@ -7664,7 +7664,7 @@ function pushInboxAbortReplyForQueuedItem(
  * IMPORTANT: Must properly terminate SDK session to prevent context leakage.
  * Simply interrupting is not enough - we must wait for the session to fully end.
  */
-export async function resetSession(): Promise<void> {
+export async function resetSession(options?: { sessionId?: string }): Promise<void> {
   return runSerializedSessionMutation(async () => {
   console.log('[agent] resetSession: starting new conversation');
   configState.currentWorkbenchSystemPrompt = undefined;
@@ -7706,7 +7706,7 @@ export async function resetSession(): Promise<void> {
   clearNovelWorkbenchContext();
 
   // 3. Generate new session ID (don't persist yet - wait for first message)
-  setCurrentSessionId(randomUUID());
+  setCurrentSessionId(options?.sessionId ?? randomUUID());
   hasInitialPrompt = false; // Reset so first message creates a new session in SessionStore
   resetSessionMaterializationState({ allowLazySessionMaterialization: true });
 

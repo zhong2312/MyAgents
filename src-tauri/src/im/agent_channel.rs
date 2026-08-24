@@ -1,9 +1,15 @@
+use super::router::peer_binding_source_requires_freeze;
 use super::*;
+use crate::sidecar::{release_session_sidecar, SidecarOwner};
 use tauri::Manager;
 
 static CHANNEL_LIFECYCLE_LOCKS: std::sync::LazyLock<
     std::sync::Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+fn short_session_id(value: &str) -> String {
+    value.chars().take(8).collect()
+}
 
 /// One serialization boundary per durable channel identity. Weak entries keep
 /// the registry from becoming another lifecycle owner.
@@ -51,6 +57,143 @@ async fn lock_agent_channels_for_stop(
         guards.push(lock.lock_owned().await);
     }
     guards
+}
+
+/// Execute IM `/new` as one owner-scoped binding transaction. The Router and
+/// its health projection remain the only binding authorities; the transition
+/// snapshot exists solely for exact in-memory/disk rollback on failure.
+async fn rotate_peer_binding_for_new_command(
+    session_key: &str,
+    runtime: &str,
+    router: &Arc<Mutex<SessionRouter>>,
+    health: &Arc<HealthManager>,
+    manager: &ManagedSidecarManager,
+    fallback_snapshot: &runtime_change::OwnedSessionSnapshot,
+) -> Result<String, String> {
+    rotate_peer_binding_for_new_command_with_metadata_lookup(
+        session_key,
+        runtime,
+        router,
+        health,
+        manager,
+        fallback_snapshot,
+        |session_id| crate::sidecar::resolve_session_runtime_identity_full(session_id).is_some(),
+    )
+    .await
+}
+
+async fn rotate_peer_binding_for_new_command_with_metadata_lookup<F>(
+    session_key: &str,
+    runtime: &str,
+    router: &Arc<Mutex<SessionRouter>>,
+    health: &Arc<HealthManager>,
+    manager: &ManagedSidecarManager,
+    fallback_snapshot: &runtime_change::OwnedSessionSnapshot,
+    metadata_exists: F,
+) -> Result<String, String>
+where
+    F: FnOnce(&str) -> bool,
+{
+    // Match every other active-session projection lock order: projection ->
+    // Router -> per-Session lifecycle. The caller already holds the per-peer
+    // message lock, so no ordinary IM turn can race this mutation.
+    let _projection = health.lock_active_sessions_projection().await;
+    let mut router_guard = router.lock().await;
+    let prior = router_guard.peer_session_snapshot(session_key);
+    let _session_lifecycle = if let Some(peer) = prior.as_ref() {
+        let guard = crate::sidecar::acquire_session_lifecycle(&[&peer.session_id]).await;
+        if crate::sidecar::has_persisted_session_owner(&peer.session_id).await? {
+            return Err(
+                "Cannot start a new conversation while a persistent Goal or task owns this Session"
+                    .to_string(),
+            );
+        }
+        let admissible = manager
+            .lock()
+            .map_err(|error| error.to_string())?
+            .agent_binding_rotation_is_admissible(&peer.session_id, session_key);
+        if !admissible {
+            return Err(format!(
+                "Agent owner no longer controls Session {}",
+                short_session_id(&peer.session_id)
+            ));
+        }
+        let metadata_disposition = router_guard
+            .classify_peer_session_metadata_for_binding_rotation_with_lookup(
+                session_key,
+                metadata_exists,
+            );
+        if peer_binding_source_requires_freeze(metadata_disposition) {
+            router_guard
+                .freeze_peer_before_binding_rotation(peer, fallback_snapshot)
+                .await
+                .map_err(|error| format!("Failed to freeze old Session: {error}"))?;
+        } else {
+            ulog_info!(
+                "[im-router] Skipping freeze for unmaterialized source before /new: session_key={} session={} disposition={:?}",
+                session_key,
+                short_session_id(&peer.session_id),
+                metadata_disposition,
+            );
+        }
+        Some(guard)
+    } else {
+        None
+    };
+
+    let transition = router_guard.stage_new_session_binding(session_key);
+    let new_session_id = transition.target_session_id().to_string();
+    let old_session_id = transition.old_session_id().map(str::to_string);
+
+    if let Err(error) = health
+        .persist_active_sessions_snapshot(router_guard.active_sessions())
+        .await
+    {
+        let rolled_back = router_guard.rollback_peer_binding_transition(&transition);
+        ulog_error!(
+            "[im-router] operation=im_binding_rotation stage=persist result=failed session_key={} old={} new={} rollback={} durable_state=unchanged error={}",
+            session_key,
+            old_session_id.as_deref().map(short_session_id).unwrap_or_else(|| "none".to_string()),
+            short_session_id(&new_session_id),
+            rolled_back,
+            error
+        );
+        return Err(format!("Failed to save new conversation binding: {error}"));
+    }
+
+    if let Some(old_session_id) = old_session_id.as_deref() {
+        let owner = SidecarOwner::Agent(session_key.to_string());
+        if let Err(error) = release_session_sidecar(manager, old_session_id, &owner) {
+            let rolled_back = router_guard.rollback_peer_binding_transition(&transition);
+            let rollback_persisted = if rolled_back {
+                health
+                    .persist_active_sessions_snapshot(router_guard.active_sessions())
+                    .await
+                    .is_ok()
+            } else {
+                false
+            };
+            ulog_error!(
+                "[im-router] operation=im_binding_rotation stage=owner-transfer result=failed session_key={} old={} new={} rollback={} rollback_persisted={} error={}",
+                session_key,
+                short_session_id(old_session_id),
+                short_session_id(&new_session_id),
+                rolled_back,
+                rollback_persisted,
+                error
+            );
+            return Err(format!("Failed to release old Session owner: {error}"));
+        }
+    }
+
+    ulog_info!(
+        "[im-router] operation=im_binding_rotation result=committed session_key={} runtime={} old={} new={} materialization=pending",
+        session_key,
+        runtime,
+        old_session_id.as_deref().map(short_session_id).unwrap_or_else(|| "none".to_string()),
+        short_session_id(&new_session_id)
+    );
+    Ok(new_session_id)
 }
 
 /// Stop one exact Agent Channel runtime through its lifecycle owner.
@@ -686,10 +829,8 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
         }
         ImPlatform::OpenClaw(ref channel_id) => {
             // Allocate port for bridge process
-            let bridge_port = {
-                let manager = sidecar_manager.lock().unwrap();
-                manager.allocate_port()?
-            };
+            let port_allocator = sidecar_manager.lock().unwrap().port_allocator();
+            let bridge_port = crate::sidecar::allocate_sidecar_port(&port_allocator)?;
 
             let rust_port = crate::management_api::get_management_port();
             let plugin_id = config.openclaw_plugin_id.as_deref().unwrap_or(channel_id);
@@ -1524,8 +1665,15 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             }
                         }
                         adapter_for_reply.ack_processing(&chat_id, &message_id).await;
-                        // Clear pending group history so the fresh session doesn't get stale context
-                        group_history_for_loop.lock().await.clear(&session_key);
+                        let peer_lock = {
+                            let mut locks = peer_locks_for_loop.lock().await;
+                            locks
+                                .entry(session_key.clone())
+                                .or_insert_with(|| Arc::new(Mutex::new(())))
+                                .clone()
+                        };
+                        let _peer_guard = peer_lock.lock().await;
+                        let runtime = runtime_for_loop.read().await.clone();
                         let fallback_snapshot = runtime_change::build_snapshot_from_channel_state(
                             &runtime_for_loop,
                             &current_model_for_loop,
@@ -1535,28 +1683,27 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             provider_id_for_loop.clone(),
                             &current_provider_env_for_loop,
                         ).await;
-                        let result = router_clone
-                            .lock()
-                            .await
-                            .reset_session(&session_key, &app_clone, &manager_clone, Some(&fallback_snapshot))
-                            .await;
+                        let result = rotate_peer_binding_for_new_command(
+                            &session_key,
+                            &runtime,
+                            &router_clone,
+                            &health_clone,
+                            &manager_clone,
+                            &fallback_snapshot,
+                        )
+                        .await;
                         adapter_for_reply.ack_clear(&chat_id, &message_id).await;
                         match result {
                             Ok(new_id) => {
-                                let persist_result = health::persist_router_active_sessions(
-                                    &health_clone,
-                                    &router_clone,
-                                    "command-new-reset",
-                                )
-                                .await;
-                                let reply = match persist_result {
-                                    Ok(()) => format!("✅ 已创建新对话 ({})", &new_id[..8.min(new_id.len())]),
-                                    Err(e) => format!(
-                                        "⚠️ 已创建新对话 ({}), 但状态保存失败: {}",
-                                        &new_id[..8.min(new_id.len())],
-                                        e
-                                    ),
-                                };
+                                // The transition is committed before transient
+                                // context is cleared. A failed `/new` keeps A
+                                // fully usable, including its pending group history.
+                                group_history_for_loop.lock().await.clear(&session_key);
+                                drop_im_consumer(&im_consumers_for_loop, &session_key).await;
+                                let reply = format!(
+                                    "✅ 已创建新对话 ({})",
+                                    short_session_id(&new_id)
+                                );
                                 if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await {
                                     ulog_warn!("[im-cmd] send_message (/new success) failed: {}", e);
                                 }
@@ -2618,17 +2765,15 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         {
                             // task_runtime is already a String cloned above at the top of
                             // this spawn (runtime_for_loop.read().await.clone()).
-                            let drift_result = match {
-                                let mut router_guard = task_router.lock().await;
-                                router_guard
-                                    .check_and_reset_on_runtime_identity_drift(
-                                        &session_key,
-                                        &task_runtime,
-                                        task_runtime_source.as_deref(),
-                                        &task_manager,
-                                    )
-                                    .await
-                            } {
+                            let drift_result = match SessionRouter::check_and_reset_on_runtime_identity_drift(
+                                &task_router,
+                                &session_key,
+                                &task_runtime,
+                                task_runtime_source.as_deref(),
+                                &task_manager,
+                            )
+                            .await
+                            {
                                 Ok(result) => result,
                                 Err(error) => {
                                     ulog_error!(
@@ -2761,42 +2906,35 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             .unwrap_or(0);
                         let on_terminal: Arc<dyn Fn(String, reply_router::TerminalOutcome) + Send + Sync> = {
                             let router = Arc::clone(&task_router);
-                            let manager = Arc::clone(&task_manager);
                             let app = task_app.clone();
                             let health = Arc::clone(&task_health);
                             let agent_link = Arc::clone(&task_agent_link);
                             let session_key_cap = session_key.clone();
+                            let admitted_session_id = sidecar_session_id_initial.clone();
                             let source_type_cap = msg.source_type.clone();
                             let model_work_gate = Arc::clone(&task_model_work_gate);
-                            Arc::new(move |req_id: String, outcome: reply_router::TerminalOutcome| {
+                            Arc::new(move |req_id: String, _outcome: reply_router::TerminalOutcome| {
                                 let terminal_work_guard = model_work_gate.begin_handoff();
                                 let router = Arc::clone(&router);
-                                let manager = Arc::clone(&manager);
                                 let app = app.clone();
                                 let health = Arc::clone(&health);
                                 let agent_link = Arc::clone(&agent_link);
                                 let session_key = session_key_cap.clone();
+                                let admitted_session_id = admitted_session_id.clone();
                                 let source_type = source_type_cap.clone();
                                 tauri::async_runtime::spawn(async move {
                                     let _terminal_work_guard = terminal_work_guard;
                                     {
                                         let mut router_g = router.lock().await;
-                                        router_g.record_response(&session_key, outcome.session_id.as_deref());
-                                        if let Some(new_sid) = outcome.session_id.as_deref() {
-                                            if let Err(error) = router_g
-                                                .upgrade_peer_session_id(
-                                                    &session_key,
-                                                    new_sid,
-                                                    &manager,
-                                                )
-                                                .await
-                                            {
-                                                ulog_warn!(
-                                                    "[im] Could not upgrade Session identity for {}: {}",
-                                                    session_key,
-                                                    error
-                                                );
-                                            }
+                                        if !router_g.record_response_if_bound(
+                                            &session_key,
+                                            &admitted_session_id,
+                                        ) {
+                                            ulog_info!(
+                                                "[im] Ignored stale terminal for peer {} admitted_session={} after binding rotation",
+                                                session_key,
+                                                short_session_id(&admitted_session_id),
+                                            );
                                         }
                                     }
                                     health.set_last_message_at(chrono::Utc::now().to_rfc3339()).await;
@@ -3485,6 +3623,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
         shutdown_tx,
         health: Arc::clone(&health),
         router,
+        peer_locks,
         im_consumers,
         model_work_gate,
         buffer,
@@ -3677,7 +3816,40 @@ pub async fn get_all_bots_status(im_state: &ManagedImBots) -> HashMap<String, Im
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::im::types::AskUserQuestionOption;
+    use crate::im::types::{AskUserQuestionOption, PeerSession};
+    use axum::{routing::post, Json, Router as AxumRouter};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn rotation_peer(session_key: &str, session_id: &str, sidecar_port: u16) -> PeerSession {
+        let (source_type, source_id) = super::router::parse_session_key(session_key);
+        PeerSession {
+            session_key: session_key.to_string(),
+            session_id: session_id.to_string(),
+            sidecar_port,
+            workspace_path: PathBuf::from("/tmp/workspace"),
+            source_type,
+            source_id,
+            source_display_name: None,
+            last_sender_name: None,
+            message_count: 3,
+            metadata_birth_pending: false,
+            metadata_indexed: true,
+            last_active: Instant::now(),
+        }
+    }
+
+    async fn rotation_snapshot() -> runtime_change::OwnedSessionSnapshot {
+        runtime_change::build_snapshot_from_channel_state(
+            &tokio::sync::RwLock::new("builtin".to_string()),
+            &tokio::sync::RwLock::new(Some("test-model".to_string())),
+            &tokio::sync::RwLock::new("auto".to_string()),
+            &tokio::sync::RwLock::new(None),
+            &tokio::sync::RwLock::new(None),
+            Some("test-provider".to_string()),
+            &tokio::sync::RwLock::new(None),
+        )
+        .await
+    }
 
     #[test]
     fn all_stop_lock_set_unions_durable_and_live_channel_ids() {
@@ -3734,6 +3906,146 @@ mod tests {
 
         drop(guard);
         assert_eq!(gate.active(), 0);
+    }
+
+    #[tokio::test]
+    async fn new_command_skips_only_missing_sources_and_commits_one_fresh_binding() {
+        let freeze_calls = Arc::new(AtomicUsize::new(0));
+        let app = AxumRouter::new().route(
+            "/api/session/freeze-current",
+            post({
+                let freeze_calls = Arc::clone(&freeze_calls);
+                move || {
+                    let freeze_calls = Arc::clone(&freeze_calls);
+                    async move {
+                        freeze_calls.fetch_add(1, Ordering::SeqCst);
+                        Json(serde_json::json!({ "success": true }))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind freeze server");
+        let port = listener.local_addr().expect("freeze server addr").port();
+        let server = tauri::async_runtime::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let snapshot = rotation_snapshot().await;
+        let manager = crate::sidecar::create_sidecar_manager();
+
+        let missing_key = "agent:a:openclaw:weixin:private:missing";
+        let missing_id = uuid::Uuid::new_v4().to_string();
+        let missing_router = Arc::new(Mutex::new(SessionRouter::new_for_agent(
+            PathBuf::from("/tmp/workspace"),
+            "a".to_string(),
+        )));
+        missing_router
+            .lock()
+            .await
+            .upsert_peer_session(rotation_peer(missing_key, &missing_id, port));
+        let missing_dir = tempfile::tempdir().expect("missing health tempdir");
+        let missing_health = Arc::new(HealthManager::new(missing_dir.path().join("state.json")));
+
+        let fresh_id = rotate_peer_binding_for_new_command_with_metadata_lookup(
+            missing_key,
+            "builtin",
+            &missing_router,
+            &missing_health,
+            &manager,
+            &snapshot,
+            |_| false,
+        )
+        .await
+        .expect("missing source should rotate without freeze");
+
+        assert_eq!(freeze_calls.load(Ordering::SeqCst), 0);
+        assert_ne!(fresh_id, missing_id);
+        let fresh = missing_router
+            .lock()
+            .await
+            .peer_session_snapshot(missing_key)
+            .expect("fresh binding committed");
+        assert_eq!(fresh.session_id, fresh_id);
+        assert_eq!(fresh.sidecar_port, 0);
+        assert!(fresh.metadata_birth_pending);
+        assert!(!fresh.metadata_indexed);
+        let durable = missing_health.get_state().await.active_sessions;
+        assert_eq!(durable.len(), 1);
+        assert_eq!(durable[0].session_id, fresh_id);
+
+        let indexed_key = "agent:a:openclaw:weixin:private:indexed";
+        let indexed_id = uuid::Uuid::new_v4().to_string();
+        let indexed_router = Arc::new(Mutex::new(SessionRouter::new_for_agent(
+            PathBuf::from("/tmp/workspace"),
+            "a".to_string(),
+        )));
+        indexed_router
+            .lock()
+            .await
+            .upsert_peer_session(rotation_peer(indexed_key, &indexed_id, port));
+        let indexed_dir = tempfile::tempdir().expect("indexed health tempdir");
+        let indexed_health = Arc::new(HealthManager::new(indexed_dir.path().join("state.json")));
+
+        rotate_peer_binding_for_new_command_with_metadata_lookup(
+            indexed_key,
+            "builtin",
+            &indexed_router,
+            &indexed_health,
+            &manager,
+            &snapshot,
+            |_| true,
+        )
+        .await
+        .expect("indexed source should freeze then rotate");
+        assert_eq!(freeze_calls.load(Ordering::SeqCst), 1);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn new_command_restores_the_exact_source_when_projection_persist_fails() {
+        let session_key = "agent:a:openclaw:weixin:private:persist-failure";
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let source = rotation_peer(session_key, &session_id, 0);
+        let router = Arc::new(Mutex::new(SessionRouter::new_for_agent(
+            PathBuf::from("/tmp/workspace"),
+            "a".to_string(),
+        )));
+        router.lock().await.upsert_peer_session(source.clone());
+        let tempdir = tempfile::tempdir().expect("health tempdir");
+        let blocked_parent = tempdir.path().join("not-a-directory");
+        std::fs::write(&blocked_parent, b"block mkdir").expect("create blocked parent");
+        let health = Arc::new(HealthManager::new(blocked_parent.join("state.json")));
+        let manager = crate::sidecar::create_sidecar_manager();
+        let snapshot = rotation_snapshot().await;
+
+        let error = rotate_peer_binding_for_new_command_with_metadata_lookup(
+            session_key,
+            "builtin",
+            &router,
+            &health,
+            &manager,
+            &snapshot,
+            |_| false,
+        )
+        .await
+        .expect_err("projection persist must fail");
+
+        assert!(error.contains("Failed to save new conversation binding"));
+        let restored = router
+            .lock()
+            .await
+            .peer_session_snapshot(session_key)
+            .expect("source binding restored");
+        assert_eq!(restored.session_id, source.session_id);
+        assert_eq!(restored.sidecar_port, source.sidecar_port);
+        assert_eq!(restored.message_count, source.message_count);
+        assert_eq!(
+            restored.metadata_birth_pending,
+            source.metadata_birth_pending
+        );
+        assert_eq!(restored.metadata_indexed, source.metadata_indexed);
     }
 
     #[test]

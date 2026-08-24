@@ -22,14 +22,23 @@ export type MapCanvasTool =
   | "terrain-material"
   /** 不预设表面语义的自由画笔；闭合后可在检查器提升为区域。 */
   | "freehand"
+  /** 逐点创建开放路径，不把末点强制连接回起点。 */
+  | "polygon"
   /** 选定表面构件后沿轨迹连续铺设该构件的区域语义。 */
   | "component-surface-brush"
-  /**
-   * `polygon` 仅用于读取旧 MapDocument；新建闭合要素统一使用自由圈定区域。
-   */
+  /** MapFeature 的历史 `polygon` 不作为新的画布工具暴露。 */
   | Exclude<MapFeatureKind, "polygon">;
 
-export type MapAreaShape = "polygon" | "circle" | "ellipse" | "freehand";
+/**
+ * `closed` 是拖拽轨迹收口的闭合区域；`polygon` 是逐点创建的路径，
+ * 可通过点击首点闭合，也可在任意位置确认保留为开放路径。
+ */
+export type MapAreaShape =
+  | "closed"
+  | "polygon"
+  | "circle"
+  | "ellipse"
+  | "freehand";
 export type MapBrushPointCurve = "line" | "arc";
 
 /**
@@ -46,7 +55,7 @@ export interface MapCanvasSettings {
   /** 控制点重采样的几何方式。 */
   readonly brushPointCurve: MapBrushPointCurve;
   readonly terrainBrushShape: MapTerrainBrushShape;
-  /** 画笔创建普通区域时的几何形状；只属于当前编辑会话。 */
+  /** 画笔创建普通区域或开放多边形时的几何形状；只属于当前编辑会话。 */
   readonly areaShape: MapAreaShape;
   readonly stampScale: number;
   readonly stampOpacity: number;

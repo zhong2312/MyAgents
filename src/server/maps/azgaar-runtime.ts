@@ -9,6 +9,7 @@ import {
   type AzgaarRuntimeHost,
 } from "./azgaar-runtime-host";
 import { getScriptDir } from "../utils/runtime";
+import type { MapGenerationPlan } from "../../shared/workbenches/novel/mapGenerationPlan";
 
 /**
  * Azgaar 的官方项目是浏览器应用，而不是 Node 纯函数库。该协议把它放在
@@ -25,6 +26,7 @@ export interface AzgaarRuntimeWorldContext {
     readonly factionNames?: readonly string[];
     readonly terrainKeywords?: readonly string[];
   };
+  readonly generationPlan?: MapGenerationPlan;
 }
 
 export interface AzgaarRuntimeGenerateRequest {
@@ -91,8 +93,12 @@ function asExport(value: unknown): AzgaarRuntimeExport {
   return {
     format,
     content,
-    ...(typeof record.fileName === "string" ? { fileName: record.fileName } : {}),
-    ...(typeof record.previewSvg === "string" ? { previewSvg: record.previewSvg } : {}),
+    ...(typeof record.fileName === "string"
+      ? { fileName: record.fileName }
+      : {}),
+    ...(typeof record.previewSvg === "string"
+      ? { previewSvg: record.previewSvg }
+      : {}),
   };
 }
 
@@ -101,7 +107,9 @@ function findAzgaarDistDir(explicit?: string): string | null {
   const developmentCandidates: string[] = [];
   let ancestor = scriptDir;
   for (let index = 0; index < 7; index += 1) {
-    developmentCandidates.push(resolve(ancestor, "src-tauri", "resources", "azgaar"));
+    developmentCandidates.push(
+      resolve(ancestor, "src-tauri", "resources", "azgaar"),
+    );
     ancestor = resolve(ancestor, "..");
   }
   const candidates = [
@@ -121,9 +129,18 @@ function findAzgaarDistDir(explicit?: string): string | null {
 export function createAzgaarRuntimeClient(
   options: AzgaarRuntimeClientOptions = {},
 ): AzgaarRuntime {
-  const configuredBaseUrl = (options.baseUrl ?? process.env.MYAGENTS_AZGAAR_RUNTIME_URL ?? "").trim().replace(/\/$/u, "");
+  const configuredBaseUrl = (
+    options.baseUrl ??
+    process.env.MYAGENTS_AZGAAR_RUNTIME_URL ??
+    ""
+  )
+    .trim()
+    .replace(/\/$/u, "");
   const fetchImpl = options.fetchImpl ?? fetch;
-  const timeoutMs = Math.max(1_000, Math.min(300_000, options.timeoutMs ?? 120_000));
+  const timeoutMs = Math.max(
+    1_000,
+    Math.min(300_000, options.timeoutMs ?? 120_000),
+  );
   const autoStartLocalHost = options.autoStartLocalHost ?? !configuredBaseUrl;
   let localHost: AzgaarRuntimeHost | null = null;
   let localHostPromise: Promise<AzgaarRuntimeHost> | null = null;
@@ -131,7 +148,9 @@ export function createAzgaarRuntimeClient(
   const getBaseUrl = async (): Promise<string> => {
     if (configuredBaseUrl) return configuredBaseUrl;
     if (!autoStartLocalHost) {
-      throw new Error("未配置 Azgaar Runtime。请启动独立运行时并设置 MYAGENTS_AZGAAR_RUNTIME_URL");
+      throw new Error(
+        "未配置 Azgaar Runtime。请启动独立运行时并设置 MYAGENTS_AZGAAR_RUNTIME_URL",
+      );
     }
     if (!findAzgaarDistDir(options.hostOptions?.distDir)) {
       throw new Error(
@@ -149,11 +168,15 @@ export function createAzgaarRuntimeClient(
   };
 
   if (!configuredBaseUrl && !autoStartLocalHost) {
-    throw new Error("未配置 Azgaar Runtime。请启动独立运行时并设置 MYAGENTS_AZGAAR_RUNTIME_URL");
+    throw new Error(
+      "未配置 Azgaar Runtime。请启动独立运行时并设置 MYAGENTS_AZGAAR_RUNTIME_URL",
+    );
   }
 
   return {
-    id: configuredBaseUrl ? "azgaar-http-runtime" : "azgaar-local-browser-runtime",
+    id: configuredBaseUrl
+      ? "azgaar-http-runtime"
+      : "azgaar-local-browser-runtime",
     async generate(request) {
       const baseUrl = await getBaseUrl();
       const controller = new AbortController();
@@ -166,7 +189,8 @@ export function createAzgaarRuntimeClient(
             ...request,
             world: {
               ...request.world,
-              contextHash: request.world.sourceHash || sha256(request.world.files),
+              contextHash:
+                request.world.sourceHash || sha256(request.world.files),
             },
           }),
           signal: controller.signal,

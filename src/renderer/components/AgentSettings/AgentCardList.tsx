@@ -16,8 +16,7 @@ interface AgentCardListProps {
   onSelectAgent: (agentId: string, workspacePath: string) => void;
 }
 
-function getStatusColor(onlineCount: number, totalCount: number, enabled: boolean): string {
-  if (!enabled) return 'var(--ink-subtle)';
+function getStatusColor(onlineCount: number, totalCount: number): string {
   if (totalCount === 0) return 'var(--ink-subtle)';
   if (onlineCount === totalCount) return 'var(--success)';
   if (onlineCount > 0) return 'var(--warning)';
@@ -61,7 +60,7 @@ export default function AgentCardList({ onSelectAgent }: AgentCardListProps) {
         const agentStatus = statuses[agent.id];
         const onlineChannels = agentStatus?.channels.filter(ch => ch.status === 'online').length ?? 0;
         const totalChannels = agent.channels?.length ?? 0;
-        const statusColor = getStatusColor(onlineChannels, totalChannels, agent.enabled);
+        const statusColor = getStatusColor(onlineChannels, totalChannels);
         const proj = projectByAgentId.get(agent.id);
         const displayName = proj?.displayName || proj?.name || agent.name;
         const iconId = proj?.icon || agent.icon || DEFAULT_WORKSPACE_ICON;

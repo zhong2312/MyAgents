@@ -25,10 +25,8 @@ import {
   loadLocationFiles,
 } from "../../../../../shared/workbenches/novel/locationStorage";
 
-import {
-  createNovelCharacterLibraryRepository,
-  parseCharacterLibraryIndex,
-} from "../../modules/characters";
+import { createNovelCharacterLibraryRepository } from "../../modules/characters/data-access/characterLibraryRepository";
+import { parseCharacterLibraryIndex } from "../../modules/characters/entities/characterLibrarySchema";
 import {
   parseFactionLibrary,
   type FactionLibrary,

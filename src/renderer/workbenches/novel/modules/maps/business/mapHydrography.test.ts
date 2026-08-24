@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   getMapRiverStyle,
+  hasMapRiverAppearance,
   isMapRiverFeature,
   mapRiverWidthAt,
   reverseMapRiverFeature,
@@ -101,5 +102,36 @@ describe("地图水系几何", () => {
       bankWidth: 1.8,
       highlightColor: "#edffff",
     });
+  });
+
+  it("路线外观选择河流后才复用水文渲染，闭合自由画笔保持区域语义", () => {
+    const freehandRoute = {
+      ...river,
+      id: "freehand-route",
+      props: {
+        freehand: "true",
+        closed: "false",
+        lineWidth: "4",
+      },
+    };
+    const riverAppearanceRoute = {
+      ...freehandRoute,
+      id: "freehand-river-route",
+      props: { ...freehandRoute.props, routeStyle: "river" },
+    };
+    const freehandArea = {
+      ...freehandRoute,
+      id: "freehand-area",
+      kind: "area" as const,
+      props: { freehand: "true", closed: "true" },
+    };
+
+    expect(hasMapRiverAppearance(freehandRoute)).toBe(false);
+    expect(hasMapRiverAppearance(riverAppearanceRoute)).toBe(true);
+    expect(getMapRiverStyle(riverAppearanceRoute)).toMatchObject({
+      sourceWidth: 2.2,
+      mouthWidth: 9,
+    });
+    expect(hasMapRiverAppearance(freehandArea)).toBe(false);
   });
 });

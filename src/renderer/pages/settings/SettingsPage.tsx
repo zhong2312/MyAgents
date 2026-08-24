@@ -17,7 +17,6 @@ import { UnifiedLogsPanel } from '@/components/UnifiedLogsPanel';
 import GlobalPluginsPanel from '@/components/GlobalPluginsPanel';
 import CronTaskDebugPanel from '@/components/dev/CronTaskDebugPanel';
 import { BotPlatformRegistry } from '@/components/ImSettings';
-import { WorkspaceSelectDialog } from '@/components/AgentSettings';
 import ProxyScopeDialog from '@/components/ProxyScopeDialog';
 import WorkspaceConfigPanel from '@/components/WorkspaceConfigPanel';
 import ModelManagementPanel from '@/components/ModelManagementPanel';
@@ -63,6 +62,7 @@ import {
     getMcpServerArgs,
     getMcpServerEnv,
     atomicModifyConfig,
+    isImageUnderstandingSelectionAvailable,
     isProviderAvailable,
     rebuildAndPersistAvailableProviders,
 } from '@/config/configService';
@@ -96,16 +96,18 @@ import { DEFAULT_SUMMON_ACCELERATOR } from '../../../shared/config-types';
 import {
     IMAGE_UNDERSTANDING_TOOL_ID,
     OFFICIAL_TOOLS,
-    isImageUnderstandingToolConfigured,
     normalizeOfficialToolIds,
+    type ImageUnderstandingModelOption,
     type OfficialToolDefinition,
 } from '../../../shared/official-tools';
-import { isRuntimeBackedProvider } from '../../../shared/providerExecution';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
 import { normalizeProxyScope } from '../../../shared/proxyScope';
 import { describeProxyScopeSummary } from './proxyScopePresentation';
 import { formatSubscriptionVerifyError } from '../../../shared/subscription';
 import type { UiLanguage } from '../../../shared/i18n';
+import type { ChannelType } from '../../../shared/types/agent';
+import { reconcilePersistedAgentWorkspaceIdentities } from '@/config/services/agentConfigService';
+import { getBotWorkspaceCandidates } from '@/components/ImSettings/botWorkspaceSelection';
 import ProviderEnableOrderDialog from '@/components/ProviderEnableOrderDialog';
 import FloatingBallPetSettings from '@/components/FloatingBallPetSettings';
 import {
@@ -115,6 +117,7 @@ import {
 import {
     MYAGENTS_GITHUB_URL,
     MYAGENTS_RELEASES_URL,
+    MYAGENTS_SOURCE_CODE_URL,
     PLAYWRIGHT_DEVICE_PRESETS,
 } from './settingsSections';
 import {
@@ -372,9 +375,10 @@ export default function Settings({ mode = 'settings', initialSection, navigation
         setActiveSection('skills');
     }, [activeSection, mode, setActiveSection]);
     // Agent overlay state for viewing agent config from Settings card list
-    const [overlayAgent, setOverlayAgent] = useState<{ agentId?: string; workspacePath: string } | null>(null);
-
-    const [showWorkspaceSelect, setShowWorkspaceSelect] = useState(false);
+    const [overlayAgent, setOverlayAgent] = useState<{
+        workspacePath: string;
+        initialAddChannelPlatform?: ChannelType;
+    } | null>(null);
 
     // Global summon shortcut (PRD 0.2.16) — load from Rust on mount, mutate
     // via cmd_set_global_summon_shortcut which validates + registers + saves.
@@ -434,9 +438,32 @@ export default function Settings({ mode = 'settings', initialSection, navigation
         if (propUpdateReady) setDownloadProgress(null);
     }, [propUpdateReady]);
 
-    const handleWorkspaceSelected = useCallback((project: import('@/config/types').Project) => {
-        setShowWorkspaceSelect(false);
-        setOverlayAgent({ workspacePath: project.path });
+    const handleAddBotToWorkspace = useCallback(async (
+        platform: ChannelType,
+        selectedProject: import('@/config/types').Project,
+    ) => {
+        try {
+            const identity = await reconcilePersistedAgentWorkspaceIdentities();
+            const project = getBotWorkspaceCandidates(identity.projects, config.defaultWorkspacePath)
+                .find(candidate => candidate.id === selectedProject.id);
+            if (!project) throw new Error(`Project '${selectedProject.id}' is no longer available.`);
+            const projection = identity.agentProjections.find(item => item.projectId === project.id);
+            if (!projection) throw new Error(`Agent identity is unavailable for Project '${project.id}'.`);
+            await refreshConfig();
+            setOverlayAgent({
+                workspacePath: project.path,
+                initialAddChannelPlatform: platform,
+            });
+        } catch (error) {
+            console.error('[Settings] Failed to prepare workspace for Channel setup:', error);
+            toastRef.current.error(tSettingsRef.current('agentSettings.botRegistry.openWorkspaceFailed'));
+        }
+    }, [config.defaultWorkspacePath, refreshConfig]);
+
+    const handleInitialAddChannelPlatformConsumed = useCallback(() => {
+        setOverlayAgent(current => current
+            ? { workspacePath: current.workspacePath }
+            : current);
     }, []);
 
     // #230: The proxy host/port fields previously called updateConfig() on every
@@ -602,7 +629,6 @@ export default function Settings({ mode = 'settings', initialSection, navigation
     const sourceRevision = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(appVersion)
         ? `v${appVersion}`
         : 'main';
-    const sourceTreeUrl = `${MYAGENTS_GITHUB_URL}/tree/${sourceRevision}`;
     const sourceLicenseUrl = `${MYAGENTS_GITHUB_URL}/blob/${sourceRevision}/LICENSE`;
     const sourceNoticesUrl = `${MYAGENTS_GITHUB_URL}/blob/${sourceRevision}/THIRD_PARTY_NOTICES.md`;
     useEffect(() => {
@@ -832,27 +858,50 @@ export default function Settings({ mode = 'settings', initialSection, navigation
     const [officialToolEnabling, setOfficialToolEnabling] = useState<Record<string, boolean>>({});
     const [visionToolSettingsOpen, setVisionToolSettingsOpen] = useState(false);
     const [visionToolDraftValue, setVisionToolDraftValue] = useState('');
+    const [visionModelCandidates, setVisionModelCandidates] = useState<ImageUnderstandingModelOption[]>([]);
+    const [visionModelsLoading, setVisionModelsLoading] = useState(false);
+    const [visionModelsLoadFailed, setVisionModelsLoadFailed] = useState(false);
 
     const officialEnabledIds = useMemo(
         () => normalizeOfficialToolIds(config.enabledOfficialToolIds ?? []),
         [config.enabledOfficialToolIds],
     );
 
-    const visionModelOptions = useMemo(() => {
-        return providers
-            .filter(provider =>
-                isProviderAvailable(provider, apiKeys, providerVerifyStatus)
-                && !isRuntimeBackedProvider(provider),
-            )
-            .flatMap(provider =>
-                provider.models
-                    .filter(model => Array.isArray(model.inputModalities) && model.inputModalities.includes('image'))
-                    .map(model => ({
-                        value: visionModelOptionValue(provider.id, model.model),
-                        label: `${provider.name} / ${model.modelName || model.model}`,
-                    })),
-            );
-    }, [providers, apiKeys, providerVerifyStatus]);
+    const loadVisionModelCandidates = useCallback(async () => {
+        setVisionModelsLoading(true);
+        setVisionModelsLoadFailed(false);
+        try {
+            const result = await apiPostJson<{
+                success: boolean;
+                data?: { models?: ImageUnderstandingModelOption[] };
+            }>('/api/admin/vision/models', {});
+            if (!result.success || !Array.isArray(result.data?.models)) {
+                throw new Error('Invalid image-understanding model response');
+            }
+            setVisionModelCandidates(result.data.models);
+        } catch (error) {
+            console.error('[Settings] Failed to load image-understanding models:', error);
+            setVisionModelCandidates([]);
+            setVisionModelsLoadFailed(true);
+        } finally {
+            setVisionModelsLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        void loadVisionModelCandidates();
+    }, [loadVisionModelCandidates, providers, apiKeys, providerVerifyStatus]);
+
+    const visionModelOptions = useMemo(() => visionModelCandidates.map(candidate => ({
+        value: visionModelOptionValue(candidate.providerId, candidate.model),
+        label: `${candidate.providerName} / ${candidate.modelName || candidate.model}${
+            candidate.capabilityConfidence === 'inferred'
+                ? ` · ${tSettings('toolbox.dialogs.vision.inferredBadge')}`
+                : candidate.capabilityConfidence === 'unknown'
+                    ? ` · ${tSettings('toolbox.dialogs.vision.confirmBadge')}`
+                    : ''
+        }`,
+    })), [tSettings, visionModelCandidates]);
 
     const savedVisionModelValue = useMemo(() => {
         const saved = config.officialToolSettings?.imageUnderstanding;
@@ -860,10 +909,21 @@ export default function Settings({ mode = 'settings', initialSection, navigation
             ? visionModelOptionValue(saved.providerId, saved.model)
             : '';
     }, [config.officialToolSettings?.imageUnderstanding]);
-    const savedVisionModelStillValid = !!savedVisionModelValue
-        && visionModelOptions.some(option => option.value === savedVisionModelValue);
-    const visionToolNeedsConfig = !isImageUnderstandingToolConfigured(config.officialToolSettings)
-        || !savedVisionModelStillValid;
+    const savedVisionModelStillValid = isImageUnderstandingSelectionAvailable(
+        providers,
+        apiKeys,
+        providerVerifyStatus,
+        config.officialToolSettings,
+    );
+    const visionToolNeedsConfig = !savedVisionModelStillValid;
+    const selectedVisionModelCandidate = useMemo(() => {
+        const parsed = parseVisionModelOptionValue(visionToolDraftValue);
+        return parsed
+            ? visionModelCandidates.find(candidate => (
+                candidate.providerId === parsed.providerId && candidate.model === parsed.model
+            ))
+            : undefined;
+    }, [visionModelCandidates, visionToolDraftValue]);
 
     // Builtin MCP settings dialog state
     const [builtinMcpSettings, setBuiltinMcpSettings] = useState<{
@@ -1186,7 +1246,14 @@ export default function Settings({ mode = 'settings', initialSection, navigation
             : (visionModelOptions[0]?.value ?? '');
         setVisionToolDraftValue(initial);
         setVisionToolSettingsOpen(true);
-    }, [savedVisionModelStillValid, savedVisionModelValue, visionModelOptions]);
+        void loadVisionModelCandidates();
+    }, [loadVisionModelCandidates, savedVisionModelStillValid, savedVisionModelValue, visionModelOptions]);
+
+    useEffect(() => {
+        if (visionToolSettingsOpen && !visionToolDraftValue && visionModelOptions[0]) {
+            setVisionToolDraftValue(visionModelOptions[0].value);
+        }
+    }, [visionModelOptions, visionToolDraftValue, visionToolSettingsOpen]);
 
     const handleOfficialToolToggle = useCallback(async (tool: OfficialToolDefinition, enabled: boolean) => {
         setOfficialToolEnabling(prev => ({ ...prev, [tool.id]: true }));
@@ -4003,7 +4070,11 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                 {/* Bot Platform Registry (formerly Agent / IM Bot) */}
                 {activeSection === 'agent' && (
                     <div className="mx-auto max-w-4xl px-8 py-8">
-                        <BotPlatformRegistry />
+                        <BotPlatformRegistry
+                            projects={projects}
+                            defaultWorkspacePath={config.defaultWorkspacePath}
+                            onAddToWorkspace={handleAddBotToWorkspace}
+                        />
                     </div>
                 )}
 
@@ -5162,7 +5233,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                         {tSettings('about.communityLicense')}
                                     </ExternalLink>
                                     <ExternalLink
-                                        href={sourceTreeUrl}
+                                        href={MYAGENTS_SOURCE_CODE_URL}
                                         className="rounded-lg bg-[var(--paper-inset)] px-3 py-1.5 text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
                                     >
                                         {tSettings('about.sourceCode')}
@@ -5511,9 +5582,29 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                         : tSettings('toolbox.dialogs.vision.noImageModels')}
                                     size="md"
                                 />
-                                {visionModelOptions.length === 0 && (
+                                {visionModelsLoading && (
+                                    <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                                        {tSettings('toolbox.dialogs.vision.loadingModels')}
+                                    </p>
+                                )}
+                                {!visionModelsLoading && visionModelsLoadFailed && (
+                                    <p className="mt-2 text-xs text-[var(--warning)]">
+                                        {tSettings('toolbox.dialogs.vision.loadModelsFailed')}
+                                    </p>
+                                )}
+                                {!visionModelsLoading && !visionModelsLoadFailed && visionModelOptions.length === 0 && (
                                     <p className="mt-2 text-xs text-[var(--warning)]">
                                         {tSettings('toolbox.dialogs.vision.noImageModelsWarning')}
+                                    </p>
+                                )}
+                                {selectedVisionModelCandidate?.capabilityConfidence === 'unknown' && (
+                                    <p className="mt-2 text-xs text-[var(--warning)]">
+                                        {tSettings('toolbox.dialogs.vision.confirmUnknownWarning')}
+                                    </p>
+                                )}
+                                {selectedVisionModelCandidate?.capabilityConfidence === 'inferred' && (
+                                    <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                                        {tSettings('toolbox.dialogs.vision.inferredHint')}
                                     </p>
                                 )}
                             </div>
@@ -7976,15 +8067,8 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                     agentDir={overlayAgent.workspacePath}
                     onClose={() => setOverlayAgent(null)}
                     initialTab="agent"
-                />
-            )}
-
-            {/* Workspace select dialog for Agent upgrade */}
-            {showWorkspaceSelect && (
-                <WorkspaceSelectDialog
-                    projects={projects}
-                    onSelect={handleWorkspaceSelected}
-                    onClose={() => setShowWorkspaceSelect(false)}
+                    initialAddChannelPlatform={overlayAgent.initialAddChannelPlatform}
+                    onInitialAddChannelPlatformConsumed={handleInitialAddChannelPlatformConsumed}
                 />
             )}
         </div>

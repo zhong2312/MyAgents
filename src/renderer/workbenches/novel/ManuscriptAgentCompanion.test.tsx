@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const useWorkbenchStorageMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@/workbench-host/useWorkbenchStorage", () => ({
+vi.mock("@/workbench-sdk/storage", () => ({
   useWorkbenchStorage: useWorkbenchStorageMock,
 }));
 

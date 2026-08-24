@@ -1,10 +1,23 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   buildExternalAssistantSnapshotContent,
   type PersistContentBlock,
   type PersistSubagentCall,
 } from './external-session';
+import {
+  applyExternalSubagentLifecycle,
+  finalizeExternalSubagentLifecyclesForTurn,
+  finalizeExternalSubagentToolInput,
+  finalizeExternalToolUseInput,
+  flushExternalPendingToolInputsForTurn,
+  getExternalContentBlocksRef,
+  resetExternalContentState,
+  startExternalSubagentToolUse,
+  startExternalToolUseInput,
+} from './external-session/content-blocks';
+
+afterEach(() => resetExternalContentState());
 
 function parseSnapshot(content: string | null): PersistContentBlock[] {
   expect(content).toBeTruthy();
@@ -121,5 +134,123 @@ describe('external-session sub-agent live snapshot', () => {
     expect(subagentCalls?.[0].attachments).toEqual([
       { kind: 'image', refPath: '/generated/tool-attachments/s/t/img.png', mimeType: 'image/png' },
     ]);
+  });
+});
+
+describe('external-session sub-agent lifecycle owner', () => {
+  function materializeParent(): void {
+    startExternalToolUseInput({
+      toolUseId: 'spawn-1',
+      toolName: 'CollabAgent',
+      toolInput: { tool: 'spawnAgent' },
+    });
+    finalizeExternalToolUseInput('spawn-1');
+  }
+
+  it('preserves terminal-before-parent ordering and rejects terminal regression', () => {
+    expect(applyExternalSubagentLifecycle({
+      parentToolUseId: 'spawn-1',
+      status: 'running',
+      observedAt: 100,
+    })).toEqual({ status: 'running', startedAt: 100 });
+    expect(applyExternalSubagentLifecycle({
+      parentToolUseId: 'spawn-1',
+      status: 'completed',
+      observedAt: 250,
+    })).toEqual({ status: 'completed', startedAt: 100, finishedAt: 250 });
+
+    materializeParent();
+    applyExternalSubagentLifecycle({
+      parentToolUseId: 'spawn-1',
+      status: 'running',
+      observedAt: 400,
+    });
+    expect(getExternalContentBlocksRef()[0].tool?.subagentLifecycle).toEqual({
+      status: 'completed',
+      startedAt: 100,
+      finishedAt: 250,
+    });
+  });
+
+  it('fails closed at root and visibly closes a 600-call nested trace', () => {
+    materializeParent();
+    applyExternalSubagentLifecycle({
+      parentToolUseId: 'spawn-1',
+      status: 'running',
+      observedAt: 100,
+    });
+    for (let index = 0; index < 600; index += 1) {
+      startExternalSubagentToolUse({
+        parentToolUseId: 'spawn-1',
+        toolUseId: `child-${index}`,
+        toolName: 'Bash',
+      });
+    }
+
+    expect(finalizeExternalSubagentLifecyclesForTurn({
+      status: 'failed',
+      observedAt: 500,
+    })).toEqual([{
+      parentToolUseId: 'spawn-1',
+      lifecycle: { status: 'failed', startedAt: 100, finishedAt: 500 },
+    }]);
+    const tool = getExternalContentBlocksRef()[0].tool;
+    expect(tool?.subagentCalls).toHaveLength(600);
+    expect(tool?.subagentCalls?.every(call => call.isLoading === false && call.isError === true)).toBe(true);
+    expect(tool?.subagentCalls?.every(call => call.result === 'Failed')).toBe(true);
+  });
+
+  it('attaches a root-fenced pending lifecycle when root flush materializes its parent', () => {
+    startExternalToolUseInput({
+      toolUseId: 'spawn-pending',
+      toolName: 'CollabAgent',
+      toolInput: { tool: 'spawnAgent' },
+    });
+    applyExternalSubagentLifecycle({
+      parentToolUseId: 'spawn-pending',
+      status: 'running',
+      observedAt: 100,
+    });
+    finalizeExternalSubagentLifecyclesForTurn({ status: 'failed', observedAt: 500 });
+
+    flushExternalPendingToolInputsForTurn();
+
+    expect(getExternalContentBlocksRef()[0].tool?.subagentLifecycle).toEqual({
+      status: 'failed',
+      startedAt: 100,
+      finishedAt: 500,
+    });
+  });
+
+  it('marks a resultless post-input nested call as interrupted at root stop', () => {
+    materializeParent();
+    applyExternalSubagentLifecycle({
+      parentToolUseId: 'spawn-1',
+      status: 'running',
+      observedAt: 100,
+    });
+    startExternalSubagentToolUse({
+      parentToolUseId: 'spawn-1',
+      toolUseId: 'child-running',
+      toolName: 'Bash',
+      toolInput: { command: 'sleep 30' },
+    });
+    finalizeExternalSubagentToolInput('spawn-1', 'child-running');
+
+    finalizeExternalSubagentLifecyclesForTurn({ status: 'interrupted', observedAt: 250 });
+
+    expect(getExternalContentBlocksRef()[0].tool?.subagentCalls?.[0]).toMatchObject({
+      isLoading: false,
+      isError: true,
+      result: 'Interrupted',
+    });
+  });
+
+  it('keeps an accepted real terminal when the root fence runs', () => {
+    materializeParent();
+    applyExternalSubagentLifecycle({ parentToolUseId: 'spawn-1', status: 'running', observedAt: 100 });
+    applyExternalSubagentLifecycle({ parentToolUseId: 'spawn-1', status: 'interrupted', observedAt: 220 });
+    expect(finalizeExternalSubagentLifecyclesForTurn({ status: 'failed', observedAt: 500 })).toEqual([]);
+    expect(getExternalContentBlocksRef()[0].tool?.subagentLifecycle?.status).toBe('interrupted');
   });
 });

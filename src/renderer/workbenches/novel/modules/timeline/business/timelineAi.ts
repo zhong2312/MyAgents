@@ -93,7 +93,7 @@ export function buildTimelineAiAgentRequest({
 1. 先按任务需要调用 novel_timeline_get_context 获取已保存事实；不要为了遍历模块而机械调用全部工具。
 2. 该工具返回的是已保存事实；无法确认的内容必须明确标为待确认，不得臆测。
 3. 明确区分世界时间（sortKey）、故事相对时间、叙事揭示顺序（narrativeOrder）和角色认知范围；不要把它们当成同一个时间轴，也不要强行补齐未知时间。
-4. 时间线是世界事实源。当前会话只读取和分析，通过“草稿 -> 校验 -> 提案”协议提交候选：作者确认改动方向后调用 novel_timeline_create_draft 创建草稿，用 novel_timeline_upsert_draft_operations 分批写入事件候选（同一候选使用相同 candidateId），调用 novel_timeline_validate_draft 校验通过后，只能使用返回的 validationToken 调用 novel_timeline_submit_draft；随后调用 novel_timeline_get_proposal_status 确认 exists=true，再提示作者在时间线页点击“审阅提案”。可按需使用原始命令和文件工具读取项目内外素材并核对事实，但不得把原始文件操作冒充为已写入事实源。
+4. 时间线是世界事实源。当前会话只读取和分析，通过“草稿 -> 校验 -> 提案”协议提交候选：作者确认改动方向后调用 novel_timeline_create_draft 创建草稿，用 novel_timeline_upsert_draft_operations 分批写入事件候选（同一候选使用相同 candidateId）；每个 value 必须完整符合正式事件结构，createdAt 和 updatedAt 由系统写入，不要自行填写或修改。调用 novel_timeline_validate_draft 校验通过后，只能使用返回的 validationToken 调用 novel_timeline_submit_draft；随后调用 novel_timeline_get_proposal_status 确认 exists=true，再提示作者在时间线页点击“审阅提案”。可按需使用原始命令和文件工具读取项目内外素材并核对事实，但不得把原始文件操作冒充为已写入事实源。
 5. 每条建议使用“发现 / 原因 / 建议动作 / 影响范围”结构，引用具体纪元、分支、事件或章节。对未落定的创作选择给出备选方案，不把检查提示当成硬性写作规则。
 6. 涉及分支时，必须说明分歧点、继承历史和分歧后的可见后果；涉及伏笔时，必须说明埋设事件、预期回收位置和读者可见的信息变化。
 

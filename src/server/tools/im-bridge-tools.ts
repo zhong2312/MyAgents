@@ -67,6 +67,7 @@ export function imBridgeToolSurfaceIdentity(surface: ImBridgeToolSurface): strin
 async function triggerAutoAuth(
   surface: ImBridgeToolSurface,
   turnContext: ImBridgeTurnContext,
+  signal?: AbortSignal,
 ): Promise<CallToolResult> {
   console.log('[im-bridge-tools] need_user_authorization detected, triggering auto-auth via feishu_auth command');
   try {
@@ -82,7 +83,7 @@ async function triggerAutoAuth(
           chatId: turnContext.chatId || '',
         }),
       },
-      { timeoutMs: 15_000, parentSignal: getCurrentTurnSignal() },
+      { timeoutMs: 15_000, parentSignal: signal ?? getCurrentTurnSignal() },
     );
     if (!resp.ok) {
       const errText = await resp.text().catch(() => '');
@@ -117,6 +118,7 @@ async function callBridgeTool(params: {
   resolveTurnContext: ResolveTurnContext;
   toolName: string;
   args: Record<string, unknown>;
+  signal?: AbortSignal;
 }): Promise<CallToolResult> {
   const turnContext = params.resolveTurnContext();
   if (!turnContext) {
@@ -145,7 +147,7 @@ async function callBridgeTool(params: {
       },
       {
         timeoutMs: MYAGENTS_TOOL_CALL_TIMEOUT_MS,
-        parentSignal: getCurrentTurnSignal(),
+        parentSignal: params.signal ?? getCurrentTurnSignal(),
       },
     );
 
@@ -179,7 +181,7 @@ async function callBridgeTool(params: {
 
     if (!result.ok) {
       if (result.error?.includes('need_user_authorization') && turnContext.chatId) {
-        return triggerAutoAuth(params.surface, turnContext);
+        return triggerAutoAuth(params.surface, turnContext, params.signal);
       }
       return {
         content: [{ type: 'text', text: `Tool error: ${result.error || 'unknown'}` }],
@@ -201,7 +203,7 @@ async function callBridgeTool(params: {
     }
 
     if (resultText.includes('need_user_authorization') && turnContext.chatId) {
-      return triggerAutoAuth(params.surface, turnContext);
+      return triggerAutoAuth(params.surface, turnContext, params.signal);
     }
 
     const spilled = await maybeSpill(resultText, {
@@ -306,11 +308,15 @@ async function initializeSurface(
       pluginTool.name,
       pluginTool.description || '',
       { args: z.record(z.string(), z.any()).describe('Tool arguments as key-value pairs') },
-      async (params: { args: Record<string, unknown> }) => callBridgeTool({
+      async (params: { args: Record<string, unknown> }, extra: unknown) => callBridgeTool({
         surface: owner.surface,
         resolveTurnContext,
         toolName: pluginTool.name,
         args: params.args,
+        signal: extra && typeof extra === 'object' && 'signal' in extra
+          && (extra as { signal?: unknown }).signal instanceof AbortSignal
+          ? (extra as { signal: AbortSignal }).signal
+          : undefined,
       }),
     ));
     if (surfaceOwner !== owner) return;

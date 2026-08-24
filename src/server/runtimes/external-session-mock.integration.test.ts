@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { RuntimeType } from '../../shared/types/runtime';
+import { REQUIRED_SYSTEM_SKILLS } from '../../shared/systemSkills';
 import type { DesktopMessageRequest, InjectedTurnRequest } from '../session-engine/types';
 import type { MirrorPayload } from '../utils/im-mirror';
 import type {
@@ -37,6 +38,7 @@ type TurnScript =
 class FakeRuntimeProcess implements RuntimeProcess {
   readonly pid = 4242;
   exited = false;
+  loadedSkillNames: readonly string[] = [];
 
   async writeLine(): Promise<void> {
     return undefined;
@@ -58,6 +60,7 @@ class FakeRuntime implements AgentRuntime {
   readonly startSessionInitialMessages: Array<string | undefined> = [];
   readonly steeredMessages: Array<{ message: string; clientUserMessageId?: string }> = [];
   readonly conversationBranches: Array<{ kind: 'through-turn' | 'before-turn'; runtimeTurnId: string }> = [];
+  compactCalls = 0;
   readonly permissionResponses: Array<{ requestId: string; decision: string; reason?: string }> = [];
   steerMessage?: AgentRuntime['steerMessage'];
   branchConversation?: AgentRuntime['branchConversation'];
@@ -78,6 +81,7 @@ class FakeRuntime implements AgentRuntime {
   private readonly emitSessionCompleteOnStop: boolean;
   private nextTurnNumber = 1;
   private nextThreadNumber = 1;
+  private readonly omittedLoadedSkillNames: ReadonlySet<string>;
 
   constructor(private readonly scripts: TurnScript[], options: {
     realtimeSteering?: boolean;
@@ -92,6 +96,7 @@ class FakeRuntime implements AgentRuntime {
     deferStopAfterSessionComplete?: boolean;
     deferStopBeforeResult?: boolean;
     conversationBranching?: boolean;
+    omittedLoadedSkillNames?: readonly string[];
   } = {}) {
     this.rejectDispatchAck = options.rejectDispatchAck === true;
     this.rejectStop = options.rejectStop === true;
@@ -99,6 +104,7 @@ class FakeRuntime implements AgentRuntime {
     this.emitInterruptedOnStop = options.emitInterruptedOnStop === true;
     this.emitSessionCompleteOnStop = options.emitSessionCompleteOnStop === true;
     this.deferStopBeforeResult = options.deferStopBeforeResult === true;
+    this.omittedLoadedSkillNames = new Set(options.omittedLoadedSkillNames ?? []);
     if (options.deferRejectedSend) {
       this.rejectedSendGate = new Promise<void>((resolve) => {
         this.releaseRejectedSendGate = resolve;
@@ -185,7 +191,7 @@ class FakeRuntime implements AgentRuntime {
   }
 
   async startSession(options: SessionStartOptions, onEvent: UnifiedEventCallback): Promise<RuntimeProcess> {
-    this.startSessionInitialMessages.push(options.initialMessage);
+    this.startSessionInitialMessages.push(options.initialTurn?.message);
     const gate = this.startGate;
     if (gate) {
       await gate;
@@ -193,12 +199,15 @@ class FakeRuntime implements AgentRuntime {
     }
     this.callback = onEvent;
     const process = new FakeRuntimeProcess();
+    process.loadedSkillNames = (options.managedCodexExtensions?.skills ?? [])
+      .map(skill => skill.name)
+      .filter(name => !this.omittedLoadedSkillNames.has(name));
     this.defer(() => {
       const threadId = options.resumeSessionId ?? `fake-thread-${this.nextThreadNumber++}`;
       this.emit({ kind: 'session_init', sessionId: threadId, model: options.model ?? 'fake-model', tools: ['FakeTool'] });
-      if (options.initialMessage) {
-        this.emitRootTurnAdmission(options.initialClientUserMessageId);
-        this.playTurn(options.initialMessage);
+      if (options.initialTurn) {
+        this.emitRootTurnAdmission(options.initialTurn.clientUserMessageId);
+        this.playTurn(options.initialTurn.message);
       }
     });
     return process;
@@ -217,6 +226,10 @@ class FakeRuntime implements AgentRuntime {
     }
     this.emitRootTurnAdmission(options?.clientUserMessageId);
     this.playTurn(message);
+  }
+
+  async compactContext(): Promise<void> {
+    this.compactCalls += 1;
   }
 
   async setModel(): Promise<void> {
@@ -397,12 +410,22 @@ async function createHarness(
     deferMessagePersist?: boolean;
     deferMessagePersistOnCall?: number;
     rejectMessagePersist?: boolean;
+    runtimeSource?: 'system-cli' | 'managed-provider';
+    omittedLoadedSkillNames?: readonly string[];
     config?: Record<string, unknown>;
   } = {},
 ): Promise<Harness> {
   vi.resetModules();
   const home = mkdtempSync(join(tmpdir(), 'myagents-external-mock-'));
   mkdirSync(join(home, '.myagents'), { recursive: true });
+  for (const name of REQUIRED_SYSTEM_SKILLS) {
+    const skillDir = join(home, '.myagents', 'skills', name);
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      join(skillDir, 'SKILL.md'),
+      `---\nname: ${name}\ndescription: ${name}\n---\n`,
+    );
+  }
   if (options.config) {
     writeFileSync(join(home, '.myagents', 'config.json'), JSON.stringify(options.config));
   }
@@ -455,6 +478,7 @@ async function createHarness(
     deferStopAfterSessionComplete: options.deferStopAfterSessionComplete,
     deferStopBeforeResult: options.deferStopBeforeResult,
     conversationBranching: options.conversationBranching,
+    omittedLoadedSkillNames: options.omittedLoadedSkillNames,
   });
   if (options.unconfirmedDispatchStop || options.unconfirmedStop) {
     vi.doMock('./utils/kill-with-escalation', () => ({
@@ -467,7 +491,7 @@ async function createHarness(
     }));
   }
   vi.doMock('./factory', () => ({
-    getCurrentRuntimeSource: () => 'system-cli',
+    getCurrentRuntimeSource: () => options.runtimeSource ?? 'system-cli',
     getCurrentRuntimeType: () => 'codex',
     getExternalRuntime: () => runtime,
     isExternalRuntime: (type: RuntimeType | undefined) => Boolean(type && type !== 'builtin'),
@@ -594,6 +618,289 @@ function runInjectedTurn(harness: Harness, request: TestInjectedTurnRequest) {
 }
 
 describe('external SessionEngine with fake runtime', () => {
+  it('prewarms and sends with historical project copies of required Skills', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'required project winners admitted' },
+    ], { runtimeSource: 'managed-provider' });
+    const sessionId = 'session-required-project-winners';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    writeFileSync(join(harness.home, '.myagents', 'config.json'), JSON.stringify({
+      agents: [{
+        id: 'agent-required-project-winners',
+        path: workspacePath,
+        capabilitySelection: {
+          version: 1,
+          disabled: {
+            skills: [
+              'project:skill:local-alignment',
+              'project:skill:task-implement',
+            ],
+            commands: [],
+          },
+        },
+      }],
+    }));
+    writeFileSync(join(harness.home, '.myagents', 'projects.json'), JSON.stringify([{
+      id: 'project-required-project-winners',
+      path: workspacePath,
+      agentId: 'agent-required-project-winners',
+    }]));
+    for (const [folderName, canonicalName] of [
+      ['local-alignment', 'task-alignment'],
+      ['task-implement', 'task-implement'],
+    ] as const) {
+      const projectSkill = join(workspacePath, '.claude', 'skills', folderName);
+      mkdirSync(projectSkill, { recursive: true });
+      writeFileSync(
+        join(projectSkill, 'SKILL.md'),
+        `---\nname: ${canonicalName}\ndescription: Historical project copy\n---\n`,
+      );
+    }
+
+    await expect(harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+    })).resolves.toEqual({ prewarmed: true });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'required project winner prewarm');
+
+    const sent = await harness.engine.sendDesktopMessage(
+      {
+        ...desktopRequest(sessionId, workspacePath, 'use the required project winners'),
+        permissionMode: 'no-restrictions',
+      },
+    );
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(1);
+  });
+
+  it('rejects only a dependent Managed turn when native Skill read-back omits its Required Skill', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'ordinary turn still works' },
+    ], {
+      runtimeSource: 'managed-provider',
+      omittedLoadedSkillNames: ['task-alignment'],
+    });
+    const sessionId = 'session-required-native-omission';
+    const workspacePath = join(harness.home, 'workspace');
+    await harness.sessionStore.saveSessionMetadata({
+      id: sessionId,
+      agentDir: workspacePath,
+      title: 'Required native omission',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      lastActiveAt: '2026-01-01T00:00:00.000Z',
+      unifiedSession: true,
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+    });
+    const scenario = {
+      type: 'cron' as const,
+      taskId: 'task-required-native-omission',
+      intervalMinutes: 15,
+      aiCanExit: false,
+    };
+    await expect(harness.externalSession.restoreExternalSessionState(
+      sessionId,
+      workspacePath,
+      scenario,
+    )).resolves.toEqual({ success: true });
+
+    const required = await runInjectedTurn(harness, {
+      prompt: 'must use task alignment',
+      sessionId,
+      workspacePath,
+      scenario,
+      timeoutMs: 1_000,
+      pollMs: 10,
+      beforeDispatch: Object.assign(vi.fn(async () => ({ accepted: true })), { cancel: vi.fn() }),
+      requiredSystemSkill: 'task-alignment',
+    });
+
+    expect(required).toMatchObject({
+      success: false,
+      enqueued: false,
+      error: expect.stringContaining('did not load required system skill task-alignment'),
+    });
+    expect(harness.runtime.sentMessages).toEqual([]);
+    expect(harness.sessionStore.getSessionData(sessionId)?.messages ?? []).toEqual([]);
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
+    expect(broadcastEvents.some(event => event.event === 'chat:agent-error')).toBe(false);
+
+    const ordinary = await harness.engine.sendDesktopMessage(
+      {
+        ...desktopRequest(sessionId, workspacePath, 'ordinary message'),
+        permissionMode: 'no-restrictions',
+      },
+    );
+    expect(ordinary).toMatchObject({ success: true, queued: true });
+    if (ordinary.dispatchAcceptance) {
+      await expect(ordinary.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    }
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(2);
+    expect(harness.runtime.sentMessages).toContain('ordinary message');
+  });
+
+  it('keeps the shared Skill projection on the project canonical winner for compatibility Runtimes', async () => {
+    const harness = await createHarness([]);
+    const workspacePath = join(harness.home, 'workspace');
+    const globalSkill = join(harness.home, '.myagents', 'skills', 'global-review');
+    mkdirSync(globalSkill, { recursive: true });
+    writeFileSync(
+      join(globalSkill, 'SKILL.md'),
+      '---\nname: review\ndescription: Global review\n---\n',
+    );
+    const projectSkill = join(workspacePath, '.claude', 'skills', 'local-review');
+    mkdirSync(projectSkill, { recursive: true });
+    writeFileSync(
+      join(projectSkill, 'SKILL.md'),
+      '---\nname: review\ndescription: Project review\n---\n',
+    );
+
+    await expect(harness.externalSession.prewarmExternalSession({
+      sessionId: 'session-project-canonical-compatibility',
+      workspacePath,
+      scenario: { type: 'desktop' },
+    })).resolves.toEqual({ prewarmed: true });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'compatibility project winner prewarm');
+
+    expect(readFileSync(join(projectSkill, 'SKILL.md'), 'utf8')).toContain('Project review');
+    expect(() => readFileSync(join(workspacePath, '.claude', 'skills', 'global-review', 'SKILL.md'), 'utf8'))
+      .toThrow();
+  });
+
+  it('restarts a compatibility Runtime when another Sidecar already projected a new canonical winner', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'project winner used' }]);
+    const sessionId = 'session-cross-sidecar-skill-winner';
+    const workspacePath = join(harness.home, 'workspace');
+    const globalSkill = join(harness.home, '.myagents', 'skills', 'global-review');
+    mkdirSync(globalSkill, { recursive: true });
+    writeFileSync(
+      join(globalSkill, 'SKILL.md'),
+      '---\nname: review\ndescription: Global review\n---\n',
+    );
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+    });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'global winner prewarm');
+
+    const projectSkill = join(workspacePath, '.claude', 'skills', 'local-review');
+    mkdirSync(projectSkill, { recursive: true });
+    writeFileSync(
+      join(projectSkill, 'SKILL.md'),
+      '---\nname: review\ndescription: Project review\n---\n',
+    );
+    // Simulate another Sidecar winning the shared projection race first.
+    rmSync(join(workspacePath, '.claude', 'skills', 'global-review'));
+
+    const sent = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'use the project winner'),
+    );
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(2);
+    expect(readFileSync(join(projectSkill, 'SKILL.md'), 'utf8')).toContain('Project review');
+  });
+
+  it('projects Managed Codex native compaction through Session status without transcript messages', async () => {
+    const harness = await createHarness([], { runtimeSource: 'managed-provider' });
+    const sessionId = 'session-managed-codex-compact';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    writeFileSync(join(harness.home, '.myagents', 'config.json'), JSON.stringify({
+      agents: [{ id: 'agent-managed-compact', path: workspacePath }],
+    }));
+    writeFileSync(join(harness.home, '.myagents', 'projects.json'), JSON.stringify([{
+      id: 'project-managed-compact',
+      path: workspacePath,
+      agentId: 'agent-managed-compact',
+    }]));
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+    });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'Managed Codex prewarm');
+    const messagesBefore = harness.engine.getStreamReplaySnapshot().replayMessages;
+    broadcastEvents.length = 0;
+
+    await expect(harness.engine.compactContext()).resolves.toEqual({ success: true });
+
+    expect(harness.runtime.compactCalls).toBe(1);
+    expect(harness.engine.getStreamReplaySnapshot().replayMessages).toEqual(messagesBefore);
+    expect(broadcastEvents.filter(({ event }) => event === 'chat:system-status')).toEqual([
+      { event: 'chat:system-status', data: { status: 'compacting' } },
+      { event: 'chat:system-status', data: { status: null, compactResult: 'success' } },
+    ]);
+    expect(broadcastEvents.filter(({ event }) => event === 'chat:status')).toEqual([
+      { event: 'chat:status', data: { sessionState: 'running' } },
+      { event: 'chat:status', data: { sessionState: 'idle' } },
+    ]);
+  });
+
+  it('restarts an idle compatibility Runtime after blocked-link cleanup', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'clean projection' }]);
+    const sessionId = 'session-skill-projection-cleanup';
+    const workspacePath = join(harness.home, 'workspace');
+    const globalSkill = join(harness.home, '.myagents', 'skills', 'optional-review');
+    mkdirSync(globalSkill, { recursive: true });
+    writeFileSync(
+      join(globalSkill, 'SKILL.md'),
+      '---\nname: optional-review\ndescription: Optional review\n---\n',
+    );
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+    });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'compatibility prewarm');
+    const projected = join(workspacePath, '.claude', 'skills', 'optional-review');
+    expect(readFileSync(join(projected, 'SKILL.md'), 'utf8')).toContain('Optional review');
+
+    renameSync(join(globalSkill, 'SKILL.md'), join(globalSkill, 'SKILL(1).md'));
+    const sent = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'use the current projection'),
+    );
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(2);
+    expect(() => readFileSync(join(projected, 'SKILL.md'), 'utf8')).toThrow();
+    expect(readFileSync(join(globalSkill, 'SKILL(1).md'), 'utf8')).toContain('Optional review');
+  });
+
+  it('keeps an idle compatibility Runtime when integrity changes but projection is a no-op', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'warning stayed live' }]);
+    const sessionId = 'session-skill-warning-no-restart';
+    const workspacePath = join(harness.home, 'workspace');
+    const globalSkill = join(harness.home, '.myagents', 'skills', 'optional-warning');
+    mkdirSync(globalSkill, { recursive: true });
+    writeFileSync(
+      join(globalSkill, 'SKILL.md'),
+      '---\nname: optional-warning\ndescription: Optional warning\n---\n',
+    );
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+    });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'warning prewarm');
+
+    writeFileSync(join(globalSkill, 'SKILL(1).md'), 'preserved sibling');
+    const sent = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'keep the healthy canonical skill'),
+    );
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(1);
+  });
+
   it('broadcasts attachment updates only when a top-level placeholder owns them', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'ready for attachment routing' },
@@ -990,6 +1297,134 @@ describe('external SessionEngine with fake runtime', () => {
       expect(JSON.parse(readFileSync(join(harness.home, '.myagents', 'refs', refId!), 'utf-8')))
         .toEqual(finalInput);
     }
+  });
+
+  it('persists one terminal CollabAgent lifecycle and closes residual nested trace on success', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'root reply', completeDelayMs: 50 },
+    ]);
+    const sessionId = 'session-subagent-lifecycle-success';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'delegate'));
+    await waitFor(() => harness.runtime.sentMessages.includes('delegate'), 'subagent turn admission');
+    harness.runtime.emitForTest({
+      kind: 'tool_use_start',
+      toolUseId: 'spawn-card',
+      toolName: 'CollabAgent',
+      input: { tool: 'spawnAgent' },
+    });
+    harness.runtime.emitForTest({ kind: 'tool_use_stop', toolUseId: 'spawn-card' });
+    harness.runtime.emitForTest({ kind: 'tool_result', toolUseId: 'spawn-card', content: 'spawned' });
+    harness.runtime.emitForTest({
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'spawn-card',
+      status: 'running',
+      observedAt: 100,
+    });
+    harness.runtime.emitForTest({
+      kind: 'tool_use_start',
+      toolUseId: 'nested-thinking',
+      toolName: 'Thinking',
+      subAgent: { parentToolUseId: 'spawn-card' },
+    });
+    harness.runtime.emitForTest({
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'spawn-card',
+      status: 'completed',
+      observedAt: 300,
+    });
+
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const assistant = harness.sessionStore.getSessionData(sessionId)?.messages
+      .filter(message => message.role === 'assistant').at(-1);
+    expect(assistant).toBeDefined();
+    const blocks = JSON.parse(String(assistant?.content)) as Array<{
+      tool?: {
+        id?: string;
+        subagentLifecycle?: { status?: string; startedAt?: number; finishedAt?: number };
+        subagentCalls?: Array<{ isLoading?: boolean }>;
+      };
+    }>;
+    const card = blocks.find(block => block.tool?.id === 'spawn-card')?.tool;
+    expect(card?.subagentLifecycle).toEqual({ status: 'completed', startedAt: 100, finishedAt: 300 });
+    expect(card?.subagentCalls?.every(call => call.isLoading === false)).toBe(true);
+    expect(broadcastEvents.filter(event => event.event === 'chat:subagent-status').map(event => (
+      (event.data as { lifecycle?: { status?: string } }).lifecycle?.status
+    ))).toEqual(expect.arrayContaining(['running', 'completed']));
+  });
+
+  it('persists terminal-before-parent lifecycle when root flush materializes the card', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'root reply', completeDelayMs: 50 },
+    ]);
+    const sessionId = 'session-subagent-lifecycle-pending-parent';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'delegate'));
+    await waitFor(() => harness.runtime.sentMessages.includes('delegate'), 'pending parent admission');
+    harness.runtime.emitForTest({
+      kind: 'tool_use_start',
+      toolUseId: 'spawn-card-pending',
+      toolName: 'CollabAgent',
+      input: { tool: 'spawnAgent' },
+    });
+    harness.runtime.emitForTest({
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'spawn-card-pending',
+      status: 'running',
+      observedAt: 100,
+    });
+    harness.runtime.emitForTest({
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'spawn-card-pending',
+      status: 'completed',
+      observedAt: 300,
+    });
+
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const assistant = harness.sessionStore.getSessionData(sessionId)?.messages
+      .filter(message => message.role === 'assistant').at(-1);
+    const blocks = JSON.parse(String(assistant?.content)) as Array<{
+      tool?: {
+        id?: string;
+        subagentLifecycle?: { status?: string; startedAt?: number; finishedAt?: number };
+      };
+    }>;
+    expect(blocks.find(block => block.tool?.id === 'spawn-card-pending')?.tool?.subagentLifecycle)
+      .toEqual({ status: 'completed', startedAt: 100, finishedAt: 300 });
+  });
+
+  it('fails a missing child terminal live before discarding a failed root partial assistant', async () => {
+    const harness = await createHarness([
+      { kind: 'failure', error: 'root failed', partialText: 'partial', completeDelayMs: 50 },
+    ]);
+    const sessionId = 'session-subagent-lifecycle-failure';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'delegate and fail'));
+    await waitFor(() => harness.runtime.sentMessages.includes('delegate and fail'), 'failed subagent turn admission');
+    harness.runtime.emitForTest({
+      kind: 'tool_use_start',
+      toolUseId: 'spawn-card-failed',
+      toolName: 'CollabAgent',
+      input: { tool: 'spawnAgent' },
+    });
+    harness.runtime.emitForTest({ kind: 'tool_use_stop', toolUseId: 'spawn-card-failed' });
+    harness.runtime.emitForTest({
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'spawn-card-failed',
+      status: 'running',
+      observedAt: 100,
+    });
+
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const statuses = broadcastEvents.filter(event => event.event === 'chat:subagent-status').map(event => (
+      (event.data as { lifecycle?: { status?: string } }).lifecycle?.status
+    ));
+    expect(statuses).toEqual(expect.arrayContaining(['running', 'failed']));
+    expect(harness.sessionStore.getSessionData(sessionId)?.messages
+      .some(message => message.role === 'assistant')).toBe(false);
   });
 
   it('advances durable activity at external admission and terminal finalization', async () => {

@@ -83,6 +83,7 @@ function renderFilePath(path: string) {
 
 describe('FilePath tool chip — clickable file paths', () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     mocks.checkPaths.mockResolvedValue({ results: {} });
     mocks.checkLocalPaths.mockResolvedValue({ results: {} });
@@ -145,7 +146,7 @@ describe('FilePath tool chip — clickable file paths', () => {
 
     // Right-click still surfaces the shared file menu.
     fireEvent.contextMenu(chip);
-    expect(screen.getByText('预览')).toBeInTheDocument();
+    expect(await screen.findByText('预览')).toBeInTheDocument();
     expect(screen.getByText('引用')).toBeInTheDocument();
     expect(screen.getByText('打开')).toBeInTheDocument();
     expect(screen.getByText('打开所在文件夹')).toBeInTheDocument();
@@ -184,7 +185,7 @@ describe('FilePath tool chip — clickable file paths', () => {
     expect(screen.queryByText('打开')).not.toBeInTheDocument();
 
     fireEvent.click(more);
-    expect(screen.getByText('预览')).toBeInTheDocument();
+    expect(await screen.findByText('预览')).toBeInTheDocument();
     expect(screen.getByText('复制')).toBeInTheDocument();
     expect(screen.getByText('引用')).toBeInTheDocument();
     expect(screen.getByText('打开')).toBeInTheDocument();
@@ -233,42 +234,36 @@ describe('FilePath tool chip — clickable file paths', () => {
     expect(mocks.checkPaths).not.toHaveBeenCalledWith({ paths: [FILE_PATH] });
   });
 
-  it('keeps a rejected absolute path actionable and explains the unavailable target', async () => {
+  it('keeps a rejected absolute path plain and without file actions', async () => {
     const OUTSIDE = '/etc/passwd';
     mocks.checkLocalPaths.mockResolvedValue({ results: { [OUTSIDE]: { exists: false, type: 'file' } } });
     renderFilePath(OUTSIDE);
 
-    const chip = await waitFor(() => {
-      const el = screen.getByText(OUTSIDE);
-      expect(el).toHaveClass('cursor-pointer');
-      return el;
-    });
-    expect(mocks.checkLocalPaths).toHaveBeenCalledWith({ paths: [OUTSIDE], workspace: WORKSPACE });
-
+    await waitFor(() => expect(mocks.checkLocalPaths).toHaveBeenCalledWith({
+      paths: [OUTSIDE],
+      workspace: WORKSPACE,
+    }));
+    const chip = screen.getByText(OUTSIDE);
+    expect(chip).not.toHaveClass('cursor-pointer');
     fireEvent.click(chip);
-    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('文件不存在或无法访问'));
-
     fireEvent.contextMenu(chip);
-    expect(screen.getByText('复制')).toBeInTheDocument();
-    expect(screen.getByText('打开')).toBeInTheDocument();
+    expect(mocks.toastError).not.toHaveBeenCalled();
+    expect(screen.queryByText('复制')).not.toBeInTheDocument();
+    expect(screen.queryByText('打开')).not.toBeInTheDocument();
   });
 
-  it('keeps a non-existent path actionable with explicit failure and the product menu', async () => {
+  it('keeps a non-existent path plain and without the product menu', async () => {
     mocks.checkPaths.mockResolvedValue({ results: { [REL_MISSING]: { exists: false, type: 'file' } } });
     renderFilePath(MISSING_PATH);
 
-    const chip = await waitFor(() => {
-      const el = screen.getByText(MISSING_PATH);
-      expect(el).toHaveClass('cursor-pointer');
-      return el;
-    });
-
+    await waitFor(() => expect(mocks.checkPaths).toHaveBeenCalledWith({ paths: [REL_MISSING] }));
+    const chip = screen.getByText(MISSING_PATH);
+    expect(chip).not.toHaveClass('cursor-pointer');
     fireEvent.click(chip);
-    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('文件不存在或无法访问'));
-
     fireEvent.contextMenu(chip);
-    expect(screen.getByText('预览')).toBeInTheDocument();
-    expect(screen.getByText('打开')).toBeInTheDocument();
+    expect(mocks.toastError).not.toHaveBeenCalled();
+    expect(screen.queryByText('预览')).not.toBeInTheDocument();
+    expect(screen.queryByText('打开')).not.toBeInTheDocument();
   });
 
   it('omits 预览 for directories and labels them as folders', async () => {
@@ -287,8 +282,24 @@ describe('FilePath tool chip — clickable file paths', () => {
     expect(screen.queryByText('打开所在文件夹')).not.toBeInTheDocument();
 
     fireEvent.contextMenu(chip);
+    await screen.findByText('引用');
     expect(screen.queryByText('预览')).not.toBeInTheDocument();
     expect(screen.getByText('引用')).toBeInTheDocument();
     expect(screen.getByText('打开所在文件夹')).toBeInTheDocument();
+  });
+
+  it('supports keyboard activation and ignores clicks used for text selection', async () => {
+    mocks.checkPaths.mockResolvedValue({ results: { [REL_FILE]: { exists: true, type: 'file' } } });
+    renderFilePath(FILE_PATH);
+    const chip = await screen.findByRole('link', { name: FILE_PATH });
+    expect(chip).toHaveAttribute('tabindex', '0');
+
+    fireEvent.keyDown(chip, { key: 'Enter' });
+    await waitFor(() => expect(mocks.onFilePreviewExternal).toHaveBeenCalled());
+
+    mocks.onFilePreviewExternal.mockClear();
+    vi.spyOn(window, 'getSelection').mockReturnValue({ toString: () => FILE_PATH } as Selection);
+    fireEvent.click(chip);
+    expect(mocks.onFilePreviewExternal).not.toHaveBeenCalled();
   });
 });

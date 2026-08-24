@@ -28,17 +28,17 @@ import type { WorkbenchCreateAction } from '@/components/launcher/AddWorkspaceMe
 const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPanel'));
 import { useConfig } from '@/hooks/useConfig';
 import { useTaskCenterData } from '@/hooks/useTaskCenterData';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID, type Project, type PermissionMode, type McpServerDefinition, type WorkspaceTemplate, isProviderEnabled, isProjectActiveForUser, isProjectArchived, isProjectVisibleToUser, isSystemPresetProject } from '@/config/types';
+import { type Project, type PermissionMode, type McpServerDefinition, type WorkspaceTemplate, isProviderEnabled, isProjectActiveForUser, isProjectArchived, isProjectVisibleToUser, isSystemPresetProject } from '@/config/types';
 import { CUSTOM_EVENTS } from '../../shared/constants';
 import { normalizeWorkspacePathIdentity, workspacePathsEqual } from '../../shared/workspacePath';
 import {
     getAllMcpServers,
     getEnabledMcpServerIds,
-    isProviderAvailable,
+    isImageUnderstandingSelectionAvailable,
     resolveProvider,
     pairBuiltinSelection,
 } from '@/config/configService';
-import { patchAgentConfig, patchAgentProjectConfig, getAgentById, disableAgentAndStopChannels, enableAgentAndStartChannels } from '@/config/services/agentConfigService';
+import { patchAgentConfig, patchAgentProjectConfig, getAgentById, setAgentEnabledForLifecycle, stopAgentChannelsForLifecycle } from '@/config/services/agentConfigService';
 import { archiveProject, unarchiveProject } from '@/config/services/projectService';
 import { persistInputOptionChange } from '@/api/persistInputOption';
 import { createCronTask, startCronTask } from '@/api/cronTaskClient';
@@ -52,7 +52,6 @@ import {
 import {
     IMAGE_UNDERSTANDING_TOOL_ID,
     OFFICIAL_TOOLS,
-    isImageUnderstandingToolConfigured,
     normalizeOfficialToolIds,
     type OfficialToolId,
 } from '../../shared/official-tools';
@@ -354,13 +353,12 @@ export default function Launcher({ onLaunchProject, onOpenHistorySession, isStar
         return resolveProvider(id, providers, apiKeys, providerVerifyStatus);
     }, [launcherProviderId, selectedAgent, selectedWorkspace, config.defaultProviderId, providers, apiKeys, providerVerifyStatus]);
     const imageUnderstandingConfiguredForInput = useMemo(() => {
-        if (!isImageUnderstandingToolConfigured(config.officialToolSettings)) return false;
-        const selection = config.officialToolSettings?.imageUnderstanding;
-        const provider = providers.find(item => item.id === selection?.providerId);
-        if (!provider || isRuntimeBackedProvider(provider)) return false;
-        if (!isProviderAvailable(provider, apiKeys, providerVerifyStatus)) return false;
-        const model = provider.models.find(item => item.model === selection?.model);
-        return Array.isArray(model?.inputModalities) && model.inputModalities.includes('image');
+        return isImageUnderstandingSelectionAvailable(
+            providers,
+            apiKeys,
+            providerVerifyStatus,
+            config.officialToolSettings,
+        );
     }, [apiKeys, config.officialToolSettings, providerVerifyStatus, providers]);
     const launcherOfficialToolNeedsConfig = useMemo(
         () => ({ [IMAGE_UNDERSTANDING_TOOL_ID]: !imageUnderstandingConfiguredForInput }),
@@ -986,9 +984,8 @@ export default function Launcher({ onLaunchProject, onOpenHistorySession, isStar
         handleLaunch(project, session.id, historyEntrySource);
     }, [handleLaunch]);
 
-    const [overlayMode, setOverlayMode] = useState<'default' | 'search'>('default');
-    const handleOpenOverlay = useCallback((mode: 'default' | 'search' = 'default') => { track('task_center_open', {}); setOverlayMode(mode); setShowOverlay(true); }, []);
-    const handleCloseOverlay = useCallback(() => { setShowOverlay(false); setOverlayMode('default'); }, []);
+    const handleOpenOverlay = useCallback(() => { track('task_center_open', {}); setShowOverlay(true); }, []);
+    const handleCloseOverlay = useCallback(() => { setShowOverlay(false); }, []);
 
     // Stable callback for overlay session open (avoids inline function in render)
     const handleOverlayOpenTask = useCallback((session: SessionMetadata, project: Project) => {
@@ -1092,7 +1089,10 @@ export default function Launcher({ onLaunchProject, onOpenHistorySession, isStar
             const wasProactive = agent?.enabled === true;
             const archivedProject = await archiveProject(currentProject.id, { agentEnabledBeforeArchive: wasProactive });
             if (!archivedProject) throw new Error(`Project ${currentProject.id} not found`);
-            if (agent && wasProactive) await disableAgentAndStopChannels(agent);
+            if (agent && wasProactive) {
+                await stopAgentChannelsForLifecycle(agent);
+                await setAgentEnabledForLifecycle(agent.id, false);
+            }
             await refreshConfig();
             toastRef.current.success(t('toasts.workspaceArchived'));
         } catch (err) {
@@ -1113,7 +1113,7 @@ export default function Launcher({ onLaunchProject, onOpenHistorySession, isStar
             if (!unarchivedProject) throw new Error(`Project ${currentProject.id} not found`);
             if (shouldRestoreAgent && currentProject.agentId) {
                 try {
-                    await enableAgentAndStartChannels(currentProject.agentId);
+                    await setAgentEnabledForLifecycle(currentProject.agentId, true);
                 } catch (err) {
                     await archiveProject(currentProject.id, {
                         archivedAtIso: currentProject.archivedAt,
@@ -1341,7 +1341,6 @@ export default function Launcher({ onLaunchProject, onOpenHistorySession, isStar
                         onOpenSession={handleOverlayOpenTask}
                         onClose={handleCloseOverlay}
                         taskCenterData={taskCenterData}
-                        initialMode={overlayMode}
                     />
                 </Suspense>
             )}

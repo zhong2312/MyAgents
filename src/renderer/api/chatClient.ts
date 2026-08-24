@@ -12,6 +12,7 @@ import type {
 
 import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 import type { SystemInitInfo } from '../../shared/types/system';
+import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
 import type { SessionState } from '@/context/TabContext';
 import { onEvent } from './eventBus';
 
@@ -105,6 +106,9 @@ export const chatClient = {
       isError?: boolean;
     }) => void
   ) => onEvent('chat:subagent-tool-result-complete', callback),
+  onSubagentStatus: (
+    callback: (data: { parentToolUseId: string; lifecycle: SubagentLifecycle }) => void
+  ) => onEvent('chat:subagent-status', callback),
   onLogsSnapshot: (callback: (data: { lines: string[] }) => void) => onEvent('chat:logs', callback),
   onLog: (callback: (line: string) => void) => onEvent('chat:log', callback),
   onAgentError: (callback: (payload: ChatAgentErrorPayload) => void) =>

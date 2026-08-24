@@ -5,7 +5,6 @@ import {
   Copy,
   Eye,
   FilePlus,
-  Folder,
   FolderOpen,
   FolderPlus,
   GitBranch,
@@ -53,6 +52,7 @@ import {
 } from "@dnd-kit/core";
 import { useTranslation } from "react-i18next";
 
+import { FileIcon } from "@/components/file-icon";
 import { useTabApi } from "@/context/TabContext";
 import { useWorkspaceFileService } from "@/hooks/useWorkspaceFileService";
 import type {
@@ -66,7 +66,6 @@ import {
   isRichDocPreviewable,
   getRichDocKind,
 } from "../../../shared/fileTypes";
-import { getFileIcon } from "@/utils/fileIcons";
 import { copyPlainText } from "@/utils/clipboard";
 
 import { useImagePreview } from "@/context/ImagePreviewContext";
@@ -273,7 +272,7 @@ const DirectoryPanel = memo(
     const [activeDragItem, setActiveDragItem] = useState<{
       paths: string[];
       name: string;
-      icon: React.ElementType;
+      isDir: boolean;
     } | null>(null);
     const [internalDropTarget, setInternalDropTarget] = useState<string | null>(
       null,
@@ -306,6 +305,7 @@ const DirectoryPanel = memo(
       setSearchQuery,
       isSearching,
       isRefreshingSearch,
+      folderResults,
       searchResults,
       expandedFiles,
       setExpandedFiles,
@@ -742,7 +742,13 @@ const DirectoryPanel = memo(
     );
 
     const handleRevealSearchResultInTree = useCallback(
-      async (path: string, options?: { silentIfMissing?: boolean }) => {
+      async (
+        path: string,
+        options?: {
+          silentIfMissing?: boolean;
+          expandTargetDirectory?: boolean;
+        },
+      ) => {
         const requestId = ++treeRevealRequestIdRef.current;
         const ancestors = ancestorDirectoryPaths(path);
         // "Missing" is a real error for search/chat reveals (the file should
@@ -781,6 +787,20 @@ const DirectoryPanel = memo(
         if (targetResult.status !== "found") {
           reportMissing();
           return;
+        }
+
+        if (
+          options?.expandTargetDirectory &&
+          targetResult.meta.data.type === "dir"
+        ) {
+          openPath(path);
+          if (targetResult.meta.data.loaded === false) {
+            await expandDir(path);
+          }
+          if (requestId !== treeRevealRequestIdRef.current) {
+            return;
+          }
+          await waitForTreeFrame();
         }
 
         setIsSearchMode(false);
@@ -1508,9 +1528,8 @@ const DirectoryPanel = memo(
           selectedNodes.length > 1
             ? selectedNodes.map((n) => n.path)
             : [data.path];
-        const icon = data.type === "dir" ? Folder : getFileIcon(data.name);
         activeDragPathsRef.current = paths;
-        setActiveDragItem({ paths, name: data.name, icon });
+        setActiveDragItem({ paths, name: data.name, isDir: data.type === "dir" });
       },
       [selectedNodes],
     );
@@ -3275,6 +3294,7 @@ const DirectoryPanel = memo(
               >
                 {isSearchMode ? (
                   <FileSearchResults
+                    folders={folderResults}
                     results={searchResults}
                     isLoading={isSearching}
                     isRefreshing={isRefreshingSearch}
@@ -3287,6 +3307,11 @@ const DirectoryPanel = memo(
                         if (next.has(path)) next.delete(path);
                         else next.add(path);
                         return next;
+                      });
+                    }}
+                    onFolderClick={(hit) => {
+                      void handleRevealSearchResultInTree(hit.path, {
+                        expandTargetDirectory: true,
                       });
                     }}
                     onFileClick={(hit) => handlePreviewSearchHit(hit)}
@@ -3355,7 +3380,10 @@ const DirectoryPanel = memo(
                     <DragOverlay dropAnimation={null}>
                       {activeDragItem && (
                         <div className="flex items-center gap-2 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-1 text-sm shadow-lg">
-                          <activeDragItem.icon className="h-3.5 w-3.5 flex-shrink-0 text-[var(--accent-warm)]" />
+                          <FileIcon
+                            name={activeDragItem.name}
+                            nodeKind={activeDragItem.isDir ? "directory" : "file"}
+                          />
                           <span className="font-medium text-[var(--ink)]">
                             {activeDragItem.name}
                           </span>

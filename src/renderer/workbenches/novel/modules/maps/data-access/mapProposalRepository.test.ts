@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createNovelMapProposalRepository } from "./mapProposalRepository";
+import { createNovelMapRepository } from "./mapRepository";
 import {
   createEmptyMapArtwork,
   serializeMapDocument,
@@ -148,6 +149,63 @@ describe("createNovelMapProposalRepository", () => {
       storage.getText("world/maps/proposals/proposal-1/proposal.json")!,
     );
     expect(applied.operations[0].status).toBe("applied");
+  });
+
+  it("采纳的设定驱动候选可重载、编辑并保留实体引用", async () => {
+    const candidate = mapValue("map-xuanhuan", "九州玄幻地图");
+    candidate.features = [
+      {
+        id: "feature-sword-sect",
+        kind: "marker",
+        name: "万剑宗",
+        entityRef: { kind: "faction", id: "faction-sword-sect" },
+        layerId: "layer-main",
+        points: [{ x: 640, y: 280 }],
+        timeFrom: null,
+        timeTo: null,
+        props: { showLabel: "true", component: "sect" },
+        description: "依北境雪岭而建的剑修宗门。",
+      },
+    ];
+    const proposal = manifest();
+    proposal.operations[0] = {
+      ...proposal.operations[0],
+      candidateId: "candidate-xuanhuan",
+      valuePath: "candidates/candidate-xuanhuan.json",
+    };
+    const storage = new NovelMemoryStorage({
+      "world/maps/proposals/proposal-1/proposal.json":
+        serializeMapProposalManifest(proposal),
+      "world/maps/proposals/proposal-1/candidates/candidate-xuanhuan.json":
+        serializeMapDocument(candidate),
+    });
+    const proposalRepository = createNovelMapProposalRepository(storage);
+    const mapRepository = createNovelMapRepository(storage);
+
+    await proposalRepository.apply("proposal-1", ["candidate-xuanhuan"]);
+
+    const accepted = await mapRepository.loadMap("map-xuanhuan");
+    expect(accepted.map.features).toEqual([
+      expect.objectContaining({
+        name: "万剑宗",
+        entityRef: { kind: "faction", id: "faction-sword-sect" },
+      }),
+    ]);
+
+    const saved = await mapRepository.saveMap(accepted, {
+      ...accepted.map,
+      features: accepted.map.features.map((feature) =>
+        feature.id === "feature-sword-sect"
+          ? { ...feature, points: [{ x: 720, y: 320 }] }
+          : feature,
+      ),
+    });
+    const reloaded = await mapRepository.loadMap(saved.map.id);
+    expect(reloaded.map.features[0]?.points).toEqual([{ x: 720, y: 320 }]);
+    expect(reloaded.map.features[0]?.entityRef).toEqual({
+      kind: "faction",
+      id: "faction-sword-sect",
+    });
   });
 
   it("采纳越界地图候选时由正式仓储延展画布", async () => {

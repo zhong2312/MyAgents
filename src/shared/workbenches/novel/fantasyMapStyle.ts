@@ -1,4 +1,5 @@
 import type { FantasyFeature } from "./fantasyMapGenerator";
+import type { MapGenerationNaming } from "./mapGenerationPlan";
 
 /** 地图生成的产品风格契约。它不是 Azgaar 的皮肤名称，而是导出适配层的稳定语义。 */
 export const FANTASY_MAP_STYLE_ID = "xuanhuan-zh" as const;
@@ -56,7 +57,18 @@ function layerKey(feature: Pick<StyleFeature, "kind" | "props">): string {
   return "marker";
 }
 
-function indexedName(key: string, seed: string, index: number): string {
+function indexedName(
+  key: string,
+  seed: string,
+  index: number,
+  naming?: MapGenerationNaming,
+): string {
+  const plannedNames = naming?.entries.filter((entry) => entry.role === key);
+  if (plannedNames && plannedNames.length > 0) {
+    return plannedNames[
+      stableHash(`${seed}:${key}:${index}`) % plannedNames.length
+    ]!.name;
+  }
   const pool = NAME_POOLS[key] ?? NAME_POOLS.marker;
   const value =
     pool[stableHash(`${seed}:${key}:${index}`) % pool.length] ?? pool[0]!;
@@ -64,14 +76,30 @@ function indexedName(key: string, seed: string, index: number): string {
   return duplicateIndex > 0 ? `${value}${duplicateIndex + 1}` : value;
 }
 
+function plannedName(
+  key: string,
+  seed: string,
+  index: number,
+  naming: MapGenerationNaming,
+): string {
+  const plannedNames = naming.entries.filter((entry) => entry.role === key);
+  // 完整正式规划会由服务端保证每种基础地形类别均有命名。此处保留
+  // 同一个确定性回退，仅保护独立样式函数被旧调用直接复用的场景。
+  if (plannedNames.length === 0) return indexedName(key, seed, index);
+  return plannedNames[
+    stableHash(`${seed}:${key}:${index}`) % plannedNames.length
+  ]!.name;
+}
+
 /** 中文名优先；仅对 Azgaar 的英文随机名或兼容生成器的占位名重命名。 */
 export function fantasyChineseName(
   feature: Pick<StyleFeature, "kind" | "name" | "props">,
   seed: string,
   index: number,
+  naming?: MapGenerationNaming,
 ): string {
   if (HAN_PATTERN.test(feature.name)) return feature.name;
-  return indexedName(layerKey(feature), seed, index);
+  return indexedName(layerKey(feature), seed, index, naming);
 }
 
 function styleProps(
@@ -80,27 +108,94 @@ function styleProps(
   index: number,
 ): Record<string, string> {
   const key = layerKey(feature);
+  const role = feature.props.entityRole;
+  const terrain = feature.props.terrain;
   const palette = ["#8d624c", "#6f8065", "#71618c", "#9a7545", "#567789"];
   const paletteIndex = stableHash(`${seed}:palette:${index}`) % palette.length;
+  const isMysticSite = [
+    "sect",
+    "holy-land",
+    "secret-realm",
+    "forbidden-land",
+    "ruin",
+    "demon-den",
+    "portal",
+    "battlefield",
+  ].includes(role ?? "");
+  const label =
+    role === "realm" || feature.props.spatialRole === "realm"
+      ? { font: "atlas-serif", size: "30", weight: "700", priority: "6" }
+      : role === "region" || feature.props.spatialRole === "region"
+        ? { font: "atlas-serif", size: "24", weight: "700", priority: "5" }
+        : role === "capital"
+          ? { font: "atlas-serif", size: "20", weight: "700", priority: "5" }
+          : isMysticSite
+            ? { font: "cartographer", size: "16", weight: "600", priority: "4" }
+            : role === "mountain" || role === "vein"
+              ? {
+                  font: "atlas-serif",
+                  size: "18",
+                  weight: "600",
+                  priority: "4",
+                }
+              : role === "waterway" || terrain === "river"
+                ? {
+                    font: "cartographer",
+                    size: "16",
+                    weight: "600",
+                    priority: "3",
+                  }
+                : key === "state"
+                  ? {
+                      font: "atlas-serif",
+                      size: "25",
+                      weight: "700",
+                      priority: "5",
+                    }
+                  : key === "province" || key === "region"
+                    ? {
+                        font: "atlas-serif",
+                        size: "17",
+                        weight: "700",
+                        priority: "4",
+                      }
+                    : key === "burg"
+                      ? {
+                          font: "humanist",
+                          size: "13",
+                          weight: "700",
+                          priority: "3",
+                        }
+                      : {
+                          font: "cartographer",
+                          size: "11",
+                          weight: "600",
+                          priority: "2",
+                        };
   const props: Record<string, string> = {
     ...feature.props,
     fantasyStyle: FANTASY_MAP_STYLE_ID,
-    labelFont: "serif-zh",
+    labelFont: label.font,
     labelColor: "#35271f",
-    labelHalo: "#f4e5c6",
-    labelSize:
-      key === "state"
-        ? "25"
-        : key === "province"
-          ? "17"
-          : key === "burg"
-            ? "13"
-            : "11",
+    labelHaloColor: "#f4e5c6",
+    labelSize: label.size,
+    labelWeight: label.weight,
+    labelPriority:
+      feature.props.labelPriority ?? feature.props.importance ?? label.priority,
   };
+  if (role === "waterway" || terrain === "river") {
+    props.labelColor = "#284f62";
+    props.labelHaloColor = "#edf3ed";
+    props.labelItalic = "true";
+    props.labelFollowPath = "true";
+  }
+  if (role === "mountain" || role === "vein") {
+    props.labelFollowPath = "true";
+  }
   if (feature.props.azgaarLayer) props.azgaarShowLabel = "true";
   switch (key) {
     case "region":
-      if (feature.props.terrain === "coast") {
+      if (terrain === "coast") {
         props.color = "#6f503d";
         props.fill = "#d8c49a";
         props.lineWidth = "2.2";
@@ -146,12 +241,20 @@ function styleProps(
 export function localizeFantasyMapFeatures<T extends StyleFeature>(
   features: readonly T[],
   seed: string,
+  naming?: MapGenerationNaming,
 ): T[] {
-  return features.map((feature, index) => ({
-    ...feature,
-    name: fantasyChineseName(feature, seed, index),
-    props: styleProps(feature, seed, index),
-  }));
+  return features.map((feature, index) => {
+    const { generatedName, ...persistedProps } = feature.props;
+    const normalizedFeature = { ...feature, props: persistedProps };
+    return {
+      ...feature,
+      name:
+        generatedName === "true" && naming
+          ? plannedName(layerKey(normalizedFeature), seed, index, naming)
+          : fantasyChineseName(normalizedFeature, seed, index, naming),
+      props: styleProps(normalizedFeature, seed, index),
+    };
+  });
 }
 
 /**

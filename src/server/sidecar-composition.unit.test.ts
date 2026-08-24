@@ -53,6 +53,7 @@ describe("Sidecar production composition", () => {
     ["GET", "/api/cc-plugin/list", "common"],
     ["POST", "/api/workbench-agent/configure", "session"],
     ["POST", "/api/workbench-ai/run", "global"],
+    ["POST", "/api/workbench-dev-storage/request", "common"],
     [
       "GET",
       "/api/workbench-ai/run/7ed0f6ee-0000-4000-8000-000000000000",
@@ -74,6 +75,27 @@ describe("Sidecar production composition", () => {
     expect(
       classifySidecarRequest(request("/api/future-owner", "POST")),
     ).toBeNull();
+  });
+
+  it('routes one-shot Grok verification through the Global provider owner', async () => {
+    const grokVerification = request('/api/grok/verify', 'POST');
+    expect(classifySidecarRequest(grokVerification)).toBe('global');
+
+    const globalHandler = vi.fn(async () => new Response('verified', { status: 202 }));
+    const globalResponse = await composeSidecarRequestHandler(
+      resolveSidecarComposition('global', false),
+      globalHandler,
+    )(grokVerification);
+    expect(globalResponse.status).toBe(202);
+    expect(globalHandler).toHaveBeenCalledOnce();
+
+    const sessionHandler = vi.fn(async () => new Response('wrong owner'));
+    const sessionResponse = await composeSidecarRequestHandler(
+      resolveSidecarComposition('session', false),
+      sessionHandler,
+    )(request('/api/grok/verify', 'POST'));
+    expect(sessionResponse.status).toBe(404);
+    expect(sessionHandler).not.toHaveBeenCalled();
   });
 
   it.each([

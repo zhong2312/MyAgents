@@ -65,6 +65,11 @@ describe("mapRoutes", () => {
     expect(
       getMapRouteStyle(route({ terrain: "river", routeStyle: "wall" })),
     ).toBeNull();
+    expect(getMapRouteStyle(route({ routeStyle: "river" }))).toMatchObject({
+      id: "river",
+      color: "#3b83a5",
+      casingColor: "#315d6c",
+    });
   });
 
   it("新增水系、道路、奇幻边界和宇宙航线均解析为专用路线样式", () => {

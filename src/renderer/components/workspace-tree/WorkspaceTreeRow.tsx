@@ -1,8 +1,8 @@
-import { ChevronRight, Folder, FolderOpen, Loader2 } from "lucide-react";
+import { ChevronRight, Loader2 } from "lucide-react";
 import { memo, useCallback } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 
-import { getFileIconElement } from "@/utils/fileIcons";
+import { FileIcon } from "@/components/file-icon";
 
 import { OverflowNameTooltip } from "./OverflowNameTooltip";
 import type { VisibleTreeRow } from "./treeTypes";
@@ -117,17 +117,11 @@ export const WorkspaceTreeRow = memo(function WorkspaceTreeRow({
           />
         ) : null}
       </span>
-      {row.isDir ? (
-        row.isOpen ? (
-          <FolderOpen className="h-3.5 w-3.5 flex-shrink-0 text-[var(--accent-warm)]/70" />
-        ) : (
-          <Folder className="h-3.5 w-3.5 flex-shrink-0 text-[var(--accent-warm)]/70" />
-        )
-      ) : (
-        getFileIconElement(row.data.name, {
-          className: "h-3.5 w-3.5 flex-shrink-0 text-[var(--accent-warm)]",
-        })
-      )}
+      <FileIcon
+        name={row.data.name}
+        nodeKind={row.isDir ? "directory" : "file"}
+        expanded={row.isOpen}
+      />
       <OverflowNameTooltip
         label={row.data.name}
         className="min-w-0 flex-1 truncate font-medium"

@@ -3,14 +3,20 @@ import type { AgentInput, BackgroundTaskStats, SubagentToolCall, ToolUseSimple, 
 
 import Markdown from '@/components/Markdown';
 import { formatDuration } from '@/components/tools/toolBadgeConfig';
-import { isBackgroundSubagentTool, isSubagentCallRunning, isSubagentContainerRunning } from '@/components/tools/subagentActivity';
+import {
+  getSubagentContainerDurationMs,
+  getSubagentContainerLifecycleStatus,
+  isBackgroundSubagentTool,
+  isSubagentCallRunning,
+  isSubagentContainerRunning,
+} from '@/components/tools/subagentActivity';
 import ToolAttachmentGallery from '@/components/tools/ToolAttachmentGallery';
 import FilePatchTool from '@/components/tools/FilePatchTool';
 import { ExpandableResult } from '@/components/tools/utils';
 import { useTabApiOptional, useTabStateOptional } from '@/context/TabContext';
 import { useBackgroundTaskPolling } from '@/hooks/useBackgroundTaskPolling';
 import { getBackgroundTaskStatus, isTerminalStatus, BACKGROUND_TASK_STATUS_EVENT, type BackgroundTaskTerminalStatus } from '@/utils/backgroundTaskStatus';
-import { CheckCircle, ChevronDown, ChevronRight, Clock, Coins, Loader2, Terminal, Wrench, XCircle } from 'lucide-react';
+import { CheckCircle, ChevronDown, ChevronRight, Clock, Coins, Loader2, StopCircle, Terminal, Wrench, XCircle } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Virtuoso } from 'react-virtuoso';
@@ -258,11 +264,14 @@ function TaskCompletedStats({
   const { t } = useTranslation('chat');
   const isSuccess = result.status === 'completed';
   const isError = result.status === 'error';
+  const isStopped = result.status === 'stopped';
 
   const statusIcon = isSuccess ? (
     <CheckCircle className="size-3.5" />
   ) : isError ? (
     <XCircle className="size-3.5" />
+  ) : isStopped ? (
+    <StopCircle className="size-3.5" />
   ) : (
     <Loader2 className="size-3.5 animate-spin" />
   );
@@ -270,6 +279,7 @@ function TaskCompletedStats({
   const statusLabel =
     isSuccess ? t('shell.toolChrome.task.statusCompleted')
     : isError ? t('shell.toolChrome.task.statusError')
+    : isStopped ? t('shell.toolChrome.task.statusStopped')
     : t('shell.toolChrome.task.statusRunning');
 
   const totalTokens = stats
@@ -283,12 +293,16 @@ function TaskCompletedStats({
     ? 'bg-[var(--success)]/10 hover:bg-[var(--success)]/15'
     : isError
       ? 'bg-[var(--error)]/10 hover:bg-[var(--error)]/15'
+      : isStopped
+        ? 'bg-[var(--warning)]/10 hover:bg-[var(--warning)]/15'
       : 'bg-[var(--accent)]/5 hover:bg-[var(--accent)]/10';
 
   const textColor = isSuccess
     ? 'text-[var(--success)]'
     : isError
       ? 'text-[var(--error)]'
+      : isStopped
+        ? 'text-[var(--warning)]'
       : 'text-[var(--ink-muted)]';
 
   return (
@@ -575,6 +589,9 @@ export default function TaskTool({ tool }: TaskToolProps) {
   const { t } = useTranslation('chat');
   const input = tool.parsedInput as AgentInput;
   const isRunning = isSubagentContainerRunning(tool);
+  const lifecycleStatus = getSubagentContainerLifecycleStatus(tool);
+  const lifecycleDuration = getSubagentContainerDurationMs(tool);
+  const effectiveStartTime = tool.subagentLifecycle?.startedAt ?? tool.taskStartTime;
   const [traceExpanded, setTraceExpanded] = useState(false);
   const statsBarRef = useRef<HTMLDivElement>(null);
 
@@ -688,10 +705,10 @@ export default function TaskTool({ tool }: TaskToolProps) {
     <div className="flex flex-col gap-3 text-sm select-none">
       {/* 1. 统计栏 (第一行，可展开 Trace) */}
       <div ref={statsBarRef}>
-        {isRunning && tool.taskStartTime && tool.taskStats ? (
+        {isRunning && effectiveStartTime ? (
           <TaskRunningStats
-            startTime={tool.taskStartTime}
-            stats={tool.taskStats}
+            startTime={effectiveStartTime}
+            stats={tool.taskStats ?? { toolCount: tool.subagentCalls?.length ?? 0, inputTokens: 0, outputTokens: 0 }}
             hasTrace={hasTrace}
             traceExpanded={traceExpanded}
             onToggleTrace={handleToggleTrace}
@@ -707,6 +724,19 @@ export default function TaskTool({ tool }: TaskToolProps) {
           <TaskCompletedStats
             result={parsedResult}
             stats={tool.taskStats}
+            hasTrace={hasTrace}
+            traceExpanded={traceExpanded}
+            onToggleTrace={handleToggleTrace}
+          />
+        ) : lifecycleStatus && lifecycleStatus !== 'running' ? (
+          <TaskCompletedStats
+            result={{
+              status: lifecycleStatus === 'completed'
+                ? 'completed'
+                : lifecycleStatus === 'interrupted' ? 'stopped' : 'error',
+              totalDurationMs: lifecycleDuration ?? undefined,
+            }}
+            stats={tool.taskStats ?? { toolCount: tool.subagentCalls?.length ?? 0, inputTokens: 0, outputTokens: 0 }}
             hasTrace={hasTrace}
             traceExpanded={traceExpanded}
             onToggleTrace={handleToggleTrace}

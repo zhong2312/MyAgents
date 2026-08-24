@@ -22,6 +22,7 @@ import {
   managedCodexRuntimePermissionToProviderPermission,
 } from '../providerExecution';
 import type { OfficialToolId } from '../official-tools';
+import type { ProjectCapabilitySelectionV1 } from '../projectCapabilities';
 
 /**
  * Channel type — reuses ImPlatform, not redefined
@@ -132,6 +133,9 @@ export interface AgentConfig {
   enabledPluginIds?: string[];
   /** MyAgents official CLI tools enabled for this Agent. Separate from MCP/plugin ids. */
   enabledOfficialToolIds?: OfficialToolId[];
+  /** Per-project Skill/Command disabled overrides. The owning Project selects
+   * this Agent by stable `agentId`; workspace files never mirror the value. */
+  capabilitySelection?: ProjectCapabilitySelectionV1;
 
   // Heartbeat (Agent-level, shared across channels)
   heartbeat?: HeartbeatConfig;

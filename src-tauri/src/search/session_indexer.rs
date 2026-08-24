@@ -178,19 +178,6 @@ impl SessionIndex {
             .unwrap()
             .write_session_offset(session_id, offset);
     }
-
-    #[cfg(test)]
-    fn disable_merging(&self) {
-        self.state
-            .read()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .writer
-            .lock()
-            .unwrap()
-            .set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
-    }
 }
 
 impl SessionIndexState {
@@ -1752,17 +1739,10 @@ mod tests {
         let transcript_before = fs::read(&jsonl_path).unwrap();
 
         let index = SessionIndex::new(index_dir.clone(), data_dir.clone()).unwrap();
-        index.disable_merging();
         index.index_all_sessions(&data_dir).unwrap();
         assert_eq!(
             index.search("recoverableunique", 10).unwrap().total_count,
             1
-        );
-        assert_eq!(index.search("keeperunique", 10).unwrap().total_count, 1);
-        index.delete_session(session_id).unwrap();
-        assert_eq!(
-            index.search("recoverableunique", 10).unwrap().total_count,
-            0
         );
         assert_eq!(index.search("keeperunique", 10).unwrap().total_count, 1);
 
@@ -1773,20 +1753,28 @@ mod tests {
         fs::write(&metadata_path, updated_metadata).unwrap();
         let metadata_before = fs::read(&metadata_path).unwrap();
 
-        let index_paths: Vec<PathBuf> = fs::read_dir(&index_dir)
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .collect();
-        let delete_segment = index_paths
-            .iter()
-            .find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("del"))
-            .unwrap_or_else(|| {
-                panic!("delete commit should create a Tantivy .del segment: {index_paths:?}")
-            })
-            .clone();
         drop(index);
-        fs::remove_file(delete_segment).unwrap();
+
+        // Construct the corrupt state directly. Tantivy may optimize a real
+        // delete into a segment rewrite, so relying on it to emit a `.del`
+        // file makes this recovery test platform-dependent.
+        let index_meta_path = index_dir.join("meta.json");
+        let mut index_meta: serde_json::Value =
+            serde_json::from_slice(&fs::read(&index_meta_path).unwrap()).unwrap();
+        let opstamp = index_meta["opstamp"].as_u64().unwrap();
+        let segment = index_meta["segments"]
+            .as_array_mut()
+            .and_then(|segments| segments.first_mut())
+            .unwrap();
+        segment["deletes"] = json!({
+            "num_deleted_docs": 1,
+            "opstamp": opstamp,
+        });
+        fs::write(
+            &index_meta_path,
+            serde_json::to_vec_pretty(&index_meta).unwrap(),
+        )
+        .unwrap();
 
         let index = SessionIndex::new(index_dir, data_dir.clone()).unwrap();
         index.index_all_sessions(&data_dir).unwrap();

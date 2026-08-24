@@ -10,8 +10,6 @@ import {
   USER_IMAGE_ATTACHMENT_MAX_BYTES,
 } from '../../shared/fileTypes';
 import { IMAGE_UNDERSTANDING_TOOL_ID } from '../../shared/official-tools';
-import { isProviderEnabled } from '../../shared/config-types';
-import { isRuntimeBackedProvider } from '../../shared/providerExecution';
 import {
   buildClaudeSessionEnv,
   resolveClaudeCodeCli,
@@ -20,7 +18,6 @@ import {
 import type { ProviderEnv } from '../provider-types';
 import {
   findEffectiveProvider,
-  getAllEffectiveProviders,
   getEffectiveOfficialToolIdsForSession,
   loadConfig,
   resolveImageUnderstandingToolAvailability,
@@ -58,13 +55,6 @@ const MIME_BY_EXT: Record<string, string> = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
 };
-
-export interface VisionModelOption {
-  providerId: string;
-  providerName: string;
-  model: string;
-  modelName: string;
-}
 
 export interface VisionAnalyzeInput {
   workspacePath?: string | null;
@@ -116,29 +106,6 @@ workspace references. URLs are not supported.
 For long or quoted inspection instructions, write a text file inside the current
 workspace and pass it with --prompt-file. Prompt files are resolved with the same
 workspace safety boundary as image paths; arbitrary absolute paths are rejected.`;
-}
-
-export function listVisionModelOptions(config: AdminAppConfig = loadConfig()): VisionModelOption[] {
-  const options: VisionModelOption[] = [];
-  for (const provider of getVisionProviders(config)) {
-    const providerId = String(provider.id);
-    const providerName = typeof provider.name === 'string' ? provider.name : providerId;
-    const models = Array.isArray(provider.models) ? provider.models : [];
-    for (const entry of models) {
-      if (!entry || typeof entry !== 'object') continue;
-      const model = (entry as Record<string, unknown>).model;
-      const modalities = (entry as Record<string, unknown>).inputModalities;
-      if (typeof model !== 'string' || !Array.isArray(modalities) || !modalities.includes('image')) continue;
-      const modelName = (entry as Record<string, unknown>).modelName;
-      options.push({
-        providerId,
-        providerName,
-        model,
-        modelName: typeof modelName === 'string' && modelName.trim() ? modelName : model,
-      });
-    }
-  }
-  return options;
 }
 
 export async function analyzeImages(input: VisionAnalyzeInput): Promise<VisionAnalyzeResult> {
@@ -202,11 +169,6 @@ export async function analyzeImages(input: VisionAnalyzeInput): Promise<VisionAn
     })),
     text,
   };
-}
-
-function getVisionProviders(config: AdminAppConfig): Array<Record<string, unknown> & { id: string }> {
-  return getAllEffectiveProviders(config)
-    .filter(provider => isProviderEnabled(provider) && !isRuntimeBackedProvider(provider));
 }
 
 function materializeVisionProviderEnv(

@@ -31,6 +31,7 @@ import { useThoughtTagCandidates } from '@/hooks/useThoughtTagCandidates';
 import { useFileDropZone } from '@/hooks/useFileDropZone';
 import { useTauriFileDrop } from '@/hooks/useTauriFileDrop';
 import { hasOverlayLayer } from '@/utils/closeLayer';
+import { shouldShowBuiltinSdkSlashCommands } from '@/utils/runtimeUiProjection';
 import { CUSTOM_EVENTS } from '@/../shared/constants';
 import { type Project, type Provider, type PermissionMode, type ProviderVerifyStatus } from '@/config/types';
 import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode } from '../../../shared/types/runtime';
@@ -192,6 +193,15 @@ export default memo(function BrandSection({
     const [thoughtRefreshKey, setThoughtRefreshKey] = useState(0);
     // Gracefully degrade in browser dev mode — ModeSegment is Tauri-only.
     const modeSegmentEnabled = taskCenterAvailable();
+
+    // `runtime` is present for user-managed external CLIs. Managed Codex keeps
+    // provider-style input chrome, so its execution Runtime comes from the
+    // selected Provider instead. Slash capabilities must follow that execution
+    // identity, not the chrome projection.
+    const inputExecutionRuntime: RuntimeType = runtime
+        ?? (provider?.execution?.kind === 'runtime-backed'
+            ? provider.execution.runtime
+            : 'builtin');
 
     // Thought history — fetched once per mount (and after a just-created
     // thought, via the explicit reload below) to feed the `#` autocomplete
@@ -637,6 +647,7 @@ export default memo(function BrandSection({
                                 onCronSettings={handleOpenCronSettings}
                                 onCronCancel={handleCancelCronDraft}
                                 onSlashAction={handleSlashAction}
+                                showBuiltinSdkSlashCommands={shouldShowBuiltinSdkSlashCommands(inputExecutionRuntime)}
                                 apiKeys={apiKeys}
                                 providerVerifyStatus={providerVerifyStatus}
                                 workspaceMcpEnabled={workspaceMcpEnabled}
@@ -695,7 +706,7 @@ export default memo(function BrandSection({
                      *  shows recent thoughts. */}
                     {mode === 'task' && (
                         <div
-                            className="launcher-below-input-stack absolute left-0 right-0 top-full mt-3 flex flex-col gap-4"
+                            className="launcher-below-input-stack absolute left-0 right-0 top-full mt-2 flex flex-col gap-4"
                         >
                             <div className="w-full">
                                 <LauncherInputContextRow

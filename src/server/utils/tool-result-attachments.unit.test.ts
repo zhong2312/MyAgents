@@ -4,7 +4,41 @@ import {
   appendOmittedImageNote,
   classifyToolAttachmentPresentation,
   extractToolResultRenderParts,
+  normalizeSdkToolUseResult,
 } from './tool-result-attachments';
+
+describe('normalizeSdkToolUseResult', () => {
+  it('unwraps SDK 0.3.232+ subagent MCP metadata envelopes', () => {
+    const metadata = { traceId: 'private-metadata' };
+    expect(normalizeSdkToolUseResult({
+      content: [{ type: 'text', text: 'visible result' }],
+      _meta: metadata,
+    })).toEqual({
+      content: [{ type: 'text', text: 'visible result' }],
+      metadata,
+      isMetadataEnvelope: true,
+    });
+  });
+
+  it('preserves legacy structured and scalar tool_use_result values', () => {
+    const legacy = { query: 'sdk upgrade', results: [{ title: 'result' }] };
+    expect(normalizeSdkToolUseResult(legacy)).toEqual({
+      content: legacy,
+      metadata: undefined,
+      isMetadataEnvelope: false,
+    });
+    expect(normalizeSdkToolUseResult('plain result')).toEqual({
+      content: 'plain result',
+      metadata: undefined,
+      isMetadataEnvelope: false,
+    });
+  });
+
+  it('does not mistake an ordinary content-bearing result for an SDK envelope', () => {
+    const ordinary = { content: 'visible result', status: 'ok' };
+    expect(normalizeSdkToolUseResult(ordinary).isMetadataEnvelope).toBe(false);
+  });
+});
 
 describe('extractToolResultRenderParts', () => {
   it('extracts MCP image content blocks without leaking base64 into text (#293)', () => {

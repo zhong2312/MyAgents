@@ -46,6 +46,7 @@ export function useAgentStatusState(
   messages: Message[],
   runtimePlanTodos: readonly AgentStatusTodoSnapshot[] | null = null,
   sessionId: string | null = null,
+  lifecycleMessageId: string | null | undefined = undefined,
 ): AgentStatusState {
   // 订阅后台任务状态变化，触发 useMemo 重算。
   const [bgEpoch, setBgEpoch] = useState(0);
@@ -67,6 +68,8 @@ export function useAgentStatusState(
     void bgEpoch;
     let todos: TodoItem[] = [];
     const subagents: SubagentStatus[] = [];
+    let latestLifecycleMessageIndex = -1;
+    let latestLifecycleSubagents: SubagentStatus[] = [];
     const seenSubagentToolIds = new Set<string>();
     // SDK 0.3.142+ Task tools (TaskCreate/Update/Get/List), collected in order for
     // the task-id accumulator. Used in preference to the legacy TodoWrite snapshot
@@ -111,6 +114,27 @@ export function useAgentStatusState(
           const input = tool.parsedInput as AgentInput | undefined;
           const isBackground = isBackgroundSubagentTool(tool);
 
+          if (tool.name === 'CollabAgent' && tool.subagentLifecycle) {
+            if (lifecycleMessageId !== undefined) {
+              if (lifecycleMessageId === msg.id) {
+                latestLifecycleSubagents.push(buildSubagentStatus(tool, input, 'sync', sessionId));
+              }
+              continue;
+            }
+            if (i > latestLifecycleMessageIndex) {
+              latestLifecycleMessageIndex = i;
+              latestLifecycleSubagents = [];
+            }
+            if (i === latestLifecycleMessageIndex) {
+              latestLifecycleSubagents.push(buildSubagentStatus(tool, input, 'sync', sessionId));
+            }
+            continue;
+          }
+
+          // Old persisted CollabAgent cards do not carry execution authority.
+          // Never revive them from stale nested isLoading flags on cold history.
+          if (tool.name === 'CollabAgent') continue;
+
           if (isBackground) {
             // 后台任务过滤条件，三道防线（任一命中 → 视为已完成 → 跳过）：
             //   1. 历史里有对应 task-notification 消息（最可靠，扛 Cmd+R / LRU 驱逐）
@@ -144,8 +168,11 @@ export function useAgentStatusState(
         inputTokens: 0,
         outputTokens: 0,
         toolCount: 0,
+        status: 'running',
       });
     }
+
+    subagents.push(...latestLifecycleSubagents);
 
     // SDK 0.3.142+ Task tools take precedence over the legacy TodoWrite snapshot.
     // A session resumed across the upgrade can contain BOTH (old TodoWrite turns +
@@ -187,9 +214,20 @@ export function useAgentStatusState(
     }
     // 取「最早开始」（startedAt 最小）= 跑得最久的那一个的 startedAt。
     // 注意不要在派生值里调 Date.now()——见 types.ts AgentStatusSummary 注释。
-    const longestStartedAt = subagents.length === 0
+    const runningSubagents = subagents.filter(subagent => subagent.status === 'running');
+    const longestStartedAt = runningSubagents.length === 0
       ? null
-      : subagents.reduce((earliest, s) => (s.startedAt < earliest ? s.startedAt : earliest), subagents[0].startedAt);
+      : runningSubagents.reduce(
+        (earliest, s) => (s.startedAt < earliest ? s.startedAt : earliest),
+        runningSubagents[0].startedAt,
+      );
+    const subagentTerminalStatus = subagents.some(subagent => subagent.status === 'failed')
+      ? 'failed'
+      : subagents.some(subagent => subagent.status === 'interrupted')
+        ? 'interrupted'
+        : subagents.length > 0 && runningSubagents.length === 0
+          ? 'completed'
+          : null;
 
     return {
       todos,
@@ -198,12 +236,14 @@ export function useAgentStatusState(
         todoCompleted: completed,
         todoInProgress: inProgress,
         todoTotal: todos.length,
-        subagentRunning: subagents.length,
+        subagentRunning: runningSubagents.length,
+        subagentTotal: subagents.length,
+        subagentTerminalStatus,
         longestSubagentStartedAt: longestStartedAt,
       },
     };
     // bgEpoch 在 deps 里仅为触发重算；其引用本身在闭包外不使用。
-  }, [messages, runtimePlanTodos, bgEpoch, sessionId]);
+  }, [messages, runtimePlanTodos, bgEpoch, sessionId, lifecycleMessageId]);
 }
 
 // 稳定 fallback startedAt：tool.taskStartTime 缺失时，记录首次见到此 toolId 的时间。
@@ -211,12 +251,12 @@ export function useAgentStatusState(
 const firstSeenAtByToolId = new Map<string, number>();
 
 function buildSubagentStatus(
-  tool: Pick<ToolUseSimple, 'id' | 'name' | 'parsedInput' | 'taskStartTime' | 'taskStats' | 'subagentCalls'>,
+  tool: Pick<ToolUseSimple, 'id' | 'name' | 'parsedInput' | 'taskStartTime' | 'taskStats' | 'subagentCalls' | 'subagentLifecycle'>,
   input: AgentInput | undefined,
   mode: 'sync' | 'background',
   sessionId: string | null,
 ): SubagentStatus {
-  let startedAt = tool.taskStartTime;
+  let startedAt = tool.subagentLifecycle?.startedAt ?? tool.taskStartTime;
   if (startedAt === undefined) {
     const cacheKey = `${sessionId ?? '__default__'}\u0000${tool.id}`;
     const cached = firstSeenAtByToolId.get(cacheKey);
@@ -234,6 +274,8 @@ function buildSubagentStatus(
     description: input?.description ?? fallback.description,
     mode,
     startedAt,
+    finishedAt: tool.subagentLifecycle?.finishedAt,
+    status: tool.subagentLifecycle?.status ?? 'running',
     inputTokens: tool.taskStats?.inputTokens ?? 0,
     outputTokens: tool.taskStats?.outputTokens ?? 0,
     toolCount: tool.taskStats?.toolCount ?? tool.subagentCalls?.length ?? 0,

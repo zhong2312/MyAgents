@@ -73,6 +73,9 @@ import CultivationEcologyWorkbench, {
 import KnowledgeBase from "../KnowledgeBase";
 import TimelineLibrary from "../TimelineLibrary";
 import type { TimelineAiAgentRequest } from "../timelineAi";
+import WorldSimulationWorkbench, {
+  type SimulationAiRunRequest,
+} from "../modules/simulation/views/WorldSimulationWorkbench";
 import NarrativeEngineering from "../NarrativeEngineering";
 import type { NarrativeAiAgentRequest } from "../narrativeAi";
 import InspirationStudio from "../InspirationStudio";
@@ -84,7 +87,6 @@ import CommandPalette, { type QuickCreateKind } from "../CommandPalette";
 import SearchPage from "../SearchPage";
 import ManuscriptStudio from "../ManuscriptStudio";
 import MapEditor, { type MapAgentGenerationRequest } from "../MapEditor";
-import WorldSimulationWorkbench from "../WorldSimulationWorkbench";
 import WorldProposalReview from "../WorldProposalReview";
 import { buildWorldProposalAgentInstructions } from "../worldProposalSchema";
 import { useNovelProject } from "../useNovelProject";
@@ -817,6 +819,14 @@ export default function NovelWorkbenchRenderer({
   context,
 }: WorkbenchRendererProps) {
   const controller = useNovelProject(context.storage, context.isActive);
+  const { setShellTitle } = context;
+  const shellProjectTitle = controller.isLoading
+    ? null
+    : (controller.project?.metadata.title ?? null);
+  useEffect(() => {
+    setShellTitle?.(shellProjectTitle);
+    return () => setShellTitle?.(null);
+  }, [setShellTitle, shellProjectTitle]);
   const [selectedChapterId, setSelectedChapterId] = useState("");
   const domainIndex = useDomainIndex(
     context.storage,
@@ -1122,8 +1132,6 @@ export default function NovelWorkbenchRenderer({
       context.navigate("narrative");
     } else if (source.path.startsWith("knowledge/")) {
       context.navigate("knowledge");
-    } else if (source.path.startsWith("simulation/")) {
-      context.navigate("simulation");
     } else if (source.path.startsWith("world/locations/")) {
       context.navigate("lore");
     } else if (source.path === "world/setting-library/meta.json") {
@@ -1191,9 +1199,7 @@ export default function NovelWorkbenchRenderer({
                           ? "ai-prompts"
                           : path.startsWith("settings/")
                             ? "model-scenes"
-                            : path.startsWith("simulation/")
-                              ? "simulation"
-                              : "lore";
+                            : "lore";
     context.navigate(route);
   };
 
@@ -1459,9 +1465,9 @@ export default function NovelWorkbenchRenderer({
 
 执行协议：
 1. 首先调用 novel_world_get_context，读取已保存的世界架构空间树、设定索引、Markdown 正文、词条、地点和势力，并取得 sourceHash。确认稳定 ID ${request.worldNodeId} 对应“${request.worldNodeName}”，只将该节点及其后代视为本次地图的生成范围。不得根据本提示词臆造设定，也不得跳过这一步。
-2. 依据该范围内的地理、气候、文明、地点、势力与设定正文，自己作出完整的成图决定。调用 novel_maps_generate_fantasy_map 时，必须原样传入上一步 sourceHash 作为 worldSourceHash，并传入 worldNodeId=${request.worldNodeId}、generationLevelTypeId=${request.generationLevelTypeId}、地图名称、画布尺寸、图层与种子。以下参数全部必填且必须由你根据已读事实决定：landmassCount、regionCount、riverCount、azgaarTemplate、azgaarStates、azgaarCultures、azgaarReligions、azgaarPrecipitation。高度图模板只能选：africa-centric、arabia、atlantics、britain、caribbean、east-asia、eurasia、europe-accented、europe-and-central-asia、europe-central、europe-north、europe、greenland、hellenica、iceland、indian-ocean、mediterranean-sea、middle-east、north-america、us-centric、us-mainland、world-from-pacific 或 world。陆块意图通过模板落实：群岛优先 caribbean，冰雪极地优先 iceland，荒漠优先 arabia，内海优先 mediterranean-sea，多陆块优先 world-from-pacific；国家、文化、宗教和降水是 Azgaar 的实际原生参数。温度参数只在气候设定确有明确约束时传入。这些参数不由作者在界面中指定，也不得省略后让工具猜测。
+2. 依据该范围内的地理、气候、文明、地点、势力与设定正文，先提交完整的 generationPlan。规划必须使用 schemaVersion=1、styleId=xuanhuan-zh，并把空间层级、正式实体 entityRef、区域锚点、山脉与龙脉、水系流向、城池/宗门/关隘、秘境/禁地/遗迹、实体关系和视觉规则全部写入。generationPlan.azgaar 还必须显式填写 landmassCount、azgaarTemplate、azgaarPrecipitation 等 Azgaar 参数，不能只给数量或自然语言描述。调用 novel_maps_prepare_generation_plan，传入 title、description 和完整 generationPlan；工具返回后必须把规划摘要、实体、空间层级、关系、视觉规则和 Azgaar 参数展示给作者，然后立即停止本次执行，明确等待作者确认。未收到作者明确确认前，严禁调用 novel_maps_confirm_generation_plan、novel_maps_generate_fantasy_map 或任何后续地图写入工具。作者确认后，调用 novel_maps_confirm_generation_plan，再调用 novel_maps_generate_fantasy_map，并原样传入上一步 sourceHash 作为 worldSourceHash、相同 draftId、相同 generationPlan，以及 worldNodeId=${request.worldNodeId}、generationLevelTypeId=${request.generationLevelTypeId}、地图名称、画布尺寸、图层与种子。generationPlan.azgaar 中的高度图模板只能选：africa-centric、arabia、atlantics、britain、caribbean、east-asia、eurasia、europe-accented、europe-and-central-asia、europe-central、europe-north、europe、greenland、hellenica、iceland、indian-ocean、mediterranean-sea、middle-east、north-america、us-centric、us-mainland、world-from-pacific 或 world。陆块意图通过模板落实：群岛优先 caribbean，冰雪极地优先 iceland，荒漠优先 arabia，内海优先 mediterranean-sea，多陆块优先 world-from-pacific；国家、文化、宗教和降水是 Azgaar 的实际原生参数。规划不能只提供数量和模板，必须说明“哪个实体位于哪里、与哪些山河势力相连”。
 3. 检查工具返回的 runtime 和 generatorAdapter。只有 runtime=azgaar-http 时才可称为 Azgaar 核心生成；若返回 compatibility-adapter，必须明确说明本次已降级，不能伪称使用了 Azgaar。无论运行时是哪一种，都要确认结果采用 xuanhuan-zh，并且地图文字为中文。
-4. 使用生成工具返回的 draftId 调用 novel_maps_validate_draft；校验失败时修正同一草稿，不得绕过校验或直接修改正式地图文件。
+4. 使用生成工具返回的 draftId 调用 novel_maps_validate_draft；校验失败时，先调用 novel_maps_query_draft_features 找到真实要素，再修正同一草稿，不得猜测 featureId、绕过校验或直接修改正式地图文件。
 5. 校验通过后，使用 validationToken 调用 novel_maps_submit_draft。只有工具返回 submitted=true 才算完成。
 6. 提交成功后告诉作者生成器、读取到的设定范围和降级状态，并提示到“世界地图 -> 审阅提案”中确认。不得直接覆盖当前地图。
 
@@ -1547,7 +1553,8 @@ export default function NovelWorkbenchRenderer({
 2. 组织层级必须区分势力内部单元与对外独立势力：堂口、分支、官署、商号归入内部组织树；隶属、联盟、敌对、竞争、依附使用势力关系。
 3. 资源建议必须写清控制权等级、争夺方和变化原因；法统、名分、通行权、采购权等必须写明授予方、范围、条件和有效状态。
 4. 势力库只保存当前状态快照；历史事件应建议作者关联或补充到时间线，不能制造第二份相互矛盾的历史。
-5. 作者确认候选后调用 novel_factions_create_draft 创建草稿，用 novel_factions_upsert_draft_operations 分批写入候选，novel_factions_validate_draft 校验通过后用返回的 validationToken 调用 novel_factions_submit_draft；随后调用 novel_factions_get_proposal_status 确认 exists=true，再告知作者在势力组织页点击“审阅提案”。不得直接修改项目文件。`,
+5. 写入候选的 value 必须是完整正式势力记录：status 只能是 active、neutral、declining 或 dissolved；state 必须包含 governance、military、economy、publicSupport、territorialIntegrity 五项字符串；所有领地必须有 id、name、worldNodeId（未关联时为 null）和 description；所有成员必须有 id、name、characterId（未关联时为 null）、role、正整数 count 和 description；createdAt 和 updatedAt 必须是 ISO 8601 UTC 时间戳；其它集合即使为空也必须提供，且不得使用 kind、aliases、location、coreGoals 等非正式字段替代正式字段。
+6. 作者确认候选后调用 novel_factions_create_draft 创建草稿，用 novel_factions_upsert_draft_operations 分批写入候选，novel_factions_validate_draft 校验通过后用返回的 validationToken 调用 novel_factions_submit_draft；随后调用 novel_factions_get_proposal_status 确认 exists=true，再告知作者在势力组织页点击“审阅提案”。不得直接修改项目文件。`,
       );
       const modelSelection = await resolveSceneModelSelection(
         sceneIds[target.scope],
@@ -1606,7 +1613,8 @@ export default function NovelWorkbenchRenderer({
 2. 设计时必须避开现有势力与同批候选的名称、功能和资源控制重复；优先补足世界格局中的空位，而不是机械堆叠组织。
 3. 每个候选至少提供：名称、势力类型、当前状态、势力概要、核心目标、组织层级、关键成员类别、控制地盘或资源、对外关系、权限或名分，以及可接入时间线的演化钩子。
 4. 势力内部单元与独立势力关系必须区分：堂口、官署、分号、支脉属于组织层级；隶属、联盟、敌对、竞争、依附属于势力关系。禁止做全库 N×N 关系或冲突分析。
-5. 作者确认候选后调用 novel_factions_create_draft 创建草稿，用 novel_factions_upsert_draft_operations 分批写入候选，novel_factions_validate_draft 校验通过后用返回的 validationToken 调用 novel_factions_submit_draft；随后调用 novel_factions_get_proposal_status 确认 exists=true，再告知作者在势力组织页点击“审阅提案”。可按需使用普通命令和文件工具读取外部素材或处理辅助文件；正式势力变更仍必须通过上述提案协议。`,
+5. 写入候选的 value 必须是完整正式势力记录：status 只能是 active、neutral、declining 或 dissolved；state 必须包含 governance、military、economy、publicSupport、territorialIntegrity 五项字符串；所有领地必须有 id、name、worldNodeId（未关联时为 null）和 description；所有成员必须有 id、name、characterId（未关联时为 null）、role、正整数 count 和 description；createdAt 和 updatedAt 必须是 ISO 8601 UTC 时间戳；其它集合即使为空也必须提供，且不得使用 kind、aliases、location、coreGoals 等非正式字段替代正式字段。
+6. 作者确认候选后调用 novel_factions_create_draft 创建草稿，用 novel_factions_upsert_draft_operations 分批写入候选，novel_factions_validate_draft 校验通过后用返回的 validationToken 调用 novel_factions_submit_draft；随后调用 novel_factions_get_proposal_status 确认 exists=true，再告知作者在势力组织页点击“审阅提案”。可按需使用普通命令和文件工具读取外部素材或处理辅助文件；正式势力变更仍必须通过上述提案协议。`,
       );
       const modelSelection = await resolveSceneModelSelection("factions.batch");
       await openNovelAgentSession({
@@ -2195,6 +2203,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
           isActive={context.isActive}
           quickCreateRequest={selectQuickCreate(quickCreateRequest, "map")}
           focus={entityFocus}
+          onOpenEntity={openEntity}
           agentAvailable={context.agentSessions.isAvailable}
           agentLaunching={isMapAgentLaunching}
           onLaunchMapAgent={launchMapAgent}
@@ -2202,25 +2211,6 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
         />
       );
       break;
-    case "simulation": {
-      content = (
-        <WorldSimulationWorkbench
-          storage={context.storage}
-          isActive={context.isActive}
-          onRunModelScene={
-            context.aiRuns.isAvailable
-              ? async (scene, prompt) => {
-                  return runSceneAi(scene, {
-                    label: "世界推演智能候选",
-                    prompt,
-                  });
-                }
-              : undefined
-          }
-        />
-      );
-      break;
-    }
     case "timeline":
       content = (
         <TimelineLibrary
@@ -2265,6 +2255,56 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
                 }
               : undefined
           }
+          registerNavigationGuard={context.registerNavigationGuard}
+        />
+      );
+      break;
+    case "simulation":
+      content = (
+        <WorldSimulationWorkbench
+          storage={context.storage}
+          projectTitle={project.metadata.title}
+          isActive={context.isActive}
+          onAiRun={
+            context.aiRuns.isAvailable
+              ? async (request: SimulationAiRunRequest) => {
+                  const unsubscribe = request.onProgress
+                    ? context.aiRuns.subscribeProgress(
+                        request.runId,
+                        request.onProgress,
+                      )
+                    : () => undefined;
+                  try {
+                    return await runSceneAi(request.sceneId, {
+                      runId: request.runId,
+                      label: request.label,
+                      prompt: request.prompt,
+                      systemPrompt: request.systemPrompt,
+                      executionProfile: request.executionProfile,
+                      timeoutMs: request.timeoutMs,
+                      maxTurns: request.maxTurns,
+                      streamOutput: request.streamOutput,
+                      ...(request.usesNovelContextTools
+                        ? {
+                            toolset: {
+                              id: "novel-world",
+                              context: {
+                                mode: "world",
+                                promptId: "novel.simulation.advance",
+                                promptVersion: "1.0.0",
+                                readToolCallLimit: "4",
+                              },
+                            },
+                          }
+                        : {}),
+                    });
+                  } finally {
+                    unsubscribe();
+                  }
+                }
+              : undefined
+          }
+          onCancelAiRun={context.aiRuns.cancel}
           registerNavigationGuard={context.registerNavigationGuard}
         />
       );
@@ -2319,8 +2359,8 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
     "powers",
     "knowledge",
     "map",
-    "simulation",
     "timeline",
+    "simulation",
     "narrative",
     "inspiration",
     "ai-prompts",

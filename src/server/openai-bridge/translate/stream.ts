@@ -17,6 +17,7 @@ import {
   mergeUsage,
   toAnthropicUsage,
   type UsageSnapshot,
+  type UsageWarningLogger,
 } from "./usage";
 import {
   DSML_PARSE_ERROR_TEXT,
@@ -43,14 +44,23 @@ export class StreamTranslator {
   private hasFinished = false;
   private stopReason: AnthropicStopReason | null = null;
   private translateReasoning: boolean;
+  private usageWarning: UsageWarningLogger | undefined;
   private contentMode: "pending" | "text" | "dsml" = "pending";
   private bufferedContent = "";
   private hasStandardToolCalls = false;
 
-  constructor(requestModel: string, translateReasoning = true) {
+  constructor(requestModel: string, translateReasoning = true, usageWarning?: UsageWarningLogger) {
     this.messageId = generateMessageId();
     this.requestModel = requestModel;
     this.translateReasoning = translateReasoning;
+    let warned = false;
+    this.usageWarning = usageWarning
+      ? (message) => {
+          if (warned) return;
+          warned = true;
+          usageWarning(message);
+        }
+      : undefined;
   }
 
   /** Feed an OpenAI stream chunk, returns Anthropic SSE events to emit */
@@ -65,7 +75,7 @@ export class StreamTranslator {
 
     // Track usage
     if (chunk.usage) {
-      this.usage = mergeUsage(this.usage, chunk.usage);
+      this.usage = mergeUsage(this.usage, chunk.usage, this.usageWarning);
     }
 
     const choice = chunk.choices?.[0];

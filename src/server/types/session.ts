@@ -29,9 +29,9 @@ export interface SessionMetadata {
     title: string;
     createdAt: string;
     lastActiveAt: string;
-    /** @deprecated 统一后新 session 的 sdkSessionId === id，保留用于旧 session 兼容 */
+    /** Claude SDK execution identity. Usually equals id at birth; may diverge after execution-level reset. */
     sdkSessionId?: string;
-    /** 统一后创建的 session 标记。为 true 时 id 即 SDK session ID */
+    /** Legacy birth marker. When sdkSessionId is absent and true, id is the SDK candidate. */
     unifiedSession?: boolean;
     /** Session statistics */
     stats?: SessionStats;
@@ -77,7 +77,11 @@ export interface SessionMetadata {
     /** Runtime's own session/thread ID (Codex: threadId, CC: session_id from hook).
      *  Different from our session `id` — used for resume across Sidecar restarts. */
     runtimeSessionId?: string;
-    /** Crash-recoverable, single-purpose commit intent for Codex conversation rewind. */
+    /** Exact app-server contract that declared native Managed Codex Host tools for this thread. */
+    managedCodexExtensionProtocolVersion?: string;
+    /** Secret-free hash of the immutable dynamic-tool catalog declared at native thread birth. */
+    managedCodexHostCatalogFingerprint?: string;
+    /** Crash-recoverable, bounded commit intent for a conversation rewind. */
     pendingConversationMutation?: PendingConversationMutation;
     /** Runtime-level cumulative usage totals for restore-safe delta calculation. */
     runtimeUsageTotals?: MessageUsage;
@@ -238,15 +242,26 @@ export interface RuntimeTurnAnchor {
     rootUserMessageId: string;
 }
 
-export interface PendingConversationMutation {
-    schemaVersion: 1;
-    kind: 'codex-rewind';
-    sourceRuntimeSessionId: string;
-    /** null means the replacement starts fresh on the next materialization. */
-    replacementRuntimeSessionId: string | null;
-    sourceMessageCount: number;
-    targetMessageCount: number;
-}
+export type PendingConversationMutation =
+    | {
+        schemaVersion: 1;
+        kind: 'codex-rewind';
+        sourceRuntimeSessionId: string;
+        /** null means the replacement starts fresh on the next materialization. */
+        replacementRuntimeSessionId: string | null;
+        sourceMessageCount: number;
+        targetMessageCount: number;
+    }
+    | {
+        schemaVersion: 1;
+        kind: 'builtin-rewind';
+        /** Effective Claude SDK binding before the rewind. Null means none was materialized. */
+        sourceSdkSessionId: string | null;
+        /** Exact fresh Claude SDK identity that must be created or resumed after the rewind. */
+        replacementSdkSessionId: string;
+        sourceMessageCount: number;
+        targetMessageCount: number;
+    };
 
 /**
  * Generate a unique session ID

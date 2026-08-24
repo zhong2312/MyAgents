@@ -24,6 +24,7 @@ describe("novel overview AI context", () => {
     expect(context).toContain("悬疑、都市异能");
     expect(context).toContain("800,000 字 至 1,000,000 字");
     expect(context).toContain("3,500 字");
+    expect(context).toContain("229 至 286 章");
     expect(context).toContain("第一人称");
     expect(context).toContain("失忆调查员");
     expect(context).toContain("必须与以上总览一致");

@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export const FACTION_DIRECTORY = "world/factions";
 export const FACTION_INDEX_PATH = "world/factions/index.json";
 export const FACTION_STORAGE_VERSION = 1 as const;
@@ -5,6 +7,205 @@ export const FACTION_SCHEMA_VERSION = 2 as const;
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/u;
 
+export const factionIdSchema = z.string().trim().regex(ID_PATTERN);
+const textSchema = z.string();
+
+export const factionStatusSchema = z.enum([
+  "active",
+  "neutral",
+  "declining",
+  "dissolved",
+]);
+
+export const factionTerritorySchema = z
+  .object({
+    id: factionIdSchema,
+    name: z.string().trim().min(1),
+    worldNodeId: factionIdSchema.nullable(),
+    description: textSchema,
+  })
+  .strict();
+
+export const factionMemberSchema = z
+  .object({
+    id: factionIdSchema,
+    name: z.string().trim().min(1),
+    characterId: factionIdSchema.nullable(),
+    role: textSchema,
+    count: z.number().int().positive(),
+    description: textSchema,
+  })
+  .strict();
+
+export const factionAssetSchema = z
+  .object({
+    id: factionIdSchema,
+    name: z.string().trim().min(1),
+    kind: textSchema,
+    value: textSchema,
+    description: textSchema,
+  })
+  .strict();
+
+export const factionResourceControlSchema = z.enum([
+  "owned",
+  "dominant",
+  "shared",
+  "access",
+  "contested",
+  "lost",
+]);
+
+export const factionResourceHistorySchema = z
+  .object({
+    id: factionIdSchema,
+    timeLabel: textSchema,
+    summary: textSchema,
+  })
+  .strict();
+
+export const factionResourceSchema = z
+  .object({
+    id: factionIdSchema,
+    name: z.string().trim().min(1),
+    kind: textSchema,
+    control: textSchema,
+    controlLevel: factionResourceControlSchema.default("contested"),
+    worldNodeId: factionIdSchema.nullable().default(null),
+    itemId: factionIdSchema.nullable().default(null),
+    competingFactionIds: z.array(factionIdSchema).default([]),
+    history: z.array(factionResourceHistorySchema).default([]),
+    description: textSchema,
+  })
+  .strict();
+
+export const factionOrganizationUnitSchema = z
+  .object({
+    id: factionIdSchema,
+    parentId: factionIdSchema.nullable(),
+    name: z.string().trim().min(1),
+    kind: textSchema,
+    leaderMemberId: factionIdSchema.nullable(),
+    description: textSchema,
+  })
+  .strict();
+
+export const factionRelationKindSchema = z.enum([
+  "subordinate",
+  "alliance",
+  "hostile",
+  "competitive",
+  "dependent",
+]);
+
+export const factionRelationSchema = z
+  .object({
+    id: factionIdSchema,
+    targetFactionId: factionIdSchema,
+    kind: factionRelationKindSchema,
+    direction: z.enum(["outbound", "inbound", "mutual"]),
+    status: z.enum(["active", "suspended", "ended"]),
+    startedAt: textSchema,
+    endedAt: textSchema,
+    description: textSchema,
+  })
+  .strict();
+
+export const factionRightKindSchema = z.enum([
+  "legitimacy",
+  "title",
+  "jurisdiction",
+  "passage",
+  "procurement",
+  "trade",
+  "mining",
+  "taxation",
+  "minting",
+  "custom",
+]);
+
+export const factionRightSchema = z
+  .object({
+    id: factionIdSchema,
+    name: z.string().trim().min(1),
+    kind: factionRightKindSchema,
+    issuerFactionId: factionIdSchema.nullable(),
+    worldNodeId: factionIdSchema.nullable(),
+    scope: textSchema,
+    status: z.enum(["active", "suspended", "revoked", "expired"]),
+    startedAt: textSchema,
+    endedAt: textSchema,
+    description: textSchema,
+  })
+  .strict();
+
+export const factionLinkKindSchema = z.enum([
+  "trade-route",
+  "war",
+  "industry",
+  "character",
+  "setting",
+  "item",
+  "timeline",
+  "custom",
+]);
+
+export const factionLinkSchema = z
+  .object({
+    id: factionIdSchema,
+    kind: factionLinkKindSchema,
+    targetId: factionIdSchema.nullable(),
+    label: z.string().trim().min(1),
+    description: textSchema,
+  })
+  .strict();
+
+export const factionStateSchema = z
+  .object({
+    governance: textSchema,
+    military: textSchema,
+    economy: textSchema,
+    publicSupport: textSchema,
+    territorialIntegrity: textSchema,
+  })
+  .strict();
+
+/** 势力正式记录的跨进程事实源契约。 */
+export const factionRecordSchema = z
+  .object({
+    id: factionIdSchema,
+    name: z.string().trim().min(1),
+    type: textSchema,
+    status: factionStatusSchema,
+    summary: textSchema,
+    state: factionStateSchema,
+    territories: z.array(factionTerritorySchema),
+    members: z.array(factionMemberSchema),
+    assets: z.array(factionAssetSchema),
+    resources: z.array(factionResourceSchema),
+    organizationUnits: z.array(factionOrganizationUnitSchema),
+    relations: z.array(factionRelationSchema),
+    rights: z.array(factionRightSchema),
+    links: z.array(factionLinkSchema),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+
+export type FactionRecord = z.infer<typeof factionRecordSchema>;
+export type FactionTerritory = z.infer<typeof factionTerritorySchema>;
+export type FactionMember = z.infer<typeof factionMemberSchema>;
+export type FactionAsset = z.infer<typeof factionAssetSchema>;
+export type FactionResource = z.infer<typeof factionResourceSchema>;
+export type FactionOrganizationUnit = z.infer<
+  typeof factionOrganizationUnitSchema
+>;
+export type FactionRelation = z.infer<typeof factionRelationSchema>;
+export type FactionRight = z.infer<typeof factionRightSchema>;
+export type FactionLink = z.infer<typeof factionLinkSchema>;
+export type FactionState = z.infer<typeof factionStateSchema>;
+
+/** 目录拆分层只负责路径与索引，语义校验由势力 Repository 使用 FactionRecord。 */
 export interface FactionStorageRecord {
   readonly id: string;
   readonly [key: string]: unknown;

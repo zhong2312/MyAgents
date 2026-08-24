@@ -63,21 +63,6 @@ export function getHomeDirOrNull(): string | null {
 }
 
 /**
- * Skills that are unavailable on certain platforms due to upstream bugs.
- * Key = skill folder name, value = set of blocked process.platform values.
- * When the upstream issue is resolved, remove the entry to re-enable.
- */
-const PLATFORM_BLOCKED_SKILLS: Record<string, Set<string>> = {
-  // agent-browser daemon broken on Windows: vercel-labs/agent-browser#398
-  'agent-browser': new Set(['win32']),
-};
-
-/** Check if a skill is blocked on the current platform. */
-export function isSkillBlockedOnPlatform(skillFolder: string): boolean {
-  return PLATFORM_BLOCKED_SKILLS[skillFolder]?.has(process.platform) ?? false;
-}
-
-/**
  * Build environment variables for child processes
  * Ensures both Windows and Unix variants are set for maximum compatibility
  */

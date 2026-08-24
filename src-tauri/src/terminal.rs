@@ -82,6 +82,13 @@ pub async fn cmd_terminal_create(
         return Err(format!("Terminal {} already exists", id));
     }
 
+    // The embedded terminal advertises the same official `myagents` command
+    // as Agent runtimes. Startup reconciliation is intentionally best-effort,
+    // so terminal creation is its fail-closed admission boundary.
+    tauri::async_runtime::spawn_blocking(crate::cli::ensure_launcher)
+        .await
+        .map_err(|error| format!("CLI launcher admission task failed: {error:?}"))??;
+
     let pty_system = native_pty_system();
 
     let pair = pty_system
@@ -392,13 +399,19 @@ fn default_shell() -> String {
 /// Inject environment variables into the terminal shell process.
 ///
 /// This ensures the terminal has access to:
-/// 1. Bundled Bun and Node.js (same PATH as SDK subprocesses)
+/// 1. App-owned CLI launchers and registered tool shims
 /// 2. Proxy configuration (NO_PROXY protects localhost)
-/// 3. ~/.myagents/bin (CLI tools)
+/// 3. Bundled Bun and Node.js (same PATH as SDK subprocesses)
 fn inject_terminal_env(cmd: &mut CommandBuilder, app: &AppHandle, sidecar_port: Option<u16>) {
-    // 1. Build PATH with bundled runtimes
-    //    Priority: bundled bun dir → bundled node dir → ~/.myagents/bin → system PATH
+    // 1. Build PATH. Product-owned launchers must win over stale
+    // npm/AppData/inherited commands with the same name.
     let mut extra_paths: Vec<String> = Vec::new();
+
+    // ~/.myagents/bin (CLI launchers and registered tools)
+    if let Some(home) = dirs::home_dir() {
+        let cli_bin = home.join(".myagents").join("bin");
+        extra_paths.push(cli_bin.to_string_lossy().into());
+    }
 
     // Bundled Bun directory
     if let Ok(resource_dir) = app.path().resource_dir() {
@@ -429,14 +442,6 @@ fn inject_terminal_env(cmd: &mut CommandBuilder, app: &AppHandle, sidecar_port: 
         let node_dir = resource_dir.join("nodejs").join("bin");
         if node_dir.exists() {
             extra_paths.push(node_dir.to_string_lossy().into_owned());
-        }
-    }
-
-    // ~/.myagents/bin (CLI tools)
-    if let Some(home) = dirs::home_dir() {
-        let cli_bin = home.join(".myagents").join("bin");
-        if cli_bin.exists() {
-            extra_paths.push(cli_bin.to_string_lossy().into());
         }
     }
 

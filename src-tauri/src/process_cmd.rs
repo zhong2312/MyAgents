@@ -114,6 +114,33 @@ impl ChildTree {
         }
         result
     }
+
+    /// Force-stop this exact contained tree and wait until it can no longer
+    /// execute. Replacement paths use this before spawning the next generation
+    /// so autonomous work from old and new processes cannot overlap.
+    pub(crate) fn kill_and_wait(&mut self) -> std::io::Result<()> {
+        let pid = self.child.id();
+        self.kill()?;
+        let started = std::time::Instant::now();
+        loop {
+            let root_exited = self.child.try_wait()?.is_some();
+            #[cfg(unix)]
+            let tree_exited = !unix_group_exists(-(pid as i32));
+            #[cfg(not(unix))]
+            let tree_exited = root_exited;
+
+            if root_exited && tree_exited {
+                return Ok(());
+            }
+            if started.elapsed() >= GRACEFUL_TREE_SHUTDOWN_TIMEOUT {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("process tree {pid} did not exit after force-stop"),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
 }
 
 /// Wait until every Unix graceful-termination worker has either observed the
@@ -456,6 +483,33 @@ mod tests {
         assert!(
             wait_until_processes_exit(&[parent_pid, child_pid], Duration::from_secs(2)),
             "dropping the owner must terminate the direct child and its descendant"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn force_stop_waits_for_the_exact_tree_before_returning() {
+        let mut command = new("sh");
+        command
+            .args(["-c", "sleep 60 & child=$!; echo $child; wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut tree = spawn_tree(&mut command).expect("spawn owned process tree");
+        let parent_pid = tree.id();
+        let child_pid = {
+            let stdout = tree.stdout.take().expect("child pid stdout");
+            let mut line = String::new();
+            BufReader::new(stdout)
+                .read_line(&mut line)
+                .expect("read child pid");
+            line.trim().parse::<u32>().expect("parse child pid")
+        };
+
+        tree.kill_and_wait().expect("force-stop exact process tree");
+        assert!(
+            crate::process_cleanup::find_live_processes_by_pid(&[parent_pid, child_pid]).is_empty(),
+            "replacement may spawn only after the old tree can no longer execute"
         );
     }
 

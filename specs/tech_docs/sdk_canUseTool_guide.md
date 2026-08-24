@@ -8,7 +8,9 @@
 
 ### 工具可见性不等于授权
 
-`query({ options: { tools } })` 控制模型能看到的 SDK 内置工具目录；它不是权限 allowlist。MyAgents 产品会话的唯一目录 owner 是 `src/server/sdk-builtin-tools.ts::SDK_BUILTIN_TOOLS`，而纯控制面 Query（Provider 验证、订阅登录、标题生成、视觉识别）传 `tools: []`，避免无关工具进入上下文。工具真正执行时仍必须经过 `allowedTools` / `disallowedTools`、`canUseTool` 与下面说明的 hooks；不要因为工具出现在 `Options.tools` 就认为它已获授权，也不要在调用点复制一份目录。
+`query({ options: { tools } })` 控制模型能看到的 SDK 内置工具目录；它不是权限 allowlist。对 builtin Runtime，SDK 内置目录 owner 是 `src/server/sdk-builtin-tools.ts::SDK_BUILTIN_TOOLS`，而纯控制面 Query（Provider 验证、订阅登录、标题生成、视觉识别）传 `tools: []`，避免无关工具进入上下文。工具真正执行时仍必须经过 `allowedTools` / `disallowedTools`、`canUseTool` 与下面说明的 hooks；不要因为工具出现在 `Options.tools` 就认为它已获授权，也不要在调用点复制一份目录。
+
+`canUseTool` 和本页后续 hook 规则只描述 builtin Claude Agent SDK。Managed Codex 的 native/Host tool catalog 由 immutable extension snapshot 与 Codex thread 共同持有，权限请求经 `SessionEngine`/external adapter 的既有 permission UI 结算；它不调用 SDK `canUseTool`，也不能把 `SDK_BUILTIN_TOOLS` 当成跨 Runtime 的唯一目录。业务工具仍复用现有 MCP handler，Codex adapter 只做 schema 校验、wire 映射、generation/abort/timeout 与 exactly-once 结算。
 
 ## 关键配置
 

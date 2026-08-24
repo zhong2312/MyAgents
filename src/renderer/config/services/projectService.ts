@@ -13,10 +13,10 @@ import {
     safeLoadJson,
     safeWriteJson,
 } from './configStore';
+import { apiGetJson, apiPutJson } from '@/api/apiFetch';
 import {
     mockLoadProjects,
     mockSaveProjects,
-    mockAddProject,
 } from '@/utils/browserMock';
 
 // ============= Helpers =============
@@ -39,9 +39,14 @@ function isValidProjectsArray(data: unknown): data is Project[] {
 
 export async function loadProjects(): Promise<Project[]> {
     if (isBrowserDevMode()) {
-        console.log('[configService] Browser mode: loading projects from localStorage');
-        const projects = mockLoadProjects();
-        return sortProjectsByLastOpened(projects);
+        try {
+            const result = await apiGetJson<{ success: true; projects: Project[] }>('/api/workbench-dev-storage/projects');
+            return sortProjectsByLastOpened(result.projects);
+        } catch (error) {
+            // 独立 Vite 开发没有 profile 后端时，继续沿用浏览器本地工作流。
+            console.warn('[configService] Browser project registry unavailable, using localStorage:', error);
+            return sortProjectsByLastOpened(mockLoadProjects());
+        }
     }
 
     try {
@@ -63,7 +68,12 @@ export async function loadProjects(): Promise<Project[]> {
 
 export async function saveProjects(projects: Project[]): Promise<void> {
     if (isBrowserDevMode()) {
-        mockSaveProjects(projects);
+        try {
+            await apiPutJson<{ success: true }>('/api/workbench-dev-storage/projects', { projects });
+        } catch (error) {
+            console.warn('[configService] Browser project registry unavailable, saving to localStorage:', error);
+            mockSaveProjects(projects);
+        }
         return;
     }
 
@@ -81,11 +91,6 @@ export async function saveProjects(projects: Project[]): Promise<void> {
 
 export async function addProject(path: string): Promise<Project> {
     console.log('[configService] addProject called with path:', path);
-
-    if (isBrowserDevMode()) {
-        console.log('[configService] Browser mode: using mock addProject');
-        return mockAddProject(path);
-    }
 
     return withProjectsLock(async () => {
         const projects = await loadProjects();

@@ -226,8 +226,8 @@ pub fn validate_external_read_path(absolute_path: &str) -> WfResult<PathBuf> {
 /// MyAgents-managed directory (see `is_trusted_managed_target`). Blocks the
 /// "malicious `evil_link → /etc/passwd` checked into a repo" attack from
 /// leaking content out of the workspace, while still allowing the
-/// junctions / symlinks we sync ourselves from `~/.myagents/skills` etc.
-/// into `<workspace>/.claude/skills/` (see `agent-session.ts:syncProjectSkillSymlinks`).
+/// junctions / symlinks MyAgents projects from `~/.myagents/skills` etc.
+/// into `<workspace>/.claude/skills/` (see Node `syncProjectUserConfigFiles`).
 ///
 /// Behavior:
 /// - If the resolved path doesn't exist, returns `Err("File not found")` (the
@@ -296,6 +296,130 @@ fn trusted_managed_roots() -> Vec<PathBuf> {
 /// or a literal `Vec<PathBuf>`.
 fn is_trusted_managed_target(canonical: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| canonical.starts_with(root))
+}
+
+const MANAGED_GLOBAL_SKILL_READ_ONLY: &str =
+    "MANAGED_GLOBAL_SKILL_READ_ONLY: workspace Skill projections are read-only; edit the global Skill from Settings";
+
+/// Reject mutations whose target is a MyAgents-managed projection of
+/// `~/.myagents/skills`. Reads deliberately keep using the broader trusted
+/// resolver above; this guard is mutation-only so copy-out and previews remain
+/// available while workspace writes cannot flow through a junction into the
+/// single global source of truth.
+///
+/// The component walk matters for create destinations: the leaf may not exist,
+/// but its closest existing ancestor can itself be a managed junction. We also
+/// inspect the link payload lexically so a broken junction/symlink targeting a
+/// currently missing global Skill remains protected.
+pub fn reject_managed_global_skill_mutation(
+    workspace_root: &Path,
+    lexical_target: &Path,
+) -> WfResult<()> {
+    let Some(home) = dirs::home_dir() else {
+        return Ok(());
+    };
+    reject_managed_global_skill_mutation_with_root(
+        workspace_root,
+        lexical_target,
+        &home.join(".myagents").join("skills"),
+    )
+}
+
+fn reject_managed_global_skill_mutation_with_root(
+    workspace_root: &Path,
+    lexical_target: &Path,
+    global_skills_root: &Path,
+) -> WfResult<()> {
+    let canonical_global_root = fs::canonicalize(global_skills_root).ok();
+    if path_is_inside_managed_skill_root(
+        lexical_target,
+        global_skills_root,
+        canonical_global_root.as_deref(),
+    ) {
+        return Err(MANAGED_GLOBAL_SKILL_READ_ONLY.to_string());
+    }
+
+    let Ok(relative) = lexical_target.strip_prefix(workspace_root) else {
+        return Ok(());
+    };
+    let mut current = workspace_root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            continue;
+        };
+        current.push(part);
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(_) => break,
+        };
+
+        if metadata_is_link_like(&metadata) {
+            if let Ok(link_target) = fs::read_link(&current) {
+                let resolved_target = if link_target.is_absolute() {
+                    link_target
+                } else {
+                    current.parent().unwrap_or(workspace_root).join(link_target)
+                };
+                if path_is_inside_managed_skill_root(
+                    &resolved_target,
+                    global_skills_root,
+                    canonical_global_root.as_deref(),
+                ) {
+                    return Err(MANAGED_GLOBAL_SKILL_READ_ONLY.to_string());
+                }
+            }
+        }
+
+        if let Ok(canonical_current) = fs::canonicalize(&current) {
+            if path_is_inside_managed_skill_root(
+                &canonical_current,
+                global_skills_root,
+                canonical_global_root.as_deref(),
+            ) {
+                return Err(MANAGED_GLOBAL_SKILL_READ_ONLY.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn path_is_inside_managed_skill_root(
+    candidate: &Path,
+    lexical_root: &Path,
+    canonical_root: Option<&Path>,
+) -> bool {
+    let candidate = crate::commands::normalize_lexical_security_path(candidate.to_path_buf());
+    let lexical_root = crate::commands::normalize_lexical_security_path(lexical_root.to_path_buf());
+    if crate::commands::path_starts_with_identity(&candidate, &lexical_root) {
+        return true;
+    }
+    let Some(canonical_root) = canonical_root else {
+        return false;
+    };
+    fs::canonicalize(&candidate)
+        .map(crate::commands::normalize_security_path)
+        .map(|canonical| {
+            crate::commands::path_starts_with_identity(
+                &canonical,
+                &crate::commands::normalize_security_path(canonical_root.to_path_buf()),
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn metadata_is_link_like(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 /// Reject filenames that would break on Windows or hide the file (`.`, `..`,
@@ -2099,11 +2223,79 @@ mod tests {
         assert!(!is_trusted_managed_target(p, &[]));
     }
 
+    #[test]
+    fn managed_skill_mutation_guard_allows_ordinary_workspace_paths() {
+        let ws = make_tmp_workspace();
+        let managed = make_test_workspace("mutation_guard_managed");
+        fs::create_dir_all(ws.join("ordinary")).unwrap();
+        fs::create_dir_all(&managed).unwrap();
+        assert!(reject_managed_global_skill_mutation_with_root(
+            &ws,
+            &ws.join("ordinary/new.md"),
+            &managed,
+        )
+        .is_ok());
+        assert!(reject_managed_global_skill_mutation_with_root(
+            &ws,
+            &managed.join("skill/SKILL.md"),
+            &managed,
+        )
+        .unwrap_err()
+        .starts_with("MANAGED_GLOBAL_SKILL_READ_ONLY"));
+        let _ = fs::remove_dir_all(&ws);
+        let _ = fs::remove_dir_all(&managed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_skill_mutation_guard_rejects_link_leaf_descendant_and_broken_link() {
+        use std::os::unix::fs::symlink;
+        let ws = make_tmp_workspace();
+        let managed = make_test_workspace("mutation_guard_link_managed");
+        let skill = managed.join("pdf");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "pdf").unwrap();
+        let links = ws.join(".claude/skills");
+        fs::create_dir_all(&links).unwrap();
+        let link = links.join("pdf");
+        symlink(&skill, &link).unwrap();
+
+        let existing_child = link.join("SKILL.md");
+        let missing_child = link.join("new.md");
+        for target in [&link, &existing_child, &missing_child] {
+            let error = reject_managed_global_skill_mutation_with_root(&ws, target, &managed)
+                .expect_err("managed Skill mutation must fail");
+            assert!(error.starts_with("MANAGED_GLOBAL_SKILL_READ_ONLY"));
+        }
+
+        let broken = links.join("missing");
+        symlink(managed.join("missing"), &broken).unwrap();
+        assert!(
+            reject_managed_global_skill_mutation_with_root(&ws, &broken, &managed)
+                .unwrap_err()
+                .starts_with("MANAGED_GLOBAL_SKILL_READ_ONLY")
+        );
+
+        let broken_relative = links.join("missing-relative");
+        let relative_target = PathBuf::from("../../..")
+            .join(managed.file_name().unwrap())
+            .join("missing-relative");
+        symlink(relative_target, &broken_relative).unwrap();
+        assert!(
+            reject_managed_global_skill_mutation_with_root(&ws, &broken_relative, &managed)
+                .unwrap_err()
+                .starts_with("MANAGED_GLOBAL_SKILL_READ_ONLY")
+        );
+
+        let _ = fs::remove_dir_all(&ws);
+        let _ = fs::remove_dir_all(&managed);
+    }
+
     // Headline whitelist test: a junction-like symlink in the workspace
     // pointing into a trusted root MUST resolve successfully even though the
     // target is outside the canonical workspace. This unblocks Windows users
     // hitting "文件预览失败" on user-level skill links synced by
-    // `agent-session.ts:syncProjectSkillSymlinks`.
+    // Node `syncProjectUserConfigFiles`.
     #[cfg(unix)]
     #[test]
     fn resolve_existing_allows_symlink_into_trusted_root() {

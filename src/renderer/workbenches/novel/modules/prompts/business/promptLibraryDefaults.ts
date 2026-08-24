@@ -24,6 +24,7 @@ import {
 export const STORYFORGE_PROMPT_INSTALLATION_ID = "storyforge.prompt-library";
 export const STORYFORGE_WORLD_GUIDE_PROMPT_ID = "novel.world.guide";
 export const STORYFORGE_PROMPT_COUNT = 89;
+/** @deprecated 仅用于迁移旧项目，不再作为默认安装副本。 */
 export const NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID = "myagents.novel.base";
 export const NOVEL_WORKBENCH_PROMPT_COUNT = 1;
 
@@ -32,27 +33,11 @@ const ROOT_GROUP_ID = `${STORYFORGE_PROMPT_INSTALLATION_ID}:root`;
 const PROMPTS_GROUP_ID = `${STORYFORGE_PROMPT_INSTALLATION_ID}:prompts`;
 const GENERAL_GROUP_ID = `${STORYFORGE_PROMPT_INSTALLATION_ID}:general`;
 const GENRE_PACKS_GROUP_ID = `${STORYFORGE_PROMPT_INSTALLATION_ID}:genre-packs`;
-const NOVEL_ROOT_GROUP_ID = `${NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID}:root`;
-const NOVEL_PROMPTS_GROUP_ID = `${NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID}:prompts`;
-const NOVEL_CHARACTERS_GROUP_ID = `${NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID}:characters`;
+const NOVEL_CHARACTERS_GROUP_ID = `${STORYFORGE_PROMPT_INSTALLATION_ID}:characters`;
 
 const GENRE_SCOPES: Readonly<Record<string, readonly string[]>> = {
-  lishi: [
-    "历史",
-    "架空历史",
-    "秦汉三国",
-    "两晋隋唐",
-    "宋元明清",
-    "民国谍战",
-  ],
-  xianxia: [
-    "仙侠",
-    "修真文明",
-    "幻想修仙",
-    "古典仙侠",
-    "现代修真",
-    "仙侠奇缘",
-  ],
+  lishi: ["历史", "架空历史", "秦汉三国", "两晋隋唐", "宋元明清", "民国谍战"],
+  xianxia: ["仙侠", "修真文明", "幻想修仙", "古典仙侠", "现代修真", "仙侠奇缘"],
   yanqing: [
     "现代言情",
     "古代言情",
@@ -67,13 +52,7 @@ const GENRE_SCOPES: Readonly<Record<string, readonly string[]>> = {
     "兽世",
   ],
   realism: ["现实生活", "社会纪实", "家庭伦理", "乡土生活"],
-  suspense: [
-    "悬疑",
-    "推理侦探",
-    "诡秘悬疑",
-    "惊悚恐怖",
-    "探险盗墓",
-  ],
+  suspense: ["悬疑", "推理侦探", "诡秘悬疑", "惊悚恐怖", "探险盗墓"],
   xuanhuan: [
     "玄幻",
     "东方玄幻",
@@ -83,14 +62,7 @@ const GENRE_SCOPES: Readonly<Record<string, readonly string[]>> = {
     "玄幻言情",
   ],
   wuxia: ["武侠", "传统武侠", "现代武侠", "国术无双", "武侠幻想"],
-  dushi: [
-    "都市",
-    "都市生活",
-    "都市异能",
-    "青春校园",
-    "娱乐明星",
-    "商战职场",
-  ],
+  dushi: ["都市", "都市生活", "都市异能", "青春校园", "娱乐明星", "商战职场"],
   scifi: ["科幻", "未来世界", "星际文明", "时空穿梭", "科幻空间"],
   moshi: ["末世", "进化变异"],
   chuanyue: ["穿越", "时空穿梭", "无限快穿"],
@@ -168,12 +140,15 @@ const genreMetadata = new Map(GENRE_PACKS.map((pack) => [pack.id, pack]));
 function scopeForGenre(genreId: string | undefined): PromptScope {
   if (!genreId) return { kind: "global" };
   const genres = GENRE_SCOPES[genreId];
-  if (!genres) throw new Error(`StoryForge 题材缺少作用域映射：${genreId}`);
+  if (!genres)
+    throw new Error(`My Novel Studio 题材缺少作用域映射：${genreId}`);
   return { kind: "genres", genres };
 }
 
 function directoryLabel(segment: string): string {
-  return genreMetadata.get(segment)?.label ?? DIRECTORY_LABELS[segment] ?? segment;
+  return (
+    genreMetadata.get(segment)?.label ?? DIRECTORY_LABELS[segment] ?? segment
+  );
 }
 
 function groupId(path: string): string {
@@ -196,7 +171,7 @@ function jsonBlock(value: unknown): string {
 
 function renderPromptMarkdown(seed: PromptSeed): string {
   const metadata = {
-    sourceProject: "StoryForge",
+    sourceProject: "My Novel Studio",
     sourceVersion: STORYFORGE_VERSION,
     sourceFile: sourceFileFor(seed),
     moduleKey: seed.moduleKey,
@@ -277,20 +252,20 @@ function createGroup(
 function createStoryForgeModel(): PromptLibraryModel {
   if (SYSTEM_PROMPT_SEEDS.length !== STORYFORGE_PROMPT_COUNT) {
     throw new Error(
-      `StoryForge 提示词快照数量异常：预期 ${STORYFORGE_PROMPT_COUNT}，实际 ${SYSTEM_PROMPT_SEEDS.length}`,
+      `My Novel Studio 提示词快照数量异常：预期 ${STORYFORGE_PROMPT_COUNT}，实际 ${SYSTEM_PROMPT_SEEDS.length}`,
     );
   }
 
   const pack: PromptSkillPack = Object.freeze({
     id: STORYFORGE_PROMPT_INSTALLATION_ID,
     packageId: STORYFORGE_PROMPT_INSTALLATION_ID,
-    name: "StoryForge 小说提示词库",
+    name: "My Novel Studio 小说提示词库",
     source: "builtin",
     repository: "zhong2312/storyforge",
     version: STORYFORGE_VERSION,
     enabled: true,
     updatedAt: "2026-07-16",
-    description: "从 StoryForge 3.7.5 导入的完整小说提示词快照",
+    description: "My Novel Studio 默认小说提示词库（3.7.5）",
     copyNumber: 1,
     modified: false,
   });
@@ -319,7 +294,7 @@ function createStoryForgeModel(): PromptLibraryModel {
       "directory",
       "prompts/general",
       { kind: "global" },
-      genreMetadata.get("general")?.description ?? "StoryForge 通用提示词",
+      genreMetadata.get("general")?.description ?? "My Novel Studio 通用提示词",
     ),
     createGroup(
       GENRE_PACKS_GROUP_ID,
@@ -328,7 +303,16 @@ function createStoryForgeModel(): PromptLibraryModel {
       "directory",
       "prompts/genre-packs",
       { kind: "global" },
-      "StoryForge 题材模板，按小说题材决定是否进入启用集",
+      "My Novel Studio 题材模板，按小说题材决定是否进入启用集",
+    ),
+    createGroup(
+      NOVEL_CHARACTERS_GROUP_ID,
+      "人物库",
+      PROMPTS_GROUP_ID,
+      "directory",
+      "prompts/characters",
+      { kind: "global" },
+      "角色、关系、灵魂、种族与分组设计",
     ),
   ];
   const groupsByPath = new Map<string, PromptGroup>(
@@ -365,7 +349,8 @@ function createStoryForgeModel(): PromptLibraryModel {
     }
 
     let parent = groupsByPath.get(basePath);
-    if (!parent) throw new Error(`StoryForge 目录根节点不存在：${basePath}`);
+    if (!parent)
+      throw new Error(`My Novel Studio 目录根节点不存在：${basePath}`);
     const moduleSegments = seed.moduleKey.split(".");
     let currentPath = basePath;
     for (const segment of moduleSegments) {
@@ -412,82 +397,26 @@ function createStoryForgeModel(): PromptLibraryModel {
 }
 
 const STORYFORGE_MODEL = createStoryForgeModel();
-const NOVEL_WORKBENCH_MODEL: PromptLibraryModel = Object.freeze({
-  packs: Object.freeze([
-    Object.freeze({
-      id: NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
-      packageId: NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
-      name: "MyAgents 小说工作台提示词",
-      source: "builtin" as const,
-      version: NOVEL_CHARACTERS_ASSIST_PROMPT_VERSION,
-      enabled: true,
-      updatedAt: "2026-08-10",
-      description: "小说工作台人物库 Agent 的受控设计协议。",
-      copyNumber: 1,
-      modified: false,
-    }),
-  ]),
-  groups: Object.freeze([
-    createGroup(
-      NOVEL_ROOT_GROUP_ID,
-      "MyAgents 小说工作台提示词",
-      null,
-      "pack-root",
-      "",
-      { kind: "global" },
-      "小说工作台内置 Agent 场景提示词",
-      NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
-    ),
-    createGroup(
-      NOVEL_PROMPTS_GROUP_ID,
-      "prompts",
-      NOVEL_ROOT_GROUP_ID,
-      "directory",
-      "prompts",
-      { kind: "global" },
-      "prompts",
-      NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
-    ),
-    createGroup(
-      NOVEL_CHARACTERS_GROUP_ID,
-      "人物库",
-      NOVEL_PROMPTS_GROUP_ID,
-      "directory",
-      "prompts/characters",
-      { kind: "global" },
-      "角色、关系、灵魂、种族与分组设计",
-      NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
-    ),
-  ]),
-  prompts: Object.freeze([
-    Object.freeze({
-      instanceId: `${NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID}:${NOVEL_CHARACTERS_ASSIST_PROMPT_ID}`,
-      id: NOVEL_CHARACTERS_ASSIST_PROMPT_ID,
-      name: "人物库设计",
-      groupId: NOVEL_CHARACTERS_GROUP_ID,
-      version: NOVEL_CHARACTERS_ASSIST_PROMPT_VERSION,
-      enabled: true,
-      overridden: false,
-      skillPackId: NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
-      scopeOverride: null,
-      content: NOVEL_CHARACTERS_ASSIST_PROMPT_TEMPLATE,
-      sourcePath: NOVEL_CHARACTERS_ASSIST_PROMPT_SOURCE_PATH,
-    }),
-  ]),
+const NOVEL_CHARACTERS_PROMPT: PromptDefinition = Object.freeze({
+  instanceId: `${STORYFORGE_PROMPT_INSTALLATION_ID}:${NOVEL_CHARACTERS_ASSIST_PROMPT_ID}`,
+  id: NOVEL_CHARACTERS_ASSIST_PROMPT_ID,
+  name: "人物库设计",
+  groupId: NOVEL_CHARACTERS_GROUP_ID,
+  version: NOVEL_CHARACTERS_ASSIST_PROMPT_VERSION,
+  enabled: true,
+  overridden: false,
+  skillPackId: STORYFORGE_PROMPT_INSTALLATION_ID,
+  scopeOverride: null,
+  content: NOVEL_CHARACTERS_ASSIST_PROMPT_TEMPLATE,
+  sourcePath: NOVEL_CHARACTERS_ASSIST_PROMPT_SOURCE_PATH,
 });
 
 const DEFAULT_PROMPT_LIBRARY_MODEL: PromptLibraryModel = Object.freeze({
-  packs: Object.freeze([
-    ...STORYFORGE_MODEL.packs,
-    ...NOVEL_WORKBENCH_MODEL.packs,
-  ]),
-  groups: Object.freeze([
-    ...STORYFORGE_MODEL.groups,
-    ...NOVEL_WORKBENCH_MODEL.groups,
-  ]),
+  packs: Object.freeze([...STORYFORGE_MODEL.packs]),
+  groups: Object.freeze([...STORYFORGE_MODEL.groups]),
   prompts: Object.freeze([
     ...STORYFORGE_MODEL.prompts,
-    ...NOVEL_WORKBENCH_MODEL.prompts,
+    NOVEL_CHARACTERS_PROMPT,
   ]),
 });
 

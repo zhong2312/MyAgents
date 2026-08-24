@@ -76,6 +76,7 @@ export function createCultivationEcologyRepository(storage: WorkbenchStorage) {
     return {
       ecology: rebuildCultivationAudits(loaded.ecology),
       content: serializeCultivationFileSnapshot(loaded.files),
+      files: loaded.files,
     };
   };
 

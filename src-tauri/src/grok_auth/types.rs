@@ -144,7 +144,7 @@ pub enum ResolveBearerPurpose {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagementBearerRequest {
-    pub session_id: String,
+    pub sidecar_id: String,
     #[serde(default)]
     pub reason: Option<String>,
     #[serde(default)]

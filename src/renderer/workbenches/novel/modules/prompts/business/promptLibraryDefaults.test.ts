@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createDefaultPromptLibraryModel,
-  NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+  NOVEL_WORKBENCH_PROMPT_COUNT,
   STORYFORGE_PROMPT_COUNT,
   STORYFORGE_PROMPT_INSTALLATION_ID,
   STORYFORGE_WORLD_GUIDE_PROMPT_ID,
@@ -10,7 +10,7 @@ import {
 import { NOVEL_CHARACTERS_ASSIST_PROMPT_ID } from "../../characters/business/characterAgentPrompt";
 
 describe("StoryForge prompt-library defaults", () => {
-  it("contains the versioned StoryForge and小说工作台 installations", () => {
+  it("contains one versioned My Novel Studio installation", () => {
     const model = createDefaultPromptLibraryModel();
 
     expect(model.packs).toEqual(
@@ -18,18 +18,13 @@ describe("StoryForge prompt-library defaults", () => {
         expect.objectContaining({
           id: STORYFORGE_PROMPT_INSTALLATION_ID,
           packageId: STORYFORGE_PROMPT_INSTALLATION_ID,
-          name: "StoryForge 小说提示词库",
+          name: "My Novel Studio 小说提示词库",
+          description: "My Novel Studio 默认小说提示词库（3.7.5）",
           version: "3.7.5",
-        }),
-        expect.objectContaining({
-          id: NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
-          packageId: NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
-          name: "MyAgents 小说工作台提示词",
-          version: "1.0.0",
         }),
       ]),
     );
-    expect(model.packs).toHaveLength(2);
+    expect(model.packs).toHaveLength(1);
     expect(model.packs.some((pack) => pack.id === "project.personal")).toBe(
       false,
     );
@@ -43,9 +38,15 @@ describe("StoryForge prompt-library defaults", () => {
     const promptIds = storyForgePrompts.map((prompt) => prompt.id);
     const sourcePaths = storyForgePrompts.map((prompt) => prompt.sourcePath);
 
-    expect(storyForgePrompts).toHaveLength(STORYFORGE_PROMPT_COUNT);
-    expect(storyForgePrompts.filter((prompt) => prompt.enabled)).toHaveLength(40);
-    expect(storyForgePrompts.filter((prompt) => !prompt.enabled)).toHaveLength(49);
+    expect(storyForgePrompts).toHaveLength(
+      STORYFORGE_PROMPT_COUNT + NOVEL_WORKBENCH_PROMPT_COUNT,
+    );
+    expect(storyForgePrompts.filter((prompt) => prompt.enabled)).toHaveLength(
+      41,
+    );
+    expect(storyForgePrompts.filter((prompt) => !prompt.enabled)).toHaveLength(
+      49,
+    );
     expect(new Set(promptIds).size).toBe(promptIds.length);
     expect(new Set(sourcePaths).size).toBe(sourcePaths.length);
     expect(promptIds).toContain(STORYFORGE_WORLD_GUIDE_PROMPT_ID);
@@ -57,12 +58,24 @@ describe("StoryForge prompt-library defaults", () => {
     );
     expect(storyForgePrompts[0]?.content).toContain("## 系统提示词");
     expect(storyForgePrompts[0]?.content).toContain("## 用户提示词模板");
+    expect(storyForgePrompts[0]?.content).toContain(
+      '"sourceProject": "My Novel Studio"',
+    );
+    const bookEditor = storyForgePrompts.find(
+      (prompt) => prompt.name === "内置-全书编辑",
+    );
+    expect(bookEditor?.content).toContain(
+      "你是 My Novel Studio 的全书编辑 Agent",
+    );
+    expect(bookEditor?.content).not.toContain(
+      "你是 StoryForge 的全书编辑 Agent",
+    );
     expect(storyForgePrompts[0]?.content).toContain('"sourceVersion": "3.7.5"');
     expect(model.prompts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: NOVEL_CHARACTERS_ASSIST_PROMPT_ID,
-          skillPackId: NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+          skillPackId: STORYFORGE_PROMPT_INSTALLATION_ID,
           content: expect.stringContaining("novel_characters_get_context"),
         }),
       ]),
@@ -78,8 +91,12 @@ describe("StoryForge prompt-library defaults", () => {
     );
     const xianxiaGroup = groupsById.get(xianxiaPrompt?.groupId ?? "");
 
-    expect(roots).toHaveLength(2);
-    expect(roots.find((root) => root.skillPackId === STORYFORGE_PROMPT_INSTALLATION_ID)).toEqual(
+    expect(roots).toHaveLength(1);
+    expect(
+      roots.find(
+        (root) => root.skillPackId === STORYFORGE_PROMPT_INSTALLATION_ID,
+      ),
+    ).toEqual(
       expect.objectContaining({
         nodeKind: "pack-root",
         skillPackId: STORYFORGE_PROMPT_INSTALLATION_ID,
@@ -87,9 +104,7 @@ describe("StoryForge prompt-library defaults", () => {
     );
     for (const group of model.groups) {
       if (group.parentId) expect(groupsById.has(group.parentId)).toBe(true);
-      expect([STORYFORGE_PROMPT_INSTALLATION_ID, NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID]).toContain(
-        group.skillPackId,
-      );
+      expect(group.skillPackId).toBe(STORYFORGE_PROMPT_INSTALLATION_ID);
     }
     expect(xianxiaGroup?.scope).toEqual(
       expect.objectContaining({

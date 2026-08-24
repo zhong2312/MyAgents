@@ -11,6 +11,7 @@ import WidgetRenderer from '@/components/tools/WidgetRenderer';
 import { parseWidgetTags, hasWidgetTags } from '@/components/tools/widgetTagParser';
 import Tip from '@/components/Tip';
 import ToolAttachmentGallery from '@/components/tools/ToolAttachmentGallery';
+import { TurnFileEditSummary } from '@/components/TurnFileEditSummary';
 import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
 import { buildReplyMarkdown, downloadMarkdown, localDateStr } from '@/utils/markdownExport';
 import { formatDuration, formatTokens } from '@/utils/formatTokens';
@@ -255,6 +256,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
           </button>
         </Tip>
       )}
+      <TurnFileEditSummary content={message.content} />
       {turnMetaLabel && (
         <span
           className="ml-2 min-w-0 flex-1 truncate text-xs text-[var(--ink-muted)]/60 opacity-0 transition-opacity duration-150 group-hover/actions:opacity-100 group-focus-within/actions:opacity-100"

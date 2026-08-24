@@ -47,7 +47,6 @@ interface HistorySearchOverlayContentProps {
     onOpenSession: (session: SessionMetadata, project: Project) => void;
     onClose: () => void;
     taskCenterData: TaskCenterData;
-    initialMode?: 'default' | 'search';
 }
 
 type BrowseFilter = 'all' | 'favorite';
@@ -167,7 +166,6 @@ export default memo(function HistorySearchOverlayContent({
     onOpenSession,
     onClose,
     taskCenterData,
-    initialMode = 'default',
 }: HistorySearchOverlayContentProps) {
     const { t } = useTranslation('app');
     const { t: tLauncher } = useTranslation('launcher');
@@ -176,11 +174,12 @@ export default memo(function HistorySearchOverlayContent({
     const toast = useToast();
 
     // Search state
-    const [isSearchMode, setIsSearchMode] = useState(initialMode === 'search');
+    const [isSearchMode, setIsSearchMode] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [isSearching, setIsSearching] = useState(false);
     const [searchResults, setSearchResults] = useState<SessionSearchHit[]>([]);
     const searchInputRef = useRef<HTMLInputElement>(null);
+    const compactSearchRef = useRef<HTMLButtonElement>(null);
 
     const [browseFilter, setBrowseFilter] = useState<BrowseFilter>('all');
     const [workspaceFilter, setWorkspaceFilter] = useState<string>('all');
@@ -189,13 +188,26 @@ export default memo(function HistorySearchOverlayContent({
     const [contextMenu, setContextMenu] = useState<{ session: SessionMetadata; x: number; y: number } | null>(null);
     const contextMenuAnchorRef = useRef<HTMLSpanElement>(null);
 
-    // Auto-focus search input on mount when overlay opens in search mode
+    // Keep keyboard focus inside the overlay and on the same search affordance
+    // as it morphs between compact and expanded states.
     useEffect(() => {
-        if (initialMode === 'search') {
-            const id = setTimeout(() => searchInputRef.current?.focus(), 50);
-            return () => clearTimeout(id);
+        if (isSearchMode) {
+            searchInputRef.current?.focus();
+        } else {
+            compactSearchRef.current?.focus();
         }
-    }, [initialMode]);
+    }, [isSearchMode]);
+
+    const enterSearchMode = useCallback(() => {
+        setIsSearchMode(true);
+    }, []);
+
+    const exitSearchMode = useCallback(() => {
+        setIsSearchMode(false);
+        setSearchQuery('');
+        setSearchResults([]);
+        setIsSearching(false);
+    }, []);
 
     const projectsByWorkspace = useMemo(() => {
         const byWorkspace = new Map<string, Project>();
@@ -413,89 +425,128 @@ export default memo(function HistorySearchOverlayContent({
                     further restructuring. */}
                 <div className="flex min-h-0 flex-1">
                     <div className="flex min-w-0 flex-1 flex-col">
-                        {/* Filter bar / Search Input */}
-                        <div className="mb-3 flex flex-wrap items-center gap-2 h-8">
-                            {isSearchMode ? (
-                                <div className="relative flex-1 h-full">
-                                    <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 text-[var(--ink-muted)]/50">
-                                        <Search className="h-3.5 w-3.5" />
-                                    </div>
-                                    <input
-                                        ref={searchInputRef}
-                                        type="text"
-                                        value={searchQuery}
-                                        onChange={(e) => setSearchQuery(e.target.value)}
-                                        placeholder={t('historyOverlay.searchPlaceholder')}
-                                        className="h-full w-full rounded-md outline-none border border-[var(--line)] bg-transparent py-1 pl-8 pr-10 text-sm text-[var(--ink)] transition-colors placeholder:text-[var(--ink-muted)]/60 focus:border-[var(--accent)]"
-                                        onKeyDown={(e) => {
-                                            if (e.key === "Escape") {
-                                                setIsSearchMode(false);
-                                                setSearchQuery("");
-                                            } else if (e.key === "Enter" && directSessionMatch?.kind === 'found') {
-                                                // Paste-to-jump: Enter opens the matched session (#260).
-                                                e.preventDefault();
-                                                openDirectMatch();
-                                            }
-                                        }}
-                                    />
-                                    <div className="absolute inset-y-0 right-0 flex items-center gap-1 pr-2">
-                                        {isSearching && (
-                                            <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--ink-muted)]/50" />
-                                        )}
+                        {/* Browse controls stay visible until the compact search field is
+                            activated. The animated surface uses transform/opacity only,
+                            so opening search does not force layout on the long list below. */}
+                        <div
+                            className="relative mb-3 h-8"
+                            data-history-search-bar
+                            data-state={isSearchMode ? 'expanded' : 'compact'}
+                        >
+                            <div
+                                className={`flex h-full items-center gap-2 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none ${
+                                    isSearchMode
+                                        ? 'pointer-events-none -translate-x-2 opacity-0'
+                                        : 'translate-x-0 opacity-100'
+                                }`}
+                                data-history-browse-controls
+                                aria-hidden={isSearchMode}
+                                inert={isSearchMode}
+                            >
+                                <div className="flex gap-1" data-history-browse-filters>
+                                    {BROWSE_FILTER_OPTIONS.map(opt => (
                                         <button
-                                            onClick={() => {
-                                                setIsSearchMode(false);
-                                                setSearchQuery("");
-                                                setSearchResults([]);
-                                            }}
-                                            title={t('historyOverlay.exitSearch')}
-                                            className="flex items-center text-[var(--ink-muted)]/50 transition-colors hover:text-[var(--ink)]"
+                                            key={opt.key}
+                                            onClick={() => setBrowseFilter(opt.key)}
+                                            className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
+                                                browseFilter === opt.key
+                                                    ? 'bg-[var(--button-primary-bg)] text-[var(--button-primary-text)]'
+                                                    : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]'
+                                            }`}
                                         >
-                                            <X className="h-3.5 w-3.5" />
+                                            {t(opt.labelKey)}
                                         </button>
-                                    </div>
+                                    ))}
                                 </div>
-                            ) : (
-                                <>
-                                    {/* Browse filters */}
-                                    <div className="flex gap-1" data-history-browse-filters>
-                                        {BROWSE_FILTER_OPTIONS.map(opt => (
-                                            <button
-                                                key={opt.key}
-                                                onClick={() => setBrowseFilter(opt.key)}
-                                                className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
-                                                    browseFilter === opt.key
-                                                        ? 'bg-[var(--button-primary-bg)] text-[var(--button-primary-text)]'
-                                                        : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]'
-                                                }`}
-                                            >
-                                                {t(opt.labelKey)}
-                                            </button>
-                                        ))}
-                                    </div>
 
-                                    {/* Workspace dropdown */}
-                                    {workspaceOptions.length > 1 && (
-                                        <CustomSelect
-                                            value={workspaceFilter}
-                                            options={workspaceSelectOptions}
-                                            onChange={setWorkspaceFilter}
-                                            compact
-                                            className="w-[140px]"
-                                        />
+                                {workspaceOptions.length > 1 && (
+                                    <CustomSelect
+                                        value={workspaceFilter}
+                                        options={workspaceSelectOptions}
+                                        onChange={setWorkspaceFilter}
+                                        compact
+                                        className="w-[140px]"
+                                    />
+                                )}
+                            </div>
+
+                            <button
+                                ref={compactSearchRef}
+                                type="button"
+                                onClick={enterSearchMode}
+                                aria-label={t('historyOverlay.searchPlaceholder')}
+                                aria-hidden={isSearchMode}
+                                tabIndex={isSearchMode ? -1 : 0}
+                                className={`absolute inset-y-0 right-0 flex w-[30%] min-w-72 items-center justify-between gap-3 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 text-sm text-[var(--ink-muted)] transition-[opacity,transform] duration-150 ease-out hover:border-[var(--line-strong)] hover:bg-[var(--paper-inset)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/20 motion-reduce:transition-none ${
+                                    isSearchMode
+                                        ? 'pointer-events-none translate-x-2 opacity-0'
+                                        : 'pointer-events-auto translate-x-0 opacity-100'
+                                }`}
+                                data-history-search-compact-trigger
+                            >
+                                <span className="truncate text-[var(--ink-muted)]/60">
+                                    {t('historyOverlay.searchPlaceholder')}
+                                </span>
+                                <Search className="h-3.5 w-3.5 shrink-0" />
+                            </button>
+
+                            <div
+                                aria-hidden="true"
+                                className={`pointer-events-none absolute inset-0 origin-right rounded-md border bg-[var(--paper-elevated)] transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none ${
+                                    isSearchMode
+                                        ? 'scale-x-100 border-[var(--accent)] opacity-100'
+                                        : 'scale-x-[0.3] border-[var(--line)] opacity-0'
+                                }`}
+                                data-history-search-expanding-surface
+                            />
+
+                            <div
+                                className={`absolute inset-0 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none ${
+                                    isSearchMode
+                                        ? 'pointer-events-auto translate-x-0 opacity-100 delay-75 motion-reduce:delay-0'
+                                        : 'pointer-events-none translate-x-2 opacity-0'
+                                }`}
+                                aria-hidden={!isSearchMode}
+                                data-history-search-expanded-content
+                            >
+                                <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 text-[var(--ink-muted)]/50">
+                                    <Search className="h-3.5 w-3.5" />
+                                </div>
+                                <input
+                                    ref={searchInputRef}
+                                    type="text"
+                                    value={searchQuery}
+                                    disabled={!isSearchMode}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    aria-label={t('historyOverlay.searchPlaceholder')}
+                                    placeholder={t('historyOverlay.searchPlaceholder')}
+                                    className="h-full w-full bg-transparent py-1 pl-8 pr-10 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]/60 disabled:cursor-default"
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Escape') {
+                                            e.preventDefault();
+                                            exitSearchMode();
+                                        } else if (e.key === 'Enter' && directSessionMatch?.kind === 'found') {
+                                            // Paste-to-jump: Enter opens the matched session (#260).
+                                            e.preventDefault();
+                                            openDirectMatch();
+                                        }
+                                    }}
+                                />
+                                <div className="absolute inset-y-0 right-0 flex items-center gap-1 pr-2">
+                                    {isSearching && (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--ink-muted)]/50" />
                                     )}
-                                    <div className="flex-1" />
                                     <button
-                                        onClick={() => {
-                                            setIsSearchMode(true);
-                                            setTimeout(() => searchInputRef.current?.focus(), 50);
-                                        }}
-                                        className="rounded-md p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                                        type="button"
+                                        onClick={exitSearchMode}
+                                        aria-label={t('historyOverlay.exitSearch')}
+                                        tabIndex={isSearchMode ? 0 : -1}
+                                        className="flex items-center rounded-sm text-[var(--ink-muted)]/50 transition-colors hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/20"
                                     >
-                                        <Search className="h-4 w-4" />
+                                        <X className="h-3.5 w-3.5" />
                                     </button>
-                                </>
-                            )}
+                                </div>
+                            </div>
                         </div>
 
                         {/* Session list — empty-query history is virtualized so opening

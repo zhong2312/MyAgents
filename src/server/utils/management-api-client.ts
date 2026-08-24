@@ -92,15 +92,15 @@ export async function resolveManagedOAuthCredential(
   if (providerId !== 'xai-sub') {
     throw new Error(`Unsupported managed OAuth provider: ${providerId}`);
   }
-  const sessionId = process.env.MYAGENTS_SESSION_ID?.trim();
-  if (!sessionId) {
-    throw new Error('Managed OAuth requires a session-scoped Sidecar identity');
+  const sidecarId = process.env.MYAGENTS_SIDECAR_ID?.trim();
+  if (!sidecarId) {
+    throw new Error('Managed OAuth requires a Sidecar process identity');
   }
   const result = await managementApi(
     '/api/grok/bearer',
     'POST',
     {
-      sessionId,
+      sidecarId,
       reason: intent.reason,
       ...purpose,
       ...('rejectedCredentialVersion' in intent

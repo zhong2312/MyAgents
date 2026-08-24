@@ -30,6 +30,10 @@ describe('describeTerminalReason — known reasons map to severity', () => {
   it('maps known error reasons with severity "error"', () => {
     expect(describeTerminalReason('prompt_too_long')).toMatchObject({ severity: 'error' });
     expect(describeTerminalReason('blocking_limit')).toMatchObject({ severity: 'error' });
+    expect(describeTerminalReason('rapid_refill_breaker')).toMatchObject({
+      severity: 'error',
+      label: '上下文反复填满，本轮已停止',
+    });
     expect(describeTerminalReason('stop_hook_prevented')).toMatchObject({ severity: 'error' });
     expect(describeTerminalReason('api_error')).toMatchObject({ severity: 'error' });
     expect(describeTerminalReason('malformed_tool_use_exhausted')).toMatchObject({ severity: 'error' });
@@ -40,7 +44,6 @@ describe('describeTerminalReason — known reasons map to severity', () => {
 
   it('maps notice-level reasons with severity "notice"', () => {
     expect(describeTerminalReason('max_turns')).toMatchObject({ severity: 'notice' });
-    expect(describeTerminalReason('rapid_refill_breaker')).toMatchObject({ severity: 'notice' });
     expect(describeTerminalReason('budget_exhausted')).toMatchObject({ severity: 'notice' });
   });
 
@@ -78,6 +81,7 @@ describe('shouldOfferTerminalReasonDiagnostics', () => {
   it('offers helper diagnostics for terminal error reasons', () => {
     expect(shouldOfferTerminalReasonDiagnostics('prompt_too_long')).toBe(true);
     expect(shouldOfferTerminalReasonDiagnostics('blocking_limit')).toBe(true);
+    expect(shouldOfferTerminalReasonDiagnostics('rapid_refill_breaker')).toBe(true);
     expect(shouldOfferTerminalReasonDiagnostics('stop_hook_prevented')).toBe(true);
     expect(shouldOfferTerminalReasonDiagnostics('hook_stopped')).toBe(true);
     expect(shouldOfferTerminalReasonDiagnostics('image_error')).toBe(true);
@@ -93,7 +97,6 @@ describe('shouldOfferTerminalReasonDiagnostics', () => {
     expect(shouldOfferTerminalReasonDiagnostics('completed')).toBe(false);
     expect(shouldOfferTerminalReasonDiagnostics('aborted_streaming')).toBe(false);
     expect(shouldOfferTerminalReasonDiagnostics('max_turns')).toBe(false);
-    expect(shouldOfferTerminalReasonDiagnostics('rapid_refill_breaker')).toBe(false);
     expect(shouldOfferTerminalReasonDiagnostics('tool_deferred')).toBe(false);
     expect(shouldOfferTerminalReasonDiagnostics('background_requested')).toBe(false);
     expect(shouldOfferTerminalReasonDiagnostics('budget_exhausted')).toBe(false);

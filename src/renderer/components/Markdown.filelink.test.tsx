@@ -188,8 +188,9 @@ describe('Markdown local file links', () => {
     renderFullscreenMarkdown('[A](notes/a.md) [B](notes/b.md)');
 
     fireEvent.click(screen.getByRole('link', { name: 'A' }));
+    await waitFor(() => expect(mocks.readPreview).toHaveBeenCalledWith({ path: 'notes/a.md' }));
     fireEvent.click(screen.getByRole('link', { name: 'B' }));
-    await waitFor(() => expect(mocks.readPreview).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mocks.readPreview).toHaveBeenCalledWith({ path: 'notes/b.md' }));
 
     resolveB({ name: 'b.md', content: 'content B', size: 9 });
     await waitFor(() => expect(screen.getByTestId('fullscreen-file-preview')).toHaveTextContent(

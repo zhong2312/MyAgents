@@ -79,6 +79,31 @@ describe("map canvas freehand compatibility", () => {
     expect(points.some(([, y]) => y !== 480)).toBe(true);
   });
 
+  it("renders a closed polygon brush route with a closing segment", () => {
+    const feature = {
+      id: "closed-polygon-brush",
+      kind: "route" as const,
+      name: "closed polygon brush",
+      entityRef: null,
+      layerId: "layer-main",
+      points: [
+        { x: 80, y: 120 },
+        { x: 300, y: 120 },
+        { x: 220, y: 280 },
+      ],
+      timeFrom: null,
+      timeTo: null,
+      props: { polygonBrush: "true", closed: "true", curve: "line" },
+      description: "",
+    };
+
+    const geometry = geometryFromFeature(feature, 800, 600);
+    expect(geometry).toBeInstanceOf(LineString);
+    const points = (geometry as LineString).getCoordinates();
+    expect(points).toHaveLength(feature.points.length + 1);
+    expect(points.at(-1)).toEqual(points[0]);
+  });
+
   it("preserves legacy circle features that explicitly contain radius", () => {
     const feature = {
       id: "legacy-circle",

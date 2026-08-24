@@ -18,6 +18,8 @@ import { reasoningEffortChoices, REASONING_EFFORT_DESCRIPTIONS } from '@/../shar
 import { ALL_WORKSPACE_ICON_IDS, DEFAULT_WORKSPACE_ICON } from '@/assets/workspace-icons';
 import WorkspaceIcon from '../launcher/WorkspaceIcon';
 import RuntimeSelector from '../RuntimeSelector';
+import { PermissionModeIcon, PermissionModeMenuContent, type PermissionModeMenuItem } from '../PermissionModeMenu';
+import { Popover } from '../ui/Popover';
 import type { RuntimeType, RuntimeDetections, RuntimeConfig } from '../../../shared/types/runtime';
 import { buildRuntimeChangePatch } from '../../../shared/types/runtime';
 import { agentDefaultsForRuntimeBackedProvider, agentUsesManagedCodexProvider, toProviderExecutionIntent } from '../../../shared/providerExecution';
@@ -30,10 +32,11 @@ interface WorkspaceBasicsSectionProps {
   agentDir: string;
 }
 
-function permissionText(mode: string | null | undefined, t: TFunction<'settings'>): { label: string; description: string; icon: string } {
+function permissionText(mode: string | null | undefined, t: TFunction<'settings'>): PermissionModeMenuItem {
   const value = mode === 'fullAgency' || mode === 'auto' || mode === 'plan' ? mode : 'plan';
-  const icon = value === 'fullAgency' ? '🚀' : value === 'auto' ? '⚡' : '📋';
+  const icon = PERMISSION_MODES.find(item => item.value === value)?.icon;
   return {
+    value,
     icon,
     label: t(`agentSettings.permission.${value}`),
     description: t(`agentSettings.permission.${value}Description`),
@@ -42,6 +45,7 @@ function permissionText(mode: string | null | undefined, t: TFunction<'settings'
 
 export default function WorkspaceBasicsSection({ project, agent, agentDir }: WorkspaceBasicsSectionProps) {
   const { t } = useTranslation('settings');
+  const { t: tChat } = useTranslation('chat');
   const { config, providers, apiKeys, providerVerifyStatus, patchProject, refreshConfig } = useConfig();
   // Only credentialed providers — the picker must not expose a provider
   // the user can't actually use, and must match the Chat model switcher's
@@ -58,6 +62,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
   const [mcpServers, setMcpServers] = useState<McpServerDefinition[]>([]);
   const [globalEnabledMcp, setGlobalEnabledMcp] = useState<string[]>([]);
   const isMountedRef = useRef(true);
+  const permissionButtonRef = useRef<HTMLButtonElement>(null);
 
   // Runtime detection (v0.1.59)
   const [runtimeDetections, setRuntimeDetections] = useState<RuntimeDetections>({
@@ -547,40 +552,35 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       <div className="relative flex items-center gap-3">
         <label className="w-16 shrink-0 text-sm text-[var(--ink-muted)]">{t('agentSettings.basics.permission')}</label>
         <button
+          ref={permissionButtonRef}
           className="flex flex-1 items-center justify-between rounded-lg border border-[var(--line)] px-3 py-1.5 text-left text-sm text-[var(--ink)] transition-colors hover:border-[var(--line-strong)]"
           onClick={() => setOpenPopup(openPopup === 'permission' ? null : 'permission')}
         >
-          <span>{permissionMode.icon} {permissionMode.label}</span>
+          <span className="flex items-center gap-1.5">
+            <PermissionModeIcon
+              value={permissionMode.value}
+              fallback={permissionMode.icon}
+              className="h-4 w-4 shrink-0"
+            />
+            {permissionMode.label}
+          </span>
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
         </button>
 
-        {openPopup === 'permission' && (
-          <>
-            <div className="fixed inset-0 z-40" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpenPopup(null); }} />
-            <div className="absolute left-20 top-0 z-50 w-[280px] rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-2 shadow-lg">
-              {PERMISSION_MODES.map(mode => {
-                const displayMode = permissionText(mode.value, t);
-                return (
-                <button
-                  key={mode.value}
-                  className={`flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left transition-colors ${
-                    effectivePermissionMode === mode.value
-                      ? 'bg-[var(--accent-warm-muted)] text-[var(--accent-warm)]'
-                      : 'text-[var(--ink)] hover:bg-[var(--hover-bg)]'
-                  }`}
-                  onClick={() => handlePermissionSelect(mode.value)}
-                >
-                  <span className="shrink-0">{displayMode.icon}</span>
-                  <div>
-                    <div className="text-sm font-medium">{displayMode.label}</div>
-                    <div className="text-xs text-[var(--ink-muted)]">{displayMode.description}</div>
-                  </div>
-                </button>
-                );
-              })}
-            </div>
-          </>
-        )}
+        <Popover
+          open={openPopup === 'permission'}
+          onClose={() => setOpenPopup(null)}
+          anchorRef={permissionButtonRef}
+          placement="bottom-start"
+          className="composer-toolbar-menu-enter w-72 py-1"
+        >
+          <PermissionModeMenuContent
+            items={PERMISSION_MODES.map(mode => permissionText(mode.value, t))}
+            selectedValue={permissionMode.value}
+            header={tChat('input.permissionModeHeader')}
+            onSelect={handlePermissionSelect}
+          />
+        </Popover>
       </div>
       )}
 

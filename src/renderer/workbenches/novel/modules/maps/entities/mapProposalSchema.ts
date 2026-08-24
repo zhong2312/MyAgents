@@ -41,6 +41,14 @@ export const legacyMapProposalManifestSchema = z
         kind: z.literal("agent"),
         promptId: z.string().trim().min(1),
         promptVersion: z.string().trim().min(1),
+        worldSourceHash: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/u)
+          .optional(),
+        generatorAdapter: z.string().trim().min(1).max(120).optional(),
+        runtime: z.enum(["azgaar-http", "compatibility-adapter"]).optional(),
+        runtimeError: z.string().max(2_000).optional(),
+        generationPlanVersion: z.number().int().positive().optional(),
       })
       .strict(),
     operations: z.array(mapProposalOperationSchema).min(1).max(40),
@@ -83,6 +91,14 @@ export const mapProposalManifestSchema = z
         kind: z.literal("agent"),
         promptId: z.string().trim().min(1),
         promptVersion: z.string().trim().min(1),
+        worldSourceHash: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/u)
+          .optional(),
+        generatorAdapter: z.string().trim().min(1).max(120).optional(),
+        runtime: z.enum(["azgaar-http", "compatibility-adapter"]).optional(),
+        runtimeError: z.string().max(2_000).optional(),
+        generationPlanVersion: z.number().int().positive().optional(),
       })
       .strict(),
     operations: z.array(mapProposalOperationReferenceSchema).min(1).max(40),

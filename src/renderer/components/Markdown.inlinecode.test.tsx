@@ -18,6 +18,13 @@ const mocks = vi.hoisted(() => ({
   writeText: vi.fn(),
   toastError: vi.fn(),
   toastInfo: vi.fn(),
+  openUrl: vi.fn(),
+  openExternal: vi.fn(),
+}));
+
+vi.mock('@/utils/openExternal', () => ({
+  openExternal: mocks.openExternal,
+  isExternalUrl: (url: string) => /^https?:\/\//i.test(url),
 }));
 
 vi.mock('@/components/Toast', () => ({
@@ -52,6 +59,7 @@ vi.mock('@/hooks/useWorkspaceFileService', () => ({
 }));
 
 import { FileActionProvider } from '@/context/FileActionContext';
+import { BrowserPanelContext } from '@/context/BrowserPanelContext';
 
 import Markdown from './Markdown';
 
@@ -59,16 +67,24 @@ const WORKSPACE = '/Users/zhihu/Documents/project/mino';
 const REL = '.claude/rules/04-MEMORY.md';
 const ABS = `${WORKSPACE}/${REL}`;
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 function renderMarkdown(markdown: string) {
   render(
-    <FileActionProvider
-      workspacePath={WORKSPACE}
-      onInsertReference={mocks.onInsertReference}
-      onFilePreviewExternal={mocks.onFilePreviewExternal}
-      onRevealInTree={mocks.onRevealInTree}
-    >
-      <Markdown>{markdown}</Markdown>
-    </FileActionProvider>,
+    <BrowserPanelContext.Provider value={{ openUrl: mocks.openUrl }}>
+      <FileActionProvider
+        workspacePath={WORKSPACE}
+        onInsertReference={mocks.onInsertReference}
+        onFilePreviewExternal={mocks.onFilePreviewExternal}
+        onRevealInTree={mocks.onRevealInTree}
+      >
+        <Markdown>{markdown}</Markdown>
+      </FileActionProvider>
+    </BrowserPanelContext.Provider>,
   );
 }
 
@@ -87,6 +103,7 @@ function renderFloatingMarkdown(markdown: string) {
 
 describe('Markdown inline-code file paths', () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     mocks.writeText.mockResolvedValue(undefined);
     mocks.checkPaths.mockResolvedValue({ results: {} });
@@ -144,28 +161,49 @@ describe('Markdown inline-code file paths', () => {
     // 复制 copies the VERBATIM shown text (absolute here) — not the relative
     // action form the menu uses internally for backend calls.
     fireEvent.contextMenu(chip);
-    fireEvent.click(screen.getByText('复制'));
+    fireEvent.click(await screen.findByText('复制'));
     expect(mocks.writeText).toHaveBeenCalledWith(ABS);
   });
 
-  it('keeps a rejected absolute path actionable and explains the unavailable target', async () => {
+  it('keeps a rejected absolute path plain and without file actions', async () => {
     const OUTSIDE = '/etc/hosts';
     mocks.checkLocalPaths.mockResolvedValue({ results: { [OUTSIDE]: { exists: false, type: 'file' } } });
     renderMarkdown(`见 \`${OUTSIDE}\` 。`);
 
+    await waitFor(() => expect(mocks.checkLocalPaths).toHaveBeenCalledWith({
+      paths: [OUTSIDE],
+      workspace: WORKSPACE,
+    }));
+    const chip = screen.getByText(OUTSIDE);
+    expect(chip).not.toHaveClass('cursor-pointer');
+    fireEvent.click(chip);
+    fireEvent.contextMenu(chip);
+    expect(mocks.toastError).not.toHaveBeenCalled();
+    expect(screen.queryByText('复制')).not.toBeInTheDocument();
+    expect(screen.queryByText('打开')).not.toBeInTheDocument();
+  });
+
+  it('keeps the reported localized Desktop-relative path plain when it is absent', async () => {
+    const reported = '桌面/产品介绍与使用说明.md';
+    mocks.checkPaths.mockResolvedValue({ results: { [reported]: { exists: false, type: 'file' } } });
+    renderMarkdown(`已复制到桌面并打开了 → \`${reported}\``);
+
+    await waitFor(() => expect(mocks.checkPaths).toHaveBeenCalledWith({ paths: [reported] }));
+    expect(screen.getByText(reported)).not.toHaveClass('cursor-pointer');
+    expect(screen.queryByTitle(`文件: ${reported}`)).not.toBeInTheDocument();
+  });
+
+  it('supports a verified workspace path containing spaces', async () => {
+    const path = 'docs/Product Guide.md';
+    mocks.checkPaths.mockResolvedValue({ results: { [path]: { exists: true, type: 'file' } } });
+    renderMarkdown(`见 \`${path}\`。`);
+
     const chip = await waitFor(() => {
-      const el = screen.getByText(OUTSIDE);
+      const el = screen.getByText(path);
       expect(el).toHaveClass('cursor-pointer');
       return el;
     });
-    expect(mocks.checkLocalPaths).toHaveBeenCalledWith({ paths: [OUTSIDE], workspace: WORKSPACE });
-
-    fireEvent.click(chip);
-    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('文件不存在或无法访问'));
-
-    fireEvent.contextMenu(chip);
-    expect(screen.getByText('复制')).toBeInTheDocument();
-    expect(screen.getByText('打开')).toBeInTheDocument();
+    expect(chip).toHaveAttribute('title', `文件: ${path}`);
   });
 
   it('offers 复制 below 预览 and copies the shown text verbatim', async () => {
@@ -178,6 +216,7 @@ describe('Markdown inline-code file paths', () => {
       return el;
     });
     fireEvent.contextMenu(chip);
+    await screen.findByText('预览');
 
     // 复制 sits directly after 预览 in the menu.
     const labels = screen.getAllByRole('button').map((b) => b.textContent);
@@ -219,7 +258,7 @@ describe('Markdown inline-code file paths', () => {
     expect(screen.queryByText('打开所在文件夹')).not.toBeInTheDocument();
 
     fireEvent.contextMenu(chip);
-    expect(screen.getByText('打开所在文件夹')).toBeInTheDocument();
+    expect(await screen.findByText('打开所在文件夹')).toBeInTheDocument();
   });
 
   it('uses the system default application for an explicit Cmd/Ctrl click', async () => {
@@ -236,4 +275,102 @@ describe('Markdown inline-code file paths', () => {
     await waitFor(() => expect(mocks.openWithDefault).toHaveBeenCalledWith({ path: REL }));
     expect(mocks.onFilePreviewExternal).not.toHaveBeenCalled();
   });
+
+  it('exposes verified file code as a keyboard link without hijacking text selection', async () => {
+    mocks.checkPaths.mockResolvedValue({ results: { [REL]: { exists: true, type: 'file' } } });
+    renderMarkdown(`见 \`${REL}\`。`);
+    const chip = await screen.findByRole('link', { name: REL });
+    expect(chip).toHaveAttribute('tabindex', '0');
+
+    fireEvent.keyDown(chip, { key: 'Enter' });
+    await waitFor(() => expect(mocks.onFilePreviewExternal).toHaveBeenCalled());
+
+    mocks.onFilePreviewExternal.mockClear();
+    vi.spyOn(window, 'getSelection').mockReturnValue({ toString: () => REL } as Selection);
+    fireEvent.click(chip);
+    expect(mocks.onFilePreviewExternal).not.toHaveBeenCalled();
+  });
+
+  it('rechecks before primary click and revokes a stale affordance', async () => {
+    mocks.checkPaths.mockResolvedValueOnce({ results: { [REL]: { exists: true, type: 'file' } } });
+    renderMarkdown(`见 \`${REL}\`。`);
+    const chip = await waitFor(() => {
+      const el = screen.getByText(REL);
+      expect(el).toHaveClass('cursor-pointer');
+      return el;
+    });
+
+    mocks.checkPaths.mockResolvedValueOnce({ results: { [REL]: { exists: false, type: 'file' } } });
+    fireEvent.click(chip);
+
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('文件不存在或无法访问'));
+    expect(screen.getByText(REL)).not.toHaveClass('cursor-pointer');
+    expect(mocks.onFilePreviewExternal).not.toHaveBeenCalled();
+  });
+
+  it('rechecks before right-click and never opens a stale file menu', async () => {
+    mocks.checkPaths.mockResolvedValueOnce({ results: { [REL]: { exists: true, type: 'file' } } });
+    renderMarkdown(`见 \`${REL}\`。`);
+    const chip = await waitFor(() => {
+      const el = screen.getByText(REL);
+      expect(el).toHaveClass('cursor-pointer');
+      return el;
+    });
+
+    mocks.checkPaths.mockResolvedValueOnce({ results: { [REL]: { exists: false, type: 'file' } } });
+    fireEvent.contextMenu(chip);
+
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('文件不存在或无法访问'));
+    expect(screen.queryByText('预览')).not.toBeInTheDocument();
+    expect(screen.queryByText('打开')).not.toBeInTheDocument();
+    expect(screen.getByText(REL)).not.toHaveClass('cursor-pointer');
+  });
+
+  it('does not let an older concurrent recheck restore a newer unavailable result', async () => {
+    mocks.checkPaths.mockResolvedValueOnce({ results: { [REL]: { exists: true, type: 'file' } } });
+    renderMarkdown(`见 \`${REL}\`。`);
+    const chip = await waitFor(() => {
+      const el = screen.getByText(REL);
+      expect(el).toHaveClass('cursor-pointer');
+      return el;
+    });
+
+    const older = deferred<{ results: Record<string, { exists: boolean; type: 'file' }> }>();
+    const newer = deferred<{ results: Record<string, { exists: boolean; type: 'file' }> }>();
+    mocks.checkPaths.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    fireEvent.click(chip);
+    fireEvent.click(chip);
+
+    newer.resolve({ results: { [REL]: { exists: false, type: 'file' } } });
+    await waitFor(() => expect(screen.getByText(REL)).not.toHaveClass('cursor-pointer'));
+    older.resolve({ results: { [REL]: { exists: true, type: 'file' } } });
+    await older.promise;
+
+    expect(screen.getByText(REL)).not.toHaveClass('cursor-pointer');
+    expect(mocks.onFilePreviewExternal).not.toHaveBeenCalled();
+  });
+
+  it('promotes a valid backtick HTTP(S) URL without sending it to file checks', () => {
+    const url = 'https://example.com/file.ts?download=1#top';
+    renderMarkdown(`见 \`${url}\`。`);
+
+    const link = screen.getByRole('link', { name: url });
+    fireEvent.click(link);
+    expect(mocks.openUrl).toHaveBeenCalledWith(url);
+    expect(mocks.openExternal).not.toHaveBeenCalled();
+    expect(mocks.checkPaths).not.toHaveBeenCalled();
+    expect(mocks.checkLocalPaths).not.toHaveBeenCalled();
+
+    fireEvent.click(link, { ctrlKey: true });
+    expect(mocks.openExternal).toHaveBeenCalledWith(url);
+  });
+
+  it.each(['https://', 'https://example.com/%ZZ', 'javascript:alert(1)', 'foo://bar'])(
+    'keeps invalid or unsupported backtick URL %s as ordinary code',
+    (value) => {
+      renderMarkdown(`见 \`${value}\`。`);
+      expect(screen.getByText(value)).not.toHaveClass('cursor-pointer');
+      expect(screen.queryByRole('link', { name: value })).not.toBeInTheDocument();
+    },
+  );
 });
