@@ -36,8 +36,8 @@ myagents-releases/
 │   └── latest.json            # 官网下载 API
 └── releases/
     └── v{VERSION}/
-        ├── MyAgents_{VERSION}_aarch64.dmg         # ARM DMG
-        ├── MyAgents_{VERSION}_x64.dmg             # Intel DMG
+        ├── MyNovelStudio_{VERSION}_macos_aarch64.dmg # ARM DMG（对外下载）
+        ├── MyNovelStudio_{VERSION}_macos_x86_64.dmg  # Intel DMG（对外下载）
         ├── MyAgents_{VERSION}_aarch64.app.tar.gz  # ARM 更新包
         ├── MyAgents_{VERSION}_aarch64.app.tar.gz.sig  # ARM 签名
         ├── MyAgents_{VERSION}_x64.app.tar.gz      # Intel 更新包
@@ -161,12 +161,12 @@ Intel 文档资源需要从锁定源码构建 ONNX Runtime。`build_macos.sh` �
   │  物料清单 - v0.1.0                                      │
   ├─────────────────────────────────────────────────────────┤
   │  Apple Silicon (ARM64)                                  │
-  │    ✓ DMG:    MyAgents_0.1.0_aarch64.dmg              │
+  │    ✓ DMG:    MyNovelStudio_0.1.0_macos_aarch64.dmg   │
   │    ✓ tar.gz: MyAgents.app.tar.gz                      │
   │    ✓ 签名:   MyAgents.app.tar.gz.sig                  │
   │                                                         │
   │  Intel (x86_64)                                         │
-  │    ✓ DMG:    MyAgents_0.1.0_x64.dmg                   │
+  │    ✓ DMG:    MyNovelStudio_0.1.0_macos_x86_64.dmg     │
   │    ✓ tar.gz: MyAgents.app.tar.gz                      │
   │    ✓ 签名:   MyAgents.app.tar.gz.sig                  │
   └─────────────────────────────────────────────────────────┘
@@ -233,11 +233,11 @@ Runtime set 是按平台分片补发的：macOS 主机默认发布 `darwin-arm64
   "downloads": {
     "mac_arm64": {
       "name": "Apple Silicon",
-      "url": "https://download.myagents.io/releases/v0.1.0/MyAgents_0.1.0_aarch64.dmg"
+      "url": "https://download.myagents.io/releases/v0.1.0/MyNovelStudio_0.1.0_macos_aarch64.dmg"
     },
     "mac_intel": {
       "name": "Intel Mac",
-      "url": "https://download.myagents.io/releases/v0.1.0/MyAgents_0.1.0_x64.dmg"
+      "url": "https://download.myagents.io/releases/v0.1.0/MyNovelStudio_0.1.0_macos_x86_64.dmg"
     }
   }
 }

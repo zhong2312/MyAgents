@@ -172,10 +172,10 @@ myagents-releases/
 │   └── latest.json            # 网站下载页 API
 └── releases/
     └── v{VERSION}/
-        ├── MyAgents_{VERSION}_aarch64.app.tar.gz  # R2 历史兼容副本
-        ├── MyAgents_{VERSION}_x64.app.tar.gz      # R2 历史兼容副本
-        ├── MyAgents_{VERSION}_aarch64.dmg         # 网站下载用
-        └── MyAgents_{VERSION}_x64.dmg             # 网站下载用
+        ├── MyAgents_{VERSION}_aarch64.app.tar.gz  # 自动更新兼容包
+        ├── MyAgents_{VERSION}_x64.app.tar.gz      # 自动更新兼容包
+        ├── MyNovelStudio_{VERSION}_macos_aarch64.dmg # 网站下载用
+        └── MyNovelStudio_{VERSION}_macos_x86_64.dmg  # 网站下载用
 ```
 
 > 目录由 GitHub Actions 自动创建，无需手动操作。
@@ -312,11 +312,11 @@ curl https://github.com/zhong2312/MyNovelStudio/releases/latest/download/darwin-
   "downloads": {
     "mac_arm64": {
       "name": "Apple Silicon",
-      "url": "https://download.myagents.io/releases/v0.2.0/MyAgents_0.2.0_aarch64.dmg"
+      "url": "https://download.myagents.io/releases/v0.2.0/MyNovelStudio_0.2.0_macos_aarch64.dmg"
     },
     "mac_intel": {
       "name": "Intel Mac",
-      "url": "https://download.myagents.io/releases/v0.2.0/MyAgents_0.2.0_x64.dmg"
+      "url": "https://download.myagents.io/releases/v0.2.0/MyNovelStudio_0.2.0_macos_x86_64.dmg"
     }
   }
 }
