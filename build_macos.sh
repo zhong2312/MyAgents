@@ -756,7 +756,7 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
 
     echo -e "  ${CYAN}【$ARCH_NAME】${NC}"
 
-    if [ -z "$DMG_PATH" ] || [ -z "$APP_PATH" ]; then
+    if [ -z "$DMG_PATH" ] || { ! is_unsigned_build && [ -z "$APP_PATH" ]; }; then
         echo -e "    ${RED}✗${NC} 缺少 DMG 或应用包"
         exit 1
     fi

@@ -229,6 +229,11 @@ test('macOS unsigned release is explicit, non-interactive, and DMG-only', () => 
     buildMacos,
     /if \[ "\$NONINTERACTIVE" = "1" \]; then\n\s*exit 0/,
   );
+  assert.match(
+    buildMacos,
+    /if \[ -z "\$DMG_PATH" \] \|\| \{ ! is_unsigned_build && \[ -z "\$APP_PATH" \]; \}; then/,
+    'unsigned DMG builds must not require the app bundle after Tauri cleans it',
+  );
 });
 
 test('Linux release excludes macOS and Windows-only external binaries', () => {
@@ -262,7 +267,7 @@ test('Claude Agent SDK declaration matches the locked native packages', () => {
   }
 });
 
-test('v0.5.0 rebuild keeps cross-platform project instructions during source restore', () => {
+test('v0.5.0 macOS rebuild keeps project instructions during source restore', () => {
   assert.match(
     rebuildV050Release,
     /git checkout "\$SOURCE_REF" -- \. ':\(exclude\)AGENTS\.md'/,
@@ -273,8 +278,8 @@ test('v0.5.0 rebuild keeps cross-platform project instructions during source res
   );
   assert.equal(
     rebuildV050Release.match(/scripts\/prepare-azgaar-runtime\.mjs/g)?.length,
-    2,
-    'macOS and Linux source restores must retain the current Azgaar runtime builder',
+    1,
+    'the macOS source restore must retain the current Azgaar runtime builder',
   );
 });
 
