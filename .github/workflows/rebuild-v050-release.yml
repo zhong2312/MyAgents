@@ -63,6 +63,7 @@ jobs:
       - name: Build unsigned DMG
         shell: bash
         env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
           MYAGENTS_UNSIGNED_BUILD: "1"
           MYAGENTS_NONINTERACTIVE: "1"
           MYAGENTS_MACOS_BUILD_TARGET: ${{ matrix.target }}
