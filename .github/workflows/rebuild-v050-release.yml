@@ -42,6 +42,7 @@ jobs:
             build_macos.sh \
             package.json \
             package-lock.json \
+            scripts/prepare-azgaar-runtime.mjs \
             src-tauri/tauri.macos.unsigned.conf.json
           release_version="$(grep '"version"' package.json | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')"
           test "$release_version" = "${RELEASE_TAG#v}"
@@ -129,6 +130,7 @@ jobs:
             build_linux.sh \
             package.json \
             package-lock.json \
+            scripts/prepare-azgaar-runtime.mjs \
             src-tauri/tauri.linux.conf.json
           release_version="$(grep '"version"' package.json | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')"
           test "$release_version" = "${RELEASE_TAG#v}"
