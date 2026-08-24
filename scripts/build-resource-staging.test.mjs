@@ -19,6 +19,10 @@ const buildWindows = readFileSync(
   resolve(repoRoot, 'build_windows.ps1'),
   'utf8',
 );
+const rebuildV050Release = readFileSync(
+  resolve(repoRoot, '.github', 'workflows', 'rebuild-v050-release.yml'),
+  'utf8',
+);
 const setupUnix = readFileSync(resolve(repoRoot, 'setup.sh'), 'utf8');
 const setupWindows = readFileSync(
   resolve(repoRoot, 'setup_windows.ps1'),
@@ -252,6 +256,13 @@ test('Claude Agent SDK declaration matches the locked native packages', () => {
       `${name} must be locked at the SDK version`,
     );
   }
+});
+
+test('v0.5.0 rebuild keeps cross-platform project instructions during source restore', () => {
+  assert.match(
+    rebuildV050Release,
+    /git checkout "\$SOURCE_REF" -- \. ':\(exclude\)AGENTS\.md'/,
+  );
 });
 
 test('CLI bundle staging owns its complete mutable resource inventory', () => {
