@@ -1,6 +1,5 @@
 CLAUDE.md
 Novel-Design.md
-.opendesign/README.md
 
 ## Windows 测试包
 

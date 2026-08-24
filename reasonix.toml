@@ -1,2 +1,0 @@
-[permissions]
-allow = ["Bash=cd /f/workspace/MyAgents && node -e \"const p=require('./package.json'); console.log(Object.keys(p.scripts).join('\\n'))\""]
