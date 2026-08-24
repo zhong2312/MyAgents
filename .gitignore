@@ -112,7 +112,23 @@ specs/assets/avatar-candidates/**/manifest.json
 # Dev
 .claude/plans/myagents/
 myagents_files/
-.playwright-cli
-output
+
+# Local tool state, temporary tests, prototypes, and generated review assets.
+# These files are reproducible developer artifacts and are not application inputs.
+/.opendesign/
+/.playwright-cli/
+/.reasonix/
+/.zcode/
+/.goal-cli-*/
+/.space-update-body-test-*/
+/.tmp-*
+/output/
+/prototypes/
+/index.png
+/node-test.err
+/node-test.out
+/vite-test.err
+/vite-test.out
+/reasonix.toml
 /HEARTBEAT.md
 /HEARTBEAT.md
