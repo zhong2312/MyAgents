@@ -1,6 +1,6 @@
 #!/bin/bash
 # MyAgents macOS 正式发布构建脚本
-# 构建签名+公证的 DMG 安装包用于分发
+# 默认构建签名+公证的 DMG；MYAGENTS_UNSIGNED_BUILD=1 时构建未签名 DMG。
 # 支持 ARM (M1/M2)、Intel 构建
 
 set -e
@@ -9,6 +9,9 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION=$(grep '"version"' "${PROJECT_DIR}/src-tauri/tauri.conf.json" | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')
 TAURI_CONF="${PROJECT_DIR}/src-tauri/tauri.conf.json"
 ENV_FILE="${PROJECT_DIR}/.env"
+UNSIGNED_BUILD="${MYAGENTS_UNSIGNED_BUILD:-0}"
+NONINTERACTIVE="${MYAGENTS_NONINTERACTIVE:-0}"
+MACOS_BUILD_TARGET="${MYAGENTS_MACOS_BUILD_TARGET:-}"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -18,9 +21,28 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+if [[ "$UNSIGNED_BUILD" != "0" && "$UNSIGNED_BUILD" != "1" ]]; then
+    echo -e "${RED}错误: MYAGENTS_UNSIGNED_BUILD 只能为 0 或 1${NC}"
+    exit 1
+fi
+
+if [[ "$NONINTERACTIVE" != "0" && "$NONINTERACTIVE" != "1" ]]; then
+    echo -e "${RED}错误: MYAGENTS_NONINTERACTIVE 只能为 0 或 1${NC}"
+    exit 1
+fi
+
+is_unsigned_build() {
+    [[ "$UNSIGNED_BUILD" == "1" ]]
+}
+
 echo ""
 echo -e "${CYAN}╔═══════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║${NC}  ${GREEN}🤖 MyAgents macOS 签名发布构建${NC}                      ${CYAN}║${NC}"
+if is_unsigned_build; then
+    BUILD_KIND="未签名 DMG 构建"
+else
+    BUILD_KIND="签名发布构建"
+fi
+echo -e "${CYAN}║${NC}  ${GREEN}🤖 MyAgents macOS ${BUILD_KIND}${NC}                      ${CYAN}║${NC}"
 echo -e "${CYAN}║${NC}  ${BLUE}Version: ${VERSION}${NC}                                      ${CYAN}║${NC}"
 echo -e "${CYAN}╚═══════════════════════════════════════════════════════╝${NC}"
 echo ""
@@ -38,6 +60,10 @@ if [ "$PKG_VERSION" != "$TAURI_VERSION" ] || [ "$PKG_VERSION" != "$CARGO_VERSION
     echo -e "  tauri.conf.json:   ${CYAN}${TAURI_VERSION}${NC}"
     echo -e "  Cargo.toml:        ${CYAN}${CARGO_VERSION}${NC}"
     echo ""
+    if [ "$NONINTERACTIVE" = "1" ]; then
+        echo -e "${RED}错误: 非交互构建不允许自动修改版本号${NC}"
+        exit 1
+    fi
     read -p "是否同步版本号到 ${PKG_VERSION}? (y/N) " -n 1 -r
     echo ""
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -50,50 +76,47 @@ fi
 # ========================================
 # 加载环境变量 (签名配置)
 # ========================================
-echo -e "${BLUE}[1/7] 加载签名配置...${NC}"
-if [ -f "$ENV_FILE" ]; then
-    set -a
-    source "$ENV_FILE"
-    set +a
-    echo -e "${GREEN}✓ 已加载 .env${NC}"
+echo -e "${BLUE}[1/7] 准备构建配置...${NC}"
+if is_unsigned_build; then
+    # 未签名产物不能继承调用环境或本地 .env 中的发布凭据，避免出现半签名包。
+    unset APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_PATH
+    unset APPLE_ID APPLE_PASSWORD APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD
+    unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+    echo -e "${GREEN}✓ 未签名模式已启用${NC}"
 else
-    echo -e "${RED}错误: .env 文件不存在!${NC}"
-    echo "请创建 .env 文件并配置以下变量:"
-    echo "  APPLE_SIGNING_IDENTITY"
-    echo "  APPLE_TEAM_ID"
-    echo "  APPLE_API_ISSUER"
-    echo "  APPLE_API_KEY"
-    echo "  APPLE_API_KEY_PATH"
-    exit 1
-fi
-
-# 验证签名环境变量
-if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
-    echo -e "${RED}错误: APPLE_SIGNING_IDENTITY 未设置!${NC}"
-    exit 1
-fi
-
-if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-    echo -e "${YELLOW}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}║ 警告: TAURI_SIGNING_PRIVATE_KEY 未设置                     ║${NC}"
-    echo -e "${YELLOW}║ 自动更新功能将不可用!                                      ║${NC}"
-    echo -e "${YELLOW}║                                                           ║${NC}"
-    echo -e "${YELLOW}║ 如需启用自动更新，请在 .env 中添加:                         ║${NC}"
-    echo -e "${YELLOW}║   TAURI_SIGNING_PRIVATE_KEY=<私钥内容>                     ║${NC}"
-    echo -e "${YELLOW}║   TAURI_SIGNING_PRIVATE_KEY_PASSWORD=<密码>                ║${NC}"
-    echo -e "${YELLOW}╚═══════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    read -p "是否继续构建? (Y/n) " -n 1 -r
-    echo ""
-    if [[ $REPLY =~ ^[Nn]$ ]]; then
-        echo -e "${RED}构建已取消${NC}"
+    if [ -f "$ENV_FILE" ]; then
+        set -a
+        source "$ENV_FILE"
+        set +a
+        echo -e "${GREEN}✓ 已加载 .env${NC}"
+    else
+        echo -e "${RED}错误: .env 文件不存在!${NC}"
+        echo "请创建 .env 文件并配置 Apple 签名变量。"
         exit 1
     fi
-else
-    echo -e "  ${GREEN}✓ Tauri 签名私钥已配置${NC}"
-fi
 
-echo -e "  签名身份: ${CYAN}${APPLE_SIGNING_IDENTITY}${NC}"
+    if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+        echo -e "${RED}错误: APPLE_SIGNING_IDENTITY 未设置!${NC}"
+        exit 1
+    fi
+
+    if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+        if [ "$NONINTERACTIVE" = "1" ]; then
+            echo -e "${RED}错误: 非交互签名构建需要 TAURI_SIGNING_PRIVATE_KEY${NC}"
+            exit 1
+        fi
+        read -p "TAURI_SIGNING_PRIVATE_KEY 未设置，是否继续构建? (Y/n) " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Nn]$ ]]; then
+            echo -e "${RED}构建已取消${NC}"
+            exit 1
+        fi
+    else
+        echo -e "  ${GREEN}✓ Tauri 签名私钥已配置${NC}"
+    fi
+
+    echo -e "  签名身份: ${CYAN}${APPLE_SIGNING_IDENTITY}${NC}"
+fi
 echo ""
 
 # ========================================
@@ -107,33 +130,36 @@ sleep 1
 echo -e "${GREEN}✓ 进程已清理${NC}"
 echo ""
 
-# 架构选择
-echo -e "${YELLOW}请选择目标架构:${NC}"
-echo "  1) ARM (Apple Silicon M1/M2) [默认]"
-echo "  2) Intel (x86_64)"
-echo "  3) Both (同时构建两个版本)"
-echo ""
-read -p "请输入选项 (1/2/3) [1]: " -r ARCH_CHOICE
-ARCH_CHOICE=${ARCH_CHOICE:-1}
+# 架构选择。CI 使用明确的 target，交互式本地构建保留既有选择方式。
+if [ -n "$MACOS_BUILD_TARGET" ]; then
+    case "$MACOS_BUILD_TARGET" in
+        aarch64-apple-darwin|x86_64-apple-darwin)
+            BUILD_TARGETS=("$MACOS_BUILD_TARGET")
+            ;;
+        *)
+            echo -e "${RED}错误: MYAGENTS_MACOS_BUILD_TARGET 必须为 aarch64-apple-darwin 或 x86_64-apple-darwin${NC}"
+            exit 1
+            ;;
+    esac
+elif [ "$NONINTERACTIVE" = "1" ]; then
+    BUILD_TARGETS=("aarch64-apple-darwin")
+else
+    echo -e "${YELLOW}请选择目标架构:${NC}"
+    echo "  1) ARM (Apple Silicon M1/M2) [默认]"
+    echo "  2) Intel (x86_64)"
+    echo "  3) Both (同时构建两个版本)"
+    echo ""
+    read -p "请输入选项 (1/2/3) [1]: " -r ARCH_CHOICE
+    ARCH_CHOICE=${ARCH_CHOICE:-1}
 
-case $ARCH_CHOICE in
-    1)
-        BUILD_TARGETS=("aarch64-apple-darwin")
-        echo -e "${GREEN}✓ 将构建 ARM 版本${NC}"
-        ;;
-    2)
-        BUILD_TARGETS=("x86_64-apple-darwin")
-        echo -e "${GREEN}✓ 将构建 Intel 版本${NC}"
-        ;;
-    3)
-        BUILD_TARGETS=("aarch64-apple-darwin" "x86_64-apple-darwin")
-        echo -e "${GREEN}✓ 将构建 ARM 和 Intel 两个版本${NC}"
-        ;;
-    *)
-        BUILD_TARGETS=("aarch64-apple-darwin")
-        echo -e "${GREEN}✓ 将构建 ARM 版本 (默认)${NC}"
-        ;;
-esac
+    case $ARCH_CHOICE in
+        1) BUILD_TARGETS=("aarch64-apple-darwin") ;;
+        2) BUILD_TARGETS=("x86_64-apple-darwin") ;;
+        3) BUILD_TARGETS=("aarch64-apple-darwin" "x86_64-apple-darwin") ;;
+        *) BUILD_TARGETS=("aarch64-apple-darwin") ;;
+    esac
+fi
+echo -e "${GREEN}✓ 构建目标: ${BUILD_TARGETS[*]}${NC}"
 echo ""
 
 # 检查依赖
@@ -149,7 +175,9 @@ echo -e "${BLUE}[2/7] 检查依赖...${NC}"
 check_dependency "rustc" "请安装 Rust: https://rustup.rs"
 check_dependency "rustup" "请通过 rustup 安装 Rust: https://rustup.rs"
 check_dependency "npm" "请安装 Node.js: https://nodejs.org"
-check_dependency "codesign" "需要 Xcode Command Line Tools"
+if ! is_unsigned_build; then
+    check_dependency "codesign" "需要 Xcode Command Line Tools"
+fi
 check_dependency "lipo" "需要 Xcode Command Line Tools"
 check_dependency "otool" "需要 Xcode Command Line Tools"
 
@@ -285,84 +313,56 @@ echo ""
 NODEJS_DIR="${PROJECT_DIR}/src-tauri/resources/nodejs"
 
 # ========================================
-# 签名 externalBin 可执行文件
+# 签名 externalBin 与 Vendor 原生文件
 # ========================================
-echo -e "${BLUE}[6/7] 签名外部二进制文件...${NC}"
+if is_unsigned_build; then
+    echo -e "${BLUE}[6/7] 跳过原生文件签名（未签名模式）...${NC}"
+else
+    echo -e "${BLUE}[6/7] 签名外部二进制文件...${NC}"
+    EXTBIN_DIR="${PROJECT_DIR}/src-tauri/binaries"
+    EXTBIN_SIGNED_COUNT=0
+    EXTBIN_FAILED_COUNT=0
 
-# 重签名：官方/下载的二进制默认用各自官方签名；macOS TCC 会把它们视为独立应用，
-# 导致每次访问受保护目录需单独授权。重签后子进程与主应用共享同一 Team ID，TCC
-# 权限（含 Screen Recording / Accessibility / AppleEvents）统一继承。
-echo -e "  ${CYAN}签名 externalBin 可执行文件 (使用应用签名替换官方签名)...${NC}"
-# Pit-of-success: signs ANY file matching src-tauri/binaries/*-apple-darwin.
-# Dropping a new externalBin under src-tauri/binaries/ with the apple-darwin
-# triple is enough — the loop auto-picks it up, re-signs it with our
-# Developer ID + hardened runtime + entitlements, and TCC permissions
-# inherit through the shared code signature. No per-binary enumeration to
-# keep in sync with tauri.conf.json.
-EXTBIN_DIR="${PROJECT_DIR}/src-tauri/binaries"
-EXTBIN_SIGNED_COUNT=0
-EXTBIN_FAILED_COUNT=0
-
-for bin in "${EXTBIN_DIR}"/*-apple-darwin; do
-    if [ -f "$bin" ]; then
-        echo -e "    ${CYAN}处理: $(basename "$bin")${NC}"
-
-        # 1. 移除 quarantine 属性 (macOS 会标记下载的二进制文件)
-        # 参考：https://v2.tauri.app/develop/sidecar/
-        xattr -d com.apple.quarantine "$bin" 2>/dev/null || true
-
-        # 2. 重签名：使用 --force 强制重签名，--options runtime 启用 hardened runtime
-        # --entitlements 使用应用的 entitlements 确保 JIT 等权限
-        # 子进程与主应用共享相同的 Team ID，TCC 权限（含 Screen Recording /
-        # Accessibility / AppleEvents）可以正确继承。
-        if codesign --force --options runtime --timestamp \
-            --entitlements "${PROJECT_DIR}/src-tauri/Entitlements.plist" \
-            --sign "$APPLE_SIGNING_IDENTITY" "$bin"; then
-            echo -e "    ${GREEN}✓ $(basename "$bin") 签名成功${NC}"
-            ((EXTBIN_SIGNED_COUNT++))
-        else
-            echo -e "    ${RED}✗ $(basename "$bin") 签名失败${NC}"
-            ((EXTBIN_FAILED_COUNT++))
+    for bin in "${EXTBIN_DIR}"/*-apple-darwin; do
+        if [ -f "$bin" ]; then
+            echo -e "    ${CYAN}处理: $(basename "$bin")${NC}"
+            xattr -d com.apple.quarantine "$bin" 2>/dev/null || true
+            if codesign --force --options runtime --timestamp \
+                --entitlements "${PROJECT_DIR}/src-tauri/Entitlements.plist" \
+                --sign "$APPLE_SIGNING_IDENTITY" "$bin"; then
+                ((EXTBIN_SIGNED_COUNT++))
+            else
+                echo -e "    ${RED}✗ $(basename "$bin") 签名失败${NC}"
+                ((EXTBIN_FAILED_COUNT++))
+            fi
         fi
-    fi
-done
+    done
 
-if [ $EXTBIN_FAILED_COUNT -gt 0 ]; then
-    echo -e "${RED}错误: externalBin 签名失败，构建终止${NC}"
-    exit 1
+    if [ $EXTBIN_FAILED_COUNT -gt 0 ]; then
+        echo -e "${RED}错误: externalBin 签名失败，构建终止${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ externalBin 签名完成 (${EXTBIN_SIGNED_COUNT} 个文件)${NC}"
+
+    VENDOR_DIR="${SDK_DEST}/vendor"
+    SIGNED_COUNT=0
+    FAILED_COUNT=0
+    while IFS= read -r binary; do
+        echo -e "    ${CYAN}签名: $(basename "$binary")${NC}"
+        if codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" "$binary" 2>/dev/null; then
+            ((SIGNED_COUNT++))
+        else
+            echo -e "    ${YELLOW}警告: 签名失败 - $binary${NC}"
+            ((FAILED_COUNT++))
+        fi
+    done < <(find "$VENDOR_DIR" -type f \( -name "*.node" -o -name "rg" \) -path "*darwin*")
+    echo -e "${GREEN}✓ Vendor 签名完成 (成功: ${SIGNED_COUNT}, 失败: ${FAILED_COUNT})${NC}"
 fi
-echo -e "${GREEN}✓ externalBin 签名完成 (${EXTBIN_SIGNED_COUNT} 个文件)${NC}"
-
-echo ""
-
-# ========================================
-# 签名 Vendor 二进制文件 (ripgrep)
-# ========================================
-echo -e "  ${CYAN}签名 Vendor 二进制文件 (ripgrep, .node)...${NC}"
-
-# 签名所有 macOS 二进制文件
-VENDOR_DIR="${SDK_DEST}/vendor"
-SIGNED_COUNT=0
-FAILED_COUNT=0
-
-# 使用 process substitution 避免子 shell 问题
-while IFS= read -r binary; do
-    echo -e "    ${CYAN}签名: $(basename "$binary")${NC}"
-    if codesign --force --options runtime --timestamp \
-        --sign "$APPLE_SIGNING_IDENTITY" "$binary" 2>/dev/null; then
-        ((SIGNED_COUNT++))
-    else
-        echo -e "    ${YELLOW}警告: 签名失败 - $binary${NC}"
-        ((FAILED_COUNT++))
-    fi
-done < <(find "$VENDOR_DIR" -type f \( -name "*.node" -o -name "rg" \) -path "*darwin*")
-
-echo -e "${GREEN}✓ Vendor 签名完成 (成功: ${SIGNED_COUNT}, 失败: ${FAILED_COUNT})${NC}"
 echo ""
 
 # 构建 Tauri 应用
-echo -e "${BLUE}[7/7] 构建 Tauri 应用 (Release + 签名 + 公证)...${NC}"
-echo -e "${YELLOW}这可能需要 5-10 分钟 (包含公证等待时间)...${NC}"
+echo -e "${BLUE}[7/7] 构建 Tauri 应用...${NC}"
 
 # ---- 补齐 Claude Agent SDK 的跨架构 native 包 ----
 # `@anthropic-ai/claude-agent-sdk-darwin-{arm64,x64}` 在 package.json 里
@@ -492,16 +492,18 @@ SHARP_PKG
         exit 1
     fi
 
-    while IFS= read -r binary; do
-        echo -e "    ${CYAN}签名: ${binary#${SHARP_DIR}/node_modules/}${NC}"
-        xattr -d com.apple.quarantine "$binary" 2>/dev/null || true
-        if ! codesign --force --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" "$binary" 2>/dev/null; then
-            echo -e "${RED}✗ sharp 原生二进制签名失败: $binary${NC}"
-            exit 1
-        fi
-        SHARP_SIGNED_COUNT=$((SHARP_SIGNED_COUNT + 1))
-    done < <(find "${SHARP_DIR}/node_modules/@img" -type f \( -name "*.node" -o -name "*.dylib" \) 2>/dev/null)
+    if ! is_unsigned_build; then
+        while IFS= read -r binary; do
+            echo -e "    ${CYAN}签名: ${binary#${SHARP_DIR}/node_modules/}${NC}"
+            xattr -d com.apple.quarantine "$binary" 2>/dev/null || true
+            if ! codesign --force --options runtime --timestamp \
+                --sign "$APPLE_SIGNING_IDENTITY" "$binary" 2>/dev/null; then
+                echo -e "${RED}✗ sharp 原生二进制签名失败: $binary${NC}"
+                exit 1
+            fi
+            SHARP_SIGNED_COUNT=$((SHARP_SIGNED_COUNT + 1))
+        done < <(find "${SHARP_DIR}/node_modules/@img" -type f \( -name "*.node" -o -name "*.dylib" \) 2>/dev/null)
+    fi
 
     echo -e "  ${GREEN}✓ sharp-runtime 就绪 (darwin-${ARCH}, ${SHARP_SIGNED_COUNT} 个原生文件)${NC}"
 }
@@ -621,33 +623,35 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
     # 两者通常共享同一个 inode（hardlink），但 codesign 路径独立，必须各签一次；
     # node_modules/.bin/esbuild 是 symlink，notarizer 跟随符号链接验证，所以签源
     # 文件就够了，不必单独处理。
-    TSX_RUNTIME_DIR="${PROJECT_DIR}/src-tauri/resources/tsx-runtime"
-    TSX_SIGNED_COUNT=0
-    TSX_FAILED_COUNT=0
-    while IFS= read -r binary; do
-        echo -e "    ${CYAN}签名: $(echo "$binary" | sed "s|.*/tsx-runtime/||")${NC}"
-        xattr -d com.apple.quarantine "$binary" 2>/dev/null || true
-        if codesign --force --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" "$binary" 2>/dev/null; then
-            ((TSX_SIGNED_COUNT++))
-        else
-            echo -e "    ${RED}✗ 签名失败 - $binary${NC}"
-            ((TSX_FAILED_COUNT++))
+    if ! is_unsigned_build; then
+        TSX_RUNTIME_DIR="${PROJECT_DIR}/src-tauri/resources/tsx-runtime"
+        TSX_SIGNED_COUNT=0
+        TSX_FAILED_COUNT=0
+        while IFS= read -r binary; do
+            echo -e "    ${CYAN}签名: $(echo "$binary" | sed "s|.*/tsx-runtime/||")${NC}"
+            xattr -d com.apple.quarantine "$binary" 2>/dev/null || true
+            if codesign --force --options runtime --timestamp \
+                --sign "$APPLE_SIGNING_IDENTITY" "$binary" 2>/dev/null; then
+                ((TSX_SIGNED_COUNT++))
+            else
+                echo -e "    ${RED}✗ 签名失败 - $binary${NC}"
+                ((TSX_FAILED_COUNT++))
+            fi
+        done < <(find "${TSX_RUNTIME_DIR}/node_modules" -type f -path "*/bin/esbuild" 2>/dev/null)
+        if [ $TSX_FAILED_COUNT -gt 0 ]; then
+            echo -e "${RED}✗ tsx-runtime esbuild 签名失败 (${TSX_FAILED_COUNT} 个)，公证必定失败${NC}"
+            exit 1
         fi
-    done < <(find "${TSX_RUNTIME_DIR}/node_modules" -type f -path "*/bin/esbuild" 2>/dev/null)
-    if [ $TSX_FAILED_COUNT -gt 0 ]; then
-        echo -e "${RED}✗ tsx-runtime esbuild 签名失败 (${TSX_FAILED_COUNT} 个)，公证必定失败${NC}"
-        exit 1
+        if [ $TSX_SIGNED_COUNT -eq 0 ]; then
+            echo -e "${RED}✗ 未签名任何 esbuild 二进制，setup-tsx-runtime 可能没装上 native dep${NC}"
+            exit 1
+        fi
+        echo -e "    ${GREEN}✓ tsx-runtime esbuild 签名完成 (${TSX_SIGNED_COUNT} 个)${NC}"
     fi
-    if [ $TSX_SIGNED_COUNT -eq 0 ]; then
-        echo -e "${RED}✗ 未签名任何 esbuild 二进制，setup-tsx-runtime 可能没装上 native dep${NC}"
-        exit 1
-    fi
-    echo -e "    ${GREEN}✓ tsx-runtime esbuild 签名完成 (${TSX_SIGNED_COUNT} 个)${NC}"
 
     # 签名 Node.js 二进制 (TCC / notarization 需要统一签名)
     NODE_BINARY="${NODEJS_DIR}/bin/node"
-    if [ -f "$NODE_BINARY" ]; then
+    if ! is_unsigned_build && [ -f "$NODE_BINARY" ]; then
         xattr -d com.apple.quarantine "$NODE_BINARY" 2>/dev/null || true
         if codesign --force --options runtime --timestamp \
             --entitlements "${PROJECT_DIR}/src-tauri/Entitlements.plist" \
@@ -686,19 +690,26 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
         echo -e "    ${RED}✗ staged claude 已损坏: $CLAUDE_DEST${NC}"
         exit 1
     fi
-    if codesign --force --options runtime --timestamp \
-        --entitlements "${PROJECT_DIR}/src-tauri/Entitlements.plist" \
-        --sign "$APPLE_SIGNING_IDENTITY" "$CLAUDE_DEST"; then
-        echo -e "    ${GREEN}✓ claude (${SDK_TRIPLE}) 签名成功${NC}"
-    else
-        echo -e "    ${RED}✗ claude 签名失败${NC}"
-        exit 1
+    if ! is_unsigned_build; then
+        if codesign --force --options runtime --timestamp \
+            --entitlements "${PROJECT_DIR}/src-tauri/Entitlements.plist" \
+            --sign "$APPLE_SIGNING_IDENTITY" "$CLAUDE_DEST"; then
+            echo -e "    ${GREEN}✓ claude (${SDK_TRIPLE}) 签名成功${NC}"
+        else
+            echo -e "    ${RED}✗ claude 签名失败${NC}"
+            exit 1
+        fi
     fi
 
     echo -e "  ${CYAN}准备离线文档转换 Worker / OCR / PDFium 资源 (${TARGET})...${NC}"
     node "${PROJECT_DIR}/scripts/prepare-document-processing.mjs" "$TARGET"
 
-    npm run tauri:build -- --target "$TARGET"
+    if is_unsigned_build; then
+        npm run tauri:build -- --target "$TARGET" --bundles dmg \
+            --config "${PROJECT_DIR}/src-tauri/tauri.macos.unsigned.conf.json"
+    else
+        npm run tauri:build -- --target "$TARGET"
+    fi
 
     echo -e "${GREEN}✓ $TARGET 构建完成${NC}"
 done
@@ -721,7 +732,11 @@ echo ""
 BUNDLE_DIR="${PROJECT_DIR}/src-tauri/target"
 
 echo -e "${GREEN}═══════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  🎉 签名版构建成功!${NC}"
+if is_unsigned_build; then
+    echo -e "${GREEN}  🎉 未签名 DMG 构建成功!${NC}"
+else
+    echo -e "${GREEN}  🎉 签名版构建成功!${NC}"
+fi
 echo -e "${GREEN}═══════════════════════════════════════════════════════${NC}"
 echo ""
 
@@ -731,8 +746,6 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
     TARGET_BUNDLE_DIR="${BUNDLE_DIR}/${TARGET}/release/bundle"
     DMG_PATH=$(find "${TARGET_BUNDLE_DIR}/dmg" -name "*.dmg" 2>/dev/null | head -1)
     APP_PATH=$(find "${TARGET_BUNDLE_DIR}/macos" -name "*.app" 2>/dev/null | head -1)
-    TAR_GZ_PATH=$(find "${TARGET_BUNDLE_DIR}/macos" -name "*.app.tar.gz" ! -name "*.sig" 2>/dev/null | head -1)
-    SIG_PATH=$(find "${TARGET_BUNDLE_DIR}/macos" -name "*.app.tar.gz.sig" 2>/dev/null | head -1)
 
     # 架构友好名称
     if [[ "$TARGET" == "aarch64-apple-darwin" ]]; then
@@ -743,13 +756,20 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
 
     echo -e "  ${CYAN}【$ARCH_NAME】${NC}"
 
-    # DMG (官网下载用)
-    if [ -n "$DMG_PATH" ]; then
-        DMG_SIZE=$(du -h "$DMG_PATH" | cut -f1)
-        echo -e "    📦 DMG: $(basename "$DMG_PATH") (${DMG_SIZE})"
-    else
-        echo -e "    ${RED}✗${NC} DMG: 未找到"
+    if [ -z "$DMG_PATH" ] || [ -z "$APP_PATH" ]; then
+        echo -e "    ${RED}✗${NC} 缺少 DMG 或应用包"
+        exit 1
     fi
+    DMG_SIZE=$(du -h "$DMG_PATH" | cut -f1)
+    echo -e "    📦 DMG: $(basename "$DMG_PATH") (${DMG_SIZE})"
+
+    if is_unsigned_build; then
+        echo ""
+        continue
+    fi
+
+    TAR_GZ_PATH=$(find "${TARGET_BUNDLE_DIR}/macos" -name "*.app.tar.gz" ! -name "*.sig" 2>/dev/null | head -1)
+    SIG_PATH=$(find "${TARGET_BUNDLE_DIR}/macos" -name "*.app.tar.gz.sig" 2>/dev/null | head -1)
 
     # tar.gz (自动更新用)
     if [ -n "$TAR_GZ_PATH" ]; then
@@ -768,40 +788,48 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
         UPDATER_READY=false
     fi
 
-    if [ -n "$APP_PATH" ]; then
-        # 验证 Apple 签名
-        if codesign --verify --deep --strict "$APP_PATH" 2>/dev/null; then
-            echo -e "    ✅ Apple 签名: ${GREEN}通过${NC}"
-        else
-            echo -e "    ⚠️ Apple 签名: ${YELLOW}失败${NC}"
-        fi
+    # 验证 Apple 签名
+    if codesign --verify --deep --strict "$APP_PATH" 2>/dev/null; then
+        echo -e "    ✅ Apple 签名: ${GREEN}通过${NC}"
+    else
+        echo -e "    ⚠️ Apple 签名: ${YELLOW}失败${NC}"
+    fi
 
-        # 验证公证
-        if spctl --assess --type exec "$APP_PATH" 2>/dev/null; then
-            echo -e "    ✅ 公证验证: ${GREEN}通过${NC}"
-        else
-            echo -e "    ⚠️ 公证验证: ${YELLOW}未完成或失败${NC}"
-        fi
+    # 验证公证
+    if spctl --assess --type exec "$APP_PATH" 2>/dev/null; then
+        echo -e "    ✅ 公证验证: ${GREEN}通过${NC}"
+    else
+        echo -e "    ⚠️ 公证验证: ${YELLOW}未完成或失败${NC}"
     fi
     echo ""
 done
 
-# 自动更新状态总结
-if [ "$UPDATER_READY" = true ]; then
-    echo -e "  ${GREEN}✅ 自动更新: 所有文件就绪${NC}"
+if is_unsigned_build; then
+    echo -e "  ${CYAN}构建模式:${NC} 未签名 DMG"
 else
-    echo -e "  ${YELLOW}⚠️  自动更新: 缺少必要文件 (tar.gz 或 .sig)${NC}"
-    echo -e "  ${YELLOW}   请确保 .env 中配置了 TAURI_SIGNING_PRIVATE_KEY${NC}"
+    # 自动更新状态总结
+    if [ "$UPDATER_READY" = true ]; then
+        echo -e "  ${GREEN}✅ 自动更新: 所有文件就绪${NC}"
+    else
+        echo -e "  ${YELLOW}⚠️  自动更新: 缺少必要文件 (tar.gz 或 .sig)${NC}"
+        echo -e "  ${YELLOW}   请确保 .env 中配置了 TAURI_SIGNING_PRIVATE_KEY${NC}"
+    fi
 fi
 echo ""
 
-echo -e "  ${CYAN}正式版特性:${NC}"
-echo -e "    ✅ Developer ID 签名"
-echo -e "    ✅ Apple 公证 (Notarized)"
-echo -e "    ✅ Hardened Runtime"
-echo -e "    ✅ CSP 安全策略"
-echo -e "    ✅ Release 优化"
-echo ""
+if ! is_unsigned_build; then
+    echo -e "  ${CYAN}正式版特性:${NC}"
+    echo -e "    ✅ Developer ID 签名"
+    echo -e "    ✅ Apple 公证 (Notarized)"
+    echo -e "    ✅ Hardened Runtime"
+    echo -e "    ✅ CSP 安全策略"
+    echo -e "    ✅ Release 优化"
+    echo ""
+fi
+
+if [ "$NONINTERACTIVE" = "1" ]; then
+    exit 0
+fi
 
 read -p "是否打开输出目录? (y/N) " -n 1 -r
 echo ""

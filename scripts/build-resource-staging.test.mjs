@@ -43,6 +43,9 @@ const documentWorkerSmoke = readFileSync(
 const packageJson = JSON.parse(
   readFileSync(resolve(repoRoot, 'package.json'), 'utf8'),
 );
+const packageLock = JSON.parse(
+  readFileSync(resolve(repoRoot, 'package-lock.json'), 'utf8'),
+);
 const documentResourceLock = JSON.parse(
   readFileSync(
     resolve(repoRoot, 'src-tauri/document-worker/resource-lock.json'),
@@ -51,6 +54,15 @@ const documentResourceLock = JSON.parse(
 );
 const tauriConfig = JSON.parse(
   readFileSync(resolve(repoRoot, 'src-tauri/tauri.conf.json'), 'utf8'),
+);
+const unsignedMacosConfig = JSON.parse(
+  readFileSync(
+    resolve(repoRoot, 'src-tauri/tauri.macos.unsigned.conf.json'),
+    'utf8',
+  ),
+);
+const linuxTauriConfig = JSON.parse(
+  readFileSync(resolve(repoRoot, 'src-tauri/tauri.linux.conf.json'), 'utf8'),
 );
 
 test('bundled workspace templates are committed, clean, and setup-independent', () => {
@@ -190,6 +202,56 @@ test('macOS release prepares and validates Sharp inside each target build', () =
     /@img\/sharp-darwin-arm64@[^\n]*@img\/sharp-darwin-x64@/,
     'a thin target must not install both Sharp architectures',
   );
+});
+
+test('macOS unsigned release is explicit, non-interactive, and DMG-only', () => {
+  assert.equal(unsignedMacosConfig.bundle.createUpdaterArtifacts, false);
+  assert.match(buildMacos, /MYAGENTS_UNSIGNED_BUILD/);
+  assert.match(buildMacos, /MYAGENTS_NONINTERACTIVE/);
+  assert.match(buildMacos, /MYAGENTS_MACOS_BUILD_TARGET/);
+  assert.match(
+    buildMacos,
+    /unset APPLE_SIGNING_IDENTITY[\s\S]*unset TAURI_SIGNING_PRIVATE_KEY/,
+  );
+  assert.match(
+    buildMacos,
+    /--bundles dmg[\s\\]*\n\s*--config "\$\{PROJECT_DIR\}\/src-tauri\/tauri\.macos\.unsigned\.conf\.json"/,
+  );
+  assert.match(
+    buildMacos,
+    /if \[ "\$NONINTERACTIVE" = "1" \]; then\n\s*exit 0/,
+  );
+});
+
+test('Linux release excludes macOS and Windows-only external binaries', () => {
+  assert.deepEqual(linuxTauriConfig.bundle.externalBin, []);
+  assert.equal(linuxTauriConfig.bundle.createUpdaterArtifacts, false);
+  assert.match(
+    buildLinux,
+    /--config "\$\{PROJECT_DIR\}\/src-tauri\/tauri\.linux\.conf\.json"/,
+  );
+});
+
+test('Claude Agent SDK declaration matches the locked native packages', () => {
+  const sdkName = '@anthropic-ai/claude-agent-sdk';
+  const sdkVersion = packageJson.dependencies[sdkName];
+
+  assert.equal(packageLock.packages[''].dependencies[sdkName], sdkVersion);
+  assert.equal(
+    packageLock.packages[`node_modules/${sdkName}`].version,
+    sdkVersion,
+  );
+
+  for (const [name, version] of Object.entries(
+    packageJson.optionalDependencies,
+  ).filter(([name]) => name.startsWith(`${sdkName}-`))) {
+    assert.equal(version, sdkVersion, `${name} must match the SDK version`);
+    assert.equal(
+      packageLock.packages[`node_modules/${name}`].version,
+      sdkVersion,
+      `${name} must be locked at the SDK version`,
+    );
+  }
 });
 
 test('CLI bundle staging owns its complete mutable resource inventory', () => {

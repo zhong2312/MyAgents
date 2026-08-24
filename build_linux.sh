@@ -221,7 +221,8 @@ echo -e "  ${GREEN}✓ Claude native binary (${SDK_TRIPLE}) 就绪${NC}"
 echo -e "  ${CYAN}准备离线文档转换 Worker / OCR / PDFium 资源 (${TARGET})...${NC}"
 node "${PROJECT_DIR}/scripts/prepare-document-processing.mjs" "$TARGET"
 
-npm run tauri:build -- --target "$TARGET" --bundles appimage,deb
+npm run tauri:build -- --target "$TARGET" --bundles appimage,deb \
+    --config "${PROJECT_DIR}/src-tauri/tauri.linux.conf.json"
 
 echo ""
 BUNDLE_DIR="${PROJECT_DIR}/src-tauri/target/${TARGET}/release/bundle"

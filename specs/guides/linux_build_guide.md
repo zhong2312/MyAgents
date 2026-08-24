@@ -61,6 +61,8 @@ Mino 默认工作区模板已提交在 `bundled-workspaces/mino/`，setup 和构
 ./build_linux.sh aarch64-unknown-linux-gnu  # 明确 target
 ```
 
+Linux 构建会加载 `src-tauri/tauri.linux.conf.json`，仅保留 Linux 可用的打包资源。
+
 产物路径：
 - AppImage：`src-tauri/target/<target>/release/bundle/appimage/MyAgents_<ver>_<arch>.AppImage`
 - deb：`src-tauri/target/<target>/release/bundle/deb/MyAgents_<ver>_<arch>.deb`

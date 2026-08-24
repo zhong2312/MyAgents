@@ -57,6 +57,19 @@ myagents-releases/
 ./build_macos.sh
 ```
 
+### 未签名 macOS DMG
+
+需要发布未签名 DMG 时，使用明确的非交互参数构建单一架构：
+
+```bash
+MYAGENTS_UNSIGNED_BUILD=1 \
+MYAGENTS_NONINTERACTIVE=1 \
+MYAGENTS_MACOS_BUILD_TARGET=aarch64-apple-darwin \
+./build_macos.sh
+```
+
+将 target 改为 `x86_64-apple-darwin` 可构建 Intel 版本。该模式不读取 `.env` 中的签名配置，只产出 DMG。
+
 **交互选项**：
 ```
 请选择目标架构:
