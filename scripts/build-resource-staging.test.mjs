@@ -298,10 +298,23 @@ test('v0.5.0 macOS rebuild keeps project instructions during source restore', ()
 test('Windows NSIS separates display branding from its stable upgrade identity', () => {
   assert.match(nsisInstaller, /^!define PRODUCTNAME "{{product_name}}"$/m);
   assert.match(nsisInstaller, /^!define DISPLAYNAME "My Novel Studio"$/m);
+  assert.match(nsisInstaller, /^!define INSTALLDIRNAME "MyNovelStudio"$/m);
   assert.match(nsisInstaller, /^Name "\$\{DISPLAYNAME\}"$/m);
   assert.match(
     nsisInstaller,
-    /^!define PLACEHOLDER_INSTALL_DIR "placeholder\\\$\{PRODUCTNAME\}"$/m,
+    /^!define PLACEHOLDER_INSTALL_DIR "placeholder\\\$\{INSTALLDIRNAME\}"$/m,
+  );
+  assert.match(
+    nsisInstaller,
+    /StrCpy \$INSTDIR "\$LOCALAPPDATA\\\$\{INSTALLDIRNAME\}"/,
+  );
+  assert.match(
+    nsisInstaller,
+    /!define UNINSTKEY "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\\$\{PRODUCTNAME\}"/,
+  );
+  assert.match(
+    nsisInstaller,
+    /Call RestorePreviousInstallLocation/,
   );
   assert.match(
     nsisInstaller,
