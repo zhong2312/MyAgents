@@ -1,0 +1,273 @@
+name: Rebuild v0.5.0 Desktop Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: v0.5.0
+  SOURCE_REF: v0.5.0
+
+jobs:
+  build-macos:
+    name: macOS ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Apple Silicon
+            runner: macos-14
+            target: aarch64-apple-darwin
+            artifact: macos-aarch64
+          - label: Intel
+            runner: macos-13
+            target: x86_64-apple-darwin
+            artifact: macos-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Restore the v0.5.0 application source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout "$SOURCE_REF" -- .
+          git checkout HEAD -- \
+            build_macos.sh \
+            package.json \
+            package-lock.json \
+            src-tauri/tauri.macos.unsigned.conf.json
+          release_version="$(grep '"version"' package.json | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')"
+          test "$release_version" = "${RELEASE_TAG#v}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@1.92.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build unsigned DMG
+        shell: bash
+        env:
+          MYAGENTS_UNSIGNED_BUILD: "1"
+          MYAGENTS_NONINTERACTIVE: "1"
+          MYAGENTS_MACOS_BUILD_TARGET: ${{ matrix.target }}
+        run: ./build_macos.sh
+
+      - name: Verify DMG contents
+        id: dmg
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          test "${#files[@]}" -eq 1
+          dmg="${files[0]}"
+          hdiutil verify "$dmg"
+
+          mount_dir="$(mktemp -d)"
+          mounted=0
+          cleanup() {
+            if [ "$mounted" = 1 ]; then hdiutil detach "$mount_dir" -quiet || true; fi
+            rmdir "$mount_dir" || true
+          }
+          trap cleanup EXIT
+
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount_dir" -quiet
+          mounted=1
+          app="$mount_dir/MyAgents.app"
+          test -d "$app"
+          test -x "$app/Contents/MacOS/MyAgents"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "${RELEASE_TAG#v}"
+          test -n "$(find "$app/Contents/Resources" -path '*/legal/LICENSE' -type f -print -quit)"
+
+          signature_info="$(codesign -dv --verbose=4 "$app" 2>&1 || true)"
+          if grep -Fq 'Authority=Developer ID Application' <<<"$signature_info"; then
+            echo 'Unexpected Developer ID signature in unsigned build.' >&2
+            exit 1
+          fi
+
+          echo "path=$dmg" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: ${{ steps.dmg.outputs.path }}
+
+  build-linux:
+    name: Linux x86_64
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Restore the v0.5.0 application source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout "$SOURCE_REF" -- .
+          git checkout HEAD -- \
+            build_linux.sh \
+            package.json \
+            package-lock.json \
+            src-tauri/tauri.linux.conf.json
+          release_version="$(grep '"version"' package.json | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')"
+          test "$release_version" = "${RELEASE_TAG#v}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@1.92.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux bundle dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            file \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            patchelf
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build AppImage and deb
+        shell: bash
+        run: ./build_linux.sh x86_64-unknown-linux-gnu
+
+      - name: Verify Linux packages
+        id: packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bundle_dir=src-tauri/target/x86_64-unknown-linux-gnu/release/bundle
+          appimages=("$bundle_dir"/appimage/*.AppImage)
+          debs=("$bundle_dir"/deb/*.deb)
+          test "${#appimages[@]}" -eq 1
+          test "${#debs[@]}" -eq 1
+          test -s "${appimages[0]}"
+          test -s "${debs[0]}"
+          test "$(dpkg-deb -f "${debs[0]}" Version)" = "${RELEASE_TAG#v}"
+
+          extract_dir="$(mktemp -d)"
+          (
+            cd "$extract_dir"
+            chmod +x "${GITHUB_WORKSPACE}/${appimages[0]}"
+            "${GITHUB_WORKSPACE}/${appimages[0]}" --appimage-extract >/dev/null
+            test -d squashfs-root
+            test -n "$(find squashfs-root -type f \( -name MyAgents -o -name myagents \) -print -quit)"
+          )
+          rm -rf "$extract_dir"
+
+          echo "appimage=${appimages[0]}" >> "$GITHUB_OUTPUT"
+          echo "deb=${debs[0]}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          if-no-files-found: error
+          path: |
+            ${{ steps.packages.outputs.appimage }}
+            ${{ steps.packages.outputs.deb }}
+
+  publish:
+    name: Publish v0.5.0
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Recreate the release with all desktop packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets previous-windows
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > release-notes.md
+          grep -Fq 'My Novel Studio 0.5.0' release-notes.md
+
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'MyAgents_0.5.0_x64-setup.exe' \
+            --pattern 'MyAgents_0.5.0_x86_64-portable.zip' \
+            --dir previous-windows
+
+          resolve_one() {
+            local directory="$1"
+            local pattern="$2"
+            local description="$3"
+            mapfile -t matches < <(find "$directory" -type f -name "$pattern" -print)
+            if [ "${#matches[@]}" -ne 1 ] || [ ! -s "${matches[0]:-}" ]; then
+              echo "Expected exactly one non-empty ${description}." >&2
+              exit 1
+            fi
+            printf '%s\n' "${matches[0]}"
+          }
+
+          windows_setup="$(resolve_one previous-windows '*.exe' 'Windows installer')"
+          windows_portable="$(resolve_one previous-windows '*.zip' 'Windows portable archive')"
+          macos_arm="$(resolve_one artifacts/macos-aarch64 '*.dmg' 'Apple Silicon DMG')"
+          macos_intel="$(resolve_one artifacts/macos-x86_64 '*.dmg' 'Intel DMG')"
+          linux_appimage="$(resolve_one artifacts/linux-x86_64 '*.AppImage' 'Linux AppImage')"
+          linux_deb="$(resolve_one artifacts/linux-x86_64 '*.deb' 'Linux deb package')"
+
+          cp "$windows_setup" release-assets/MyAgents_0.5.0_x64-setup.exe
+          cp "$windows_portable" release-assets/MyAgents_0.5.0_x86_64-portable.zip
+          cp "$macos_arm" release-assets/MyAgents_0.5.0_macos_aarch64.dmg
+          cp "$macos_intel" release-assets/MyAgents_0.5.0_macos_x86_64.dmg
+          cp "$linux_appimage" release-assets/MyAgents_0.5.0_linux_x86_64.AppImage
+          cp "$linux_deb" release-assets/MyAgents_0.5.0_linux_x86_64.deb
+
+          expected=(
+            MyAgents_0.5.0_x64-setup.exe
+            MyAgents_0.5.0_x86_64-portable.zip
+            MyAgents_0.5.0_macos_aarch64.dmg
+            MyAgents_0.5.0_macos_x86_64.dmg
+            MyAgents_0.5.0_linux_x86_64.AppImage
+            MyAgents_0.5.0_linux_x86_64.deb
+          )
+          for asset in "${expected[@]}"; do test -s "release-assets/$asset"; done
+
+          gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --title 'My Novel Studio 0.5.0' \
+            --notes-file release-notes.md
+          gh release upload "$RELEASE_TAG" release-assets/* --repo "$GITHUB_REPOSITORY"
+
+          mapfile -t uploaded < <(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort)
+          test "${#uploaded[@]}" -eq "${#expected[@]}"
+          for asset in "${expected[@]}"; do
+            printf '%s\n' "${uploaded[@]}" | grep -Fxq "$asset"
+          done
