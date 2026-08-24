@@ -19,6 +19,18 @@ const buildWindows = readFileSync(
   resolve(repoRoot, 'build_windows.ps1'),
   'utf8',
 );
+const nsisInstaller = readFileSync(
+  resolve(repoRoot, 'src-tauri', 'nsis', 'installer.nsi'),
+  'utf8',
+);
+const nsisSimpChinese = readFileSync(
+  resolve(repoRoot, 'src-tauri', 'nsis', 'languages', 'SimpChinese.nsh'),
+  'utf8',
+);
+const nsisEnglish = readFileSync(
+  resolve(repoRoot, 'src-tauri', 'nsis', 'languages', 'English.nsh'),
+  'utf8',
+);
 const rebuildV050Release = readFileSync(
   resolve(repoRoot, '.github', 'workflows', 'rebuild-v050-release.yml'),
   'utf8',
@@ -281,6 +293,25 @@ test('v0.5.0 macOS rebuild keeps project instructions during source restore', ()
     1,
     'the macOS source restore must retain the current Azgaar runtime builder',
   );
+});
+
+test('Windows NSIS separates display branding from its stable upgrade identity', () => {
+  assert.match(nsisInstaller, /^!define PRODUCTNAME "{{product_name}}"$/m);
+  assert.match(nsisInstaller, /^!define DISPLAYNAME "My Novel Studio"$/m);
+  assert.match(nsisInstaller, /^Name "\$\{DISPLAYNAME\}"$/m);
+  assert.match(
+    nsisInstaller,
+    /^!define PLACEHOLDER_INSTALL_DIR "placeholder\\\$\{PRODUCTNAME\}"$/m,
+  );
+  assert.match(
+    nsisInstaller,
+    /WriteRegStr SHCTX "\$\{UNINSTKEY\}" "DisplayName" "\$\{DISPLAYNAME\}"/,
+  );
+
+  for (const languageFile of [nsisSimpChinese, nsisEnglish]) {
+    assert.match(languageFile, /\$\{DISPLAYNAME\}/);
+    assert.doesNotMatch(languageFile, /MyAgents/);
+  }
 });
 
 test('Azgaar runtime verifies its staged bytes through the generated manifest', () => {
