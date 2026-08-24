@@ -12,10 +12,10 @@
   "homepage": "https://myagents.io",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hAcKlyc/MyAgents.git"
+    "url": "git+https://github.com/zhong2312/MyNovelStudio.git"
   },
   "bugs": {
-    "url": "https://github.com/hAcKlyc/MyAgents/issues"
+    "url": "https://github.com/zhong2312/MyNovelStudio/issues"
   },
   "keywords": [
     "claude",

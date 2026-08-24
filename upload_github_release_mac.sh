@@ -7,7 +7,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GITHUB_REPO="${MYAGENTS_GITHUB_REPO:-zhong2312/MyAgents}"
+GITHUB_REPO="${MYAGENTS_GITHUB_REPO:-zhong2312/MyNovelStudio}"
 MANIFEST_DIR="${MYAGENTS_MANIFEST_DIR:-}"
 TEMP_UPLOAD_DIR=""
 

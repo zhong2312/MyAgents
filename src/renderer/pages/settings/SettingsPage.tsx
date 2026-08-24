@@ -5211,7 +5211,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                             href={MYAGENTS_GITHUB_URL}
                                             className="mt-1 block text-[var(--accent)] hover:underline"
                                         >
-                                            github.com/hAcKlyc/MyAgents
+                                            github.com/zhong2312/MyNovelStudio
                                         </ExternalLink>
                                     </div>
                                 </div>

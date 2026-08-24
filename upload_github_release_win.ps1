@@ -5,7 +5,7 @@
 
 param(
     [string]$ManifestDir = "",
-    [string]$GithubRepo = "zhong2312/MyAgents"
+    [string]$GithubRepo = "zhong2312/MyNovelStudio"
 )
 
 $ErrorActionPreference = "Stop"

@@ -77,7 +77,7 @@ $EnvFile = Join-Path $ProjectDir ".env"
 # 配置
 $R2Bucket = "myagents-releases"
 $DownloadBaseUrl = "https://download.myagents.io"
-$GithubRepo = "zhong2312/MyAgents"
+$GithubRepo = "zhong2312/MyNovelStudio"
 $GithubReleaseBaseUrl = "https://github.com/$GithubRepo/releases/download/v$Version"
 
 Write-Host ""

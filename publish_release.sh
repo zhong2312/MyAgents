@@ -23,7 +23,7 @@ ENV_FILE="${PROJECT_DIR}/.env"
 # 配置
 R2_BUCKET="myagents-releases"
 DOWNLOAD_BASE_URL="https://download.myagents.io"
-GITHUB_REPO="zhong2312/MyAgents"
+GITHUB_REPO="zhong2312/MyNovelStudio"
 GITHUB_RELEASE_BASE_URL="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}"
 DMG_MOUNT=""
 

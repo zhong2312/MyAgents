@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **项目文档改为 My Novel Studio 图文介绍**：README 聚焦小说创作工作流，以当前工作台截图展示世界、地图、修炼、物品、势力、人物、剧情与正文能力，移除原有 MyAgents 产品介绍。
 - **AI 入口改为显式发起**：通用 AI 按钮只打开对应项目对话窗口，不再自动发送预填任务；作者可检查上下文后自行决定何时开始对话。
-- **自动更新源迁移到项目仓库**：Windows 更新检查改为读取 `zhong2312/MyAgents` 的 GitHub Release 资产，不再指向原 MyAgents 仓库。
+- **自动更新源迁移到项目仓库**：Windows 更新检查改为读取 `zhong2312/MyNovelStudio` 的 GitHub Release 资产，不再指向原 MyAgents 仓库。
 - **小说工作台视觉与导航调整**：更新默认主题、Launcher 入口与工作台 Tab 行为，使小说项目进入、设置和 AI 协作路径保持一致。
 
 ### Fixed

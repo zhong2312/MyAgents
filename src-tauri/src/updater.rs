@@ -29,7 +29,7 @@ use crate::sidecar::ManagedSidecar;
 /// Project-owned GitHub Release endpoint used by the desktop updater.
 /// Keep this in sync with `plugins.updater.endpoints` in tauri.conf.json.
 const UPDATE_MANIFEST_BASE_URL: &str =
-    "https://github.com/zhong2312/MyAgents/releases/latest/download";
+    "https://github.com/zhong2312/MyNovelStudio/releases/latest/download";
 
 /// Global flag to prevent concurrent update checks/downloads
 static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
