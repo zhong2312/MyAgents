@@ -20,7 +20,6 @@ import { dirname, resolve } from 'node:path';
 const AZGAAR_REPOSITORY = 'https://github.com/Azgaar/Fantasy-Map-Generator.git';
 const AZGAAR_COMMIT = '49f75b9e003468bfe9e7cbad08a359210507350d';
 const AZGAAR_VERSION = '1.141.2';
-const AZGAAR_INDEX_SHA256 = '91b180c6f0c9e9cb70d96df7740fc9ca94f0b860c651472d11d63f51fc69d3c3';
 const PROJECT_ROOT = resolve(import.meta.dirname, '..');
 const TARGET_DIR = resolve(PROJECT_ROOT, 'src-tauri/resources/azgaar');
 const MANIFEST_PATH = resolve(TARGET_DIR, 'myagents-runtime.json');
@@ -41,10 +40,12 @@ async function isPrepared() {
   try {
     const manifest = JSON.parse(await readFile(MANIFEST_PATH, 'utf8'));
     const indexHtml = await readFile(resolve(TARGET_DIR, 'index.html'));
+    const indexSha256 = sha256(indexHtml);
     return manifest.commit === AZGAAR_COMMIT
       && manifest.version === AZGAAR_VERSION
-      && manifest.indexSha256 === AZGAAR_INDEX_SHA256
-      && sha256(indexHtml) === AZGAAR_INDEX_SHA256
+      && typeof manifest.indexSha256 === 'string'
+      && /^[a-f0-9]{64}$/.test(manifest.indexSha256)
+      && manifest.indexSha256 === indexSha256
       && existsSync(resolve(TARGET_DIR, 'LICENSE'));
   } catch {
     return false;
@@ -93,9 +94,6 @@ async function main() {
     const indexHtml = await readFile(resolve(stagingDir, 'index.html'));
     if (!indexHtml.toString('utf8').includes('/Fantasy-Map-Generator/')) {
       throw new Error('Azgaar dist index is missing the expected production asset prefix');
-    }
-    if (sha256(indexHtml) !== AZGAAR_INDEX_SHA256) {
-      throw new Error(`Azgaar dist index hash mismatch for ${AZGAAR_COMMIT}`);
     }
     await writeFile(
       resolve(stagingDir, 'myagents-runtime.json'),

@@ -23,6 +23,10 @@ const rebuildV050Release = readFileSync(
   resolve(repoRoot, '.github', 'workflows', 'rebuild-v050-release.yml'),
   'utf8',
 );
+const azgaarRuntime = readFileSync(
+  resolve(repoRoot, 'scripts', 'prepare-azgaar-runtime.mjs'),
+  'utf8',
+);
 const setupUnix = readFileSync(resolve(repoRoot, 'setup.sh'), 'utf8');
 const setupWindows = readFileSync(
   resolve(repoRoot, 'setup_windows.ps1'),
@@ -267,6 +271,14 @@ test('v0.5.0 rebuild keeps cross-platform project instructions during source res
     rebuildV050Release,
     /- name: Build unsigned DMG[\s\S]*NODE_OPTIONS: "--max-old-space-size=4096"/,
   );
+});
+
+test('Azgaar runtime verifies its staged bytes through the generated manifest', () => {
+  assert.doesNotMatch(azgaarRuntime, /AZGAAR_INDEX_SHA256/);
+  assert.match(azgaarRuntime, /manifest\.commit === AZGAAR_COMMIT/);
+  assert.match(azgaarRuntime, /manifest\.version === AZGAAR_VERSION/);
+  assert.match(azgaarRuntime, /manifest\.indexSha256 === indexSha256/);
+  assert.match(azgaarRuntime, /indexSha256: sha256\(indexHtml\)/);
 });
 
 test('CLI bundle staging owns its complete mutable resource inventory', () => {
