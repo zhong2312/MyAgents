@@ -23,7 +23,7 @@ jobs:
             target: aarch64-apple-darwin
             artifact: macos-aarch64
           - label: Intel
-            runner: macos-15-large
+            runner: macos-14
             target: x86_64-apple-darwin
             artifact: macos-x86_64
 
