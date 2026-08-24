@@ -271,6 +271,11 @@ test('v0.5.0 rebuild keeps cross-platform project instructions during source res
     rebuildV050Release,
     /- name: Build unsigned DMG[\s\S]*NODE_OPTIONS: "--max-old-space-size=4096"/,
   );
+  assert.equal(
+    rebuildV050Release.match(/scripts\/prepare-azgaar-runtime\.mjs/g)?.length,
+    2,
+    'macOS and Linux source restores must retain the current Azgaar runtime builder',
+  );
 });
 
 test('Azgaar runtime verifies its staged bytes through the generated manifest', () => {
