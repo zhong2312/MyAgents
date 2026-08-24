@@ -12,9 +12,9 @@ Cloud Space 横跨两个独立版本、独立发布的仓库，不能把其中�
 
 | 范围 | 权威位置 |
 | --- | --- |
-| Desktop build gate、Rust HTTP/session、`device_id`、本地 token/状态、connector、UI、CLI、Task/Session 执行 | `hAcKlyc/MyAgents`：本文 + `specs/ARCHITECTURE.md`「MyAgents Cloud Space」 |
+| Desktop build gate、Rust HTTP/session、`device_id`、本地 token/状态、connector、UI、CLI、Task/Session 执行 | `zhong2312/MyNovelStudio`：本文 + `specs/ARCHITECTURE.md`「MyAgents Cloud Space」 |
 | Cloud API、身份/权限、领域模型、D1/R2/KV ownership、Account plan/quota、运营与发布 | `hAcKlyc/MyAgents_space`：`specs/ARCHITECTURE.md` + `specs/RELEASE.md` |
-| Space IssueDelivery Prompt、Registered Agent context/instruction、拼接与版本规则 | `hAcKlyc/MyAgents`：`specs/tech_docs/space_issue_delivery_protocol.md` |
+| Space IssueDelivery Prompt、Registered Agent context/instruction、拼接与版本规则 | `zhong2312/MyNovelStudio`：`specs/tech_docs/space_issue_delivery_protocol.md` |
 
 本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-22，0.3.2 联合发布基线为：
 

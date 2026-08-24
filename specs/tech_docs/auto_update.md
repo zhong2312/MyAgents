@@ -1,7 +1,7 @@
 # MyAgents 自动更新系统
 
 桌面应用的自动更新源是本项目的 GitHub Release：
-`https://github.com/zhong2312/MyAgents/releases/latest/download/{{target}}.json`。
+`https://github.com/zhong2312/MyNovelStudio/releases/latest/download/{{target}}.json`。
 Cloudflare R2 仍用于官网资源和历史发布兼容，但不再作为客户端自动更新入口。
 
 ## 设计理念
@@ -186,7 +186,7 @@ myagents-releases/
 
 ### 项目 GitHub Release 更新资产
 
-每个平台发布时必须在 `zhong2312/MyAgents` 对应版本 Release 中上传：
+每个平台发布时必须在 `zhong2312/MyNovelStudio` 对应版本 Release 中上传：
 
 - `darwin-aarch64.json` / `darwin-x86_64.json` 或 `windows-x86_64.json`
 - 对应签名更新包及 `.sig` 文件
@@ -243,7 +243,7 @@ git push origin main --tags
 
 ```bash
 # 检查桌面自动更新清单
-curl https://github.com/zhong2312/MyAgents/releases/latest/download/darwin-aarch64.json
+curl https://github.com/zhong2312/MyNovelStudio/releases/latest/download/darwin-aarch64.json
 ```
 
 预期返回:
@@ -253,7 +253,7 @@ curl https://github.com/zhong2312/MyAgents/releases/latest/download/darwin-aarch
   "notes": "MyAgents v0.2.0",
   "pub_date": "2026-01-23T14:00:00Z",
   "signature": "...",
-  "url": "https://github.com/zhong2312/MyAgents/releases/download/v0.2.0/MyAgents_aarch64.app.tar.gz"
+  "url": "https://github.com/zhong2312/MyNovelStudio/releases/download/v0.2.0/MyAgents_aarch64.app.tar.gz"
 }
 ```
 
@@ -296,7 +296,7 @@ curl https://github.com/zhong2312/MyAgents/releases/latest/download/darwin-aarch
   "notes": "MyAgents v0.2.0",
   "pub_date": "2026-01-23T14:00:00Z",
   "signature": "base64编码的签名",
-  "url": "https://github.com/zhong2312/MyAgents/releases/download/v0.2.0/MyAgents_aarch64.app.tar.gz"
+  "url": "https://github.com/zhong2312/MyNovelStudio/releases/download/v0.2.0/MyAgents_aarch64.app.tar.gz"
 }
 ```
 

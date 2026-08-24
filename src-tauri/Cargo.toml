@@ -4,7 +4,7 @@ version = "0.5.0"
 description = "MyAgents - Desktop Claude Code for everyone"
 authors = ["MyAgents Team <myagents.io@gmail.com>"]
 license = "AGPL-3.0-only"
-repository = "https://github.com/hAcKlyc/MyAgents"
+repository = "https://github.com/zhong2312/MyNovelStudio"
 homepage = "https://myagents.io"
 edition = "2021"
 # MSRV note: Tauri 2.9 already requires ≥ 1.78. Keep 1.81 explicit so every
