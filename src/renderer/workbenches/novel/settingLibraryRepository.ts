@@ -350,7 +350,7 @@ export function createNovelSettingLibraryRepository(
   const repository: NovelSettingLibraryRepository = {
     async load(projectTitle) {
       if (!storage.isAvailable) {
-        throw new Error("小说设定库存储仅在 MyAgents 桌面端可用");
+        throw new Error("小说设定库存储仅在 MyNovelStudio 桌面端可用");
       }
       const initialFiles =
         createSettingLibraryInitializationFiles(projectTitle);

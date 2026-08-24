@@ -644,7 +644,7 @@ export const MemoizedTabContent = memo(
     const openWorkbenchAgentSession = useCallback(
       async (workspacePath: string, request: WorkbenchAgentSessionRequest) => {
         if (!onOpenWorkbenchAgentSession) {
-          throw new Error("MyAgents Agent Session host is unavailable");
+          throw new Error("MyNovelStudio Agent Session host is unavailable");
         }
         await onOpenWorkbenchAgentSession(workspacePath, request, tab.id);
       },
@@ -4237,10 +4237,10 @@ export default function App() {
         workspacePathsEqual(candidate.path, workspacePath),
       );
       if (!project)
-        throw new Error(`工作台项目尚未注册到 MyAgents：${workspacePath}`);
+        throw new Error(`工作台项目尚未注册到 MyNovelStudio：${workspacePath}`);
       const currentConfig = configRef.current;
       if (!currentConfig)
-        throw new Error("MyAgents 配置尚未加载完成，请稍后重试");
+        throw new Error("MyNovelStudio 配置尚未加载完成，请稍后重试");
 
       const workspaceAgent = getProjectAgent(
         currentConfig,
@@ -4252,7 +4252,7 @@ export default function App() {
         !!currentConfig.multiAgentRuntime,
       );
       if (effectiveRuntime !== "builtin") {
-        throw new Error("工作台一次性 AI 生成当前仅支持 MyAgents 内置运行时");
+        throw new Error("工作台一次性 AI 生成当前仅支持 MyNovelStudio 内置运行时");
       }
       const selection =
         resolveWorkbenchModelSelection(
@@ -4455,7 +4455,7 @@ export default function App() {
         workspacePathsEqual(candidate.path, workspacePath),
       );
       if (!project)
-        throw new Error(`工作台项目尚未注册到 MyAgents：${workspacePath}`);
+        throw new Error(`工作台项目尚未注册到 MyNovelStudio：${workspacePath}`);
 
       const conversationKey =
         request.conversationKey ?? request.promptId ?? request.title;
@@ -4649,7 +4649,7 @@ export default function App() {
 
       const currentConfig = configRef.current;
       if (!currentConfig)
-        throw new Error("MyAgents 配置尚未加载完成，请稍后重试");
+        throw new Error("MyNovelStudio 配置尚未加载完成，请稍后重试");
       const workspaceAgent = getProjectAgent(
         currentConfig,
         configProjectsRef.current,
@@ -4661,11 +4661,11 @@ export default function App() {
       );
       if (request.toolset && effectiveRuntime !== "builtin") {
         throw new Error(
-          "受控工作台工具当前仅支持 MyAgents 内置运行时，请先切换该项目的运行时",
+          "受控工作台工具当前仅支持 MyNovelStudio 内置运行时，请先切换该项目的运行时",
         );
       }
       if (request.modelSelection && effectiveRuntime !== "builtin") {
-        throw new Error("场景模型绑定当前仅支持 MyAgents 内置运行时");
+        throw new Error("场景模型绑定当前仅支持 MyNovelStudio 内置运行时");
       }
       const sceneModelSelection = resolveWorkbenchModelSelection(
         request.modelSelection,

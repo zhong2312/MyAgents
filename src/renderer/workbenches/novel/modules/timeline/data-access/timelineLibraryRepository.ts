@@ -63,7 +63,7 @@ export function createNovelTimelineLibraryRepository(
   return Object.freeze({
     async load() {
       if (!storage.isAvailable) {
-        throw new Error("时间线仅在 MyAgents 桌面端可用");
+        throw new Error("时间线仅在 MyNovelStudio 桌面端可用");
       }
       const [entry] = await storage.stat([TIMELINE_INDEX_PATH]);
       if (!entry?.exists) {

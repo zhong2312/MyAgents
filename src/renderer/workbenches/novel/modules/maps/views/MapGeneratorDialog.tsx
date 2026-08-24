@@ -439,7 +439,7 @@ export default function MapGeneratorDialog({
                   </button>
                   {!agentAvailable && (
                     <p className="mt-2 text-xs text-[var(--error)]">
-                      MyAgents Agent Session 当前不可用，无法执行设定驱动生成。
+                      MyNovelStudio Agent Session 当前不可用，无法执行设定驱动生成。
                     </p>
                   )}
                 </div>

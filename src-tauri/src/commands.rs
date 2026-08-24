@@ -441,8 +441,9 @@ fn resolve_bundled_workspace_template<R: Runtime>(
 pub fn cmd_initialize_bundled_workspace<R: Runtime>(
     app_handle: AppHandle<R>,
 ) -> Result<InitBundledWorkspaceResult, String> {
-    let home_dir = dirs::home_dir().ok_or("Failed to get home dir")?;
-    let mino_dest = home_dir.join(".myagents").join("projects").join("mino");
+    let myagents_dir = crate::app_dirs::myagents_data_dir()
+        .ok_or("Failed to get MyAgents data dir")?;
+    let mino_dest = myagents_dir.join("projects").join("mino");
 
     // NOTE: Path::exists() follows symlinks, so a dangling
     // ~/.myagents/projects/mino link returns false here and we'd fall
@@ -490,8 +491,9 @@ pub fn cmd_create_bot_workspace<R: Runtime>(
     app_handle: AppHandle<R>,
     workspace_name: String,
 ) -> Result<InitBundledWorkspaceResult, String> {
-    let home_dir = dirs::home_dir().ok_or("Failed to get home dir")?;
-    let projects_dir = home_dir.join(".myagents").join("projects");
+    let myagents_dir = crate::app_dirs::myagents_data_dir()
+        .ok_or("Failed to get MyAgents data dir")?;
+    let projects_dir = myagents_dir.join("projects");
 
     // Sanitize name: remove @, replace non-alphanumeric (except CJK) with dash, trim
     let sanitized = sanitize_workspace_name(&workspace_name);
@@ -529,8 +531,9 @@ pub fn cmd_create_bot_workspace<R: Runtime>(
 /// Safety: only allows deleting directories under `~/.myagents/projects/`.
 #[tauri::command]
 pub fn cmd_remove_bot_workspace(workspace_path: String) -> Result<(), String> {
-    let home_dir = dirs::home_dir().ok_or("Failed to get home dir")?;
-    let projects_dir = home_dir.join(".myagents").join("projects");
+    let myagents_dir = crate::app_dirs::myagents_data_dir()
+        .ok_or("Failed to get MyAgents data dir")?;
+    let projects_dir = myagents_dir.join("projects");
 
     let target = PathBuf::from(&workspace_path);
     // Canonicalize both paths to prevent traversal attacks
@@ -555,8 +558,9 @@ pub fn cmd_remove_bot_workspace(workspace_path: String) -> Result<(), String> {
 /// Safety: only allows deleting directories under ~/.myagents/templates/.
 #[tauri::command]
 pub fn cmd_remove_template_folder(template_path: String) -> Result<(), String> {
-    let home_dir = dirs::home_dir().ok_or("Failed to get home dir")?;
-    let templates_dir = home_dir.join(".myagents").join("templates");
+    let myagents_dir = crate::app_dirs::myagents_data_dir()
+        .ok_or("Failed to get MyAgents data dir")?;
+    let templates_dir = myagents_dir.join("templates");
 
     if !templates_dir.exists() {
         return Err("Templates directory does not exist".to_string());
@@ -691,8 +695,9 @@ pub fn cmd_create_workspace_from_template(
     }
 
     // Validate source is under ~/.myagents/templates/
-    let home_dir = dirs::home_dir().ok_or("Failed to get home dir")?;
-    let templates_dir = home_dir.join(".myagents").join("templates");
+    let myagents_dir = crate::app_dirs::myagents_data_dir()
+        .ok_or("Failed to get MyAgents data dir")?;
+    let templates_dir = myagents_dir.join("templates");
     if templates_dir.exists() {
         let canon_templates = templates_dir
             .canonicalize()
@@ -795,8 +800,9 @@ fn resolve_template_source<R: Runtime>(
         if !src.exists() {
             return Err(format!("Template source not found: {}", p));
         }
-        let home_dir = dirs::home_dir().ok_or("Failed to get home dir")?;
-        let templates_dir = home_dir.join(".myagents").join("templates");
+        let myagents_dir = crate::app_dirs::myagents_data_dir()
+            .ok_or("Failed to get MyAgents data dir")?;
+        let templates_dir = myagents_dir.join("templates");
         if !templates_dir.exists() {
             return Err("Templates directory does not exist".to_string());
         }
@@ -917,8 +923,9 @@ pub fn cmd_copy_folder_to_templates(
         return Err(format!("Source folder not found: {}", source_path));
     }
 
-    let home_dir = dirs::home_dir().ok_or("Failed to get home dir")?;
-    let templates_dir = home_dir.join(".myagents").join("templates");
+    let myagents_dir = crate::app_dirs::myagents_data_dir()
+        .ok_or("Failed to get MyAgents data dir")?;
+    let templates_dir = myagents_dir.join("templates");
     fs::create_dir_all(&templates_dir)
         .map_err(|e| format!("Failed to create templates dir: {}", e))?;
 
@@ -982,8 +989,8 @@ pub async fn cmd_sync_admin_agent<R: Runtime>(app_handle: AppHandle<R>) -> Resul
 }
 
 fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String> {
-    let home = dirs::home_dir().ok_or("Home dir not found")?;
-    let dest = home.join(".myagents");
+    let dest = crate::app_dirs::myagents_data_dir()
+        .ok_or("MyAgents data dir not found")?;
 
     // Version gate
     let ver_file = dest.join(".admin-agent-version");
@@ -1177,8 +1184,9 @@ pub(crate) async fn sync_system_skills_for_startup<R: Runtime>(
 }
 
 fn ensure_system_skills_installation_current() -> Result<(), String> {
-    let home = dirs::home_dir().ok_or("Home dir not found")?;
-    ensure_system_skills_installation_current_at(&home.join(".myagents"))
+    let myagents_dir = crate::app_dirs::myagents_data_dir()
+        .ok_or("MyAgents data dir not found")?;
+    ensure_system_skills_installation_current_at(&myagents_dir)
 }
 
 fn ensure_system_skills_installation_current_at(myagents_dir: &Path) -> Result<(), String> {
@@ -1215,8 +1223,8 @@ fn ensure_system_skills_installation_current_at(myagents_dir: &Path) -> Result<(
 }
 
 fn sync_system_skills_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String> {
-    let home = dirs::home_dir().ok_or("Home dir not found")?;
-    let myagents_dir = home.join(".myagents");
+    let myagents_dir = crate::app_dirs::myagents_data_dir()
+        .ok_or("MyAgents data dir not found")?;
     let skills_dir = myagents_dir.join("skills");
 
     // Version gate — skip the whole sweep if we've already landed

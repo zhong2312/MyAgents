@@ -1547,7 +1547,7 @@ export default function WorldSimulationWorkbench({
     }
     if (!onAiRun) {
       throw new Error(
-        "AI 推演当前不可用，请在 MyAgents 桌面端配置模型场景后重试",
+        "AI 推演当前不可用，请在 MyNovelStudio 桌面端配置模型场景后重试",
       );
     }
     setAiProgress("正在读取冻结的世界上下文");

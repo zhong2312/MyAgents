@@ -244,8 +244,9 @@ fn get_logs_dir() -> PathBuf {
     static LOGS_DIR: OnceLock<PathBuf> = OnceLock::new();
     LOGS_DIR
         .get_or_init(|| {
-            let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-            home.join(".myagents").join("logs")
+            crate::app_dirs::myagents_data_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("logs")
         })
         .clone()
 }

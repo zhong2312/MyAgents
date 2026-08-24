@@ -33,12 +33,11 @@ ${StrLoc}
 
 !define MANUFACTURER "{{manufacturer}}"
 !define PRODUCTNAME "{{product_name}}"
-; Keep the stable product identity for upgrade compatibility while presenting
-; the public brand throughout the installer interface.
-!define DISPLAYNAME "My Novel Studio"
-; Keep the new default directory compact and free of spaces. PRODUCTNAME must
-; remain unchanged because it identifies existing installs in the registry.
+!define DISPLAYNAME "MyNovelStudio"
+; Keep the new default directory compact and free of spaces.
 !define INSTALLDIRNAME "MyNovelStudio"
+!define SHORTCUTNAME "MyNovelStudio"
+!define LEGACYPRODUCTNAME "MyAgents"
 !define VERSION "{{version}}"
 !define VERSIONWITHBUILD "{{version_with_build}}"
 !define HOMEPAGE "{{homepage}}"
@@ -62,8 +61,10 @@ ${StrLoc}
 !define WEBVIEW2INSTALLERPATH "{{webview2_installer_path}}"
 !define MINIMUMWEBVIEW2VERSION "{{minimum_webview2_version}}"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}"
+!define LEGACYUNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${LEGACYPRODUCTNAME}"
 !define MANUKEY "Software\${MANUFACTURER}"
 !define MANUPRODUCTKEY "${MANUKEY}\${PRODUCTNAME}"
+!define LEGACYMANUPRODUCTKEY "${MANUKEY}\${LEGACYPRODUCTNAME}"
 !define UNINSTALLERSIGNCOMMAND "{{uninstaller_sign_cmd}}"
 !define ESTIMATEDSIZE "{{estimated_size}}"
 !define STARTMENUFOLDER "{{start_menu_folder}}"
@@ -480,6 +481,7 @@ Function .onInit
   !endif
 
   !insertmacro SetContext
+  Call MigrateLegacyInstall
 
   ${If} $INSTDIR == "${PLACEHOLDER_INSTALL_DIR}"
     ; Set default install location
@@ -506,6 +508,30 @@ Function .onInit
   !if "${INSTALLMODE}" == "both"
     !insertmacro MULTIUSER_INIT
   !endif
+FunctionEnd
+
+; Migrate the old MyAgents registry identity once so a brand rename keeps
+; upgrade detection, install location, and uninstaller routing intact.
+Function MigrateLegacyInstall
+  ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
+  ${If} $4 == ""
+    ReadRegStr $4 SHCTX "${LEGACYMANUPRODUCTKEY}" ""
+    ${If} $4 != ""
+      WriteRegStr SHCTX "${MANUPRODUCTKEY}" "" "$4"
+      ReadRegStr $0 SHCTX "${LEGACYUNINSTKEY}" "UninstallString"
+      ${If} $0 != ""
+        WriteRegStr SHCTX "${UNINSTKEY}" "UninstallString" "$0"
+      ${EndIf}
+      ReadRegStr $0 SHCTX "${LEGACYUNINSTKEY}" "DisplayVersion"
+      ${If} $0 != ""
+        WriteRegStr SHCTX "${UNINSTKEY}" "DisplayVersion" "$0"
+      ${EndIf}
+      ReadRegStr $0 SHCTX "${LEGACYUNINSTKEY}" "MainBinaryName"
+      ${If} $0 != ""
+        WriteRegStr SHCTX "${UNINSTKEY}" "MainBinaryName" "$0"
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
 FunctionEnd
 
 
@@ -870,26 +896,45 @@ Section Uninstall
 
     ; Remove start menu shortcut
     !insertmacro MUI_STARTMENU_GETFOLDER Application $AppStartMenuFolder
-    !insertmacro IsShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro IsShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${SHORTCUTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
     Pop $0
     ${If} $0 = 1
-      !insertmacro UnpinShortcut "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk"
-      Delete "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk"
+      !insertmacro UnpinShortcut "$SMPROGRAMS\$AppStartMenuFolder\${SHORTCUTNAME}.lnk"
+      Delete "$SMPROGRAMS\$AppStartMenuFolder\${SHORTCUTNAME}.lnk"
       RMDir "$SMPROGRAMS\$AppStartMenuFolder"
     ${EndIf}
-    !insertmacro IsShortcutTarget "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro IsShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${LEGACYPRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
     Pop $0
     ${If} $0 = 1
-      !insertmacro UnpinShortcut "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-      Delete "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+      !insertmacro UnpinShortcut "$SMPROGRAMS\$AppStartMenuFolder\${LEGACYPRODUCTNAME}.lnk"
+      Delete "$SMPROGRAMS\$AppStartMenuFolder\${LEGACYPRODUCTNAME}.lnk"
+      RMDir "$SMPROGRAMS\$AppStartMenuFolder"
+    ${EndIf}
+    !insertmacro IsShortcutTarget "$SMPROGRAMS\${SHORTCUTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    Pop $0
+    ${If} $0 = 1
+      !insertmacro UnpinShortcut "$SMPROGRAMS\${SHORTCUTNAME}.lnk"
+      Delete "$SMPROGRAMS\${SHORTCUTNAME}.lnk"
+    ${EndIf}
+    !insertmacro IsShortcutTarget "$SMPROGRAMS\${LEGACYPRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    Pop $0
+    ${If} $0 = 1
+      !insertmacro UnpinShortcut "$SMPROGRAMS\${LEGACYPRODUCTNAME}.lnk"
+      Delete "$SMPROGRAMS\${LEGACYPRODUCTNAME}.lnk"
     ${EndIf}
 
     ; Remove desktop shortcuts
-    !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro IsShortcutTarget "$DESKTOP\${SHORTCUTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
     Pop $0
     ${If} $0 = 1
-      !insertmacro UnpinShortcut "$DESKTOP\${PRODUCTNAME}.lnk"
-      Delete "$DESKTOP\${PRODUCTNAME}.lnk"
+      !insertmacro UnpinShortcut "$DESKTOP\${SHORTCUTNAME}.lnk"
+      Delete "$DESKTOP\${SHORTCUTNAME}.lnk"
+    ${EndIf}
+    !insertmacro IsShortcutTarget "$DESKTOP\${LEGACYPRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    Pop $0
+    ${If} $0 = 1
+      !insertmacro UnpinShortcut "$DESKTOP\${LEGACYPRODUCTNAME}.lnk"
+      Delete "$DESKTOP\${LEGACYPRODUCTNAME}.lnk"
     ${EndIf}
   ${EndIf}
 
@@ -941,6 +986,9 @@ SectionEnd
 
 Function RestorePreviousInstallLocation
   ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
+  ${If} $4 == ""
+    ReadRegStr $4 SHCTX "${LEGACYMANUPRODUCTKEY}" ""
+  ${EndIf}
   StrCmp $4 "" +2 0
     StrCpy $INSTDIR $4
 FunctionEnd
@@ -961,17 +1009,31 @@ Function CreateOrUpdateStartMenuShortcut
   ; migrate old shortcuts to target the new MAINBINARYNAME
   StrCpy $R0 0
 
-  !insertmacro IsShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
+  !insertmacro IsShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${SHORTCUTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
   Pop $0
   ${If} $0 = 1
-    !insertmacro SetShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro SetShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${SHORTCUTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
     StrCpy $R0 1
   ${EndIf}
 
-  !insertmacro IsShortcutTarget "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
+  !insertmacro IsShortcutTarget "$SMPROGRAMS\${SHORTCUTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
   Pop $0
   ${If} $0 = 1
-    !insertmacro SetShortcutTarget "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro SetShortcutTarget "$SMPROGRAMS\${SHORTCUTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    StrCpy $R0 1
+  ${EndIf}
+
+  ; Remove old stable-identity shortcuts after an upgrade.
+  !insertmacro IsShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${LEGACYPRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  Pop $0
+  ${If} $0 = 1
+    Rename "$SMPROGRAMS\$AppStartMenuFolder\${LEGACYPRODUCTNAME}.lnk" "$SMPROGRAMS\$AppStartMenuFolder\${SHORTCUTNAME}.lnk"
+    StrCpy $R0 1
+  ${EndIf}
+  !insertmacro IsShortcutTarget "$SMPROGRAMS\${LEGACYPRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  Pop $0
+  ${If} $0 = 1
+    Rename "$SMPROGRAMS\${LEGACYPRODUCTNAME}.lnk" "$SMPROGRAMS\${SHORTCUTNAME}.lnk"
     StrCpy $R0 1
   ${EndIf}
 
@@ -990,22 +1052,29 @@ Function CreateOrUpdateStartMenuShortcut
 
   !if "${STARTMENUFOLDER}" != ""
     CreateDirectory "$SMPROGRAMS\$AppStartMenuFolder"
-    CreateShortcut "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-    !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk"
+    CreateShortcut "$SMPROGRAMS\$AppStartMenuFolder\${SHORTCUTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\$AppStartMenuFolder\${SHORTCUTNAME}.lnk"
   !else
-    CreateShortcut "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-    !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+    CreateShortcut "$SMPROGRAMS\${SHORTCUTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\${SHORTCUTNAME}.lnk"
   !endif
 FunctionEnd
 
 Function CreateOrUpdateDesktopShortcut
   ; We used to use product name as MAINBINARYNAME
   ; migrate old shortcuts to target the new MAINBINARYNAME
-  !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
+  !insertmacro IsShortcutTarget "$DESKTOP\${SHORTCUTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
   Pop $0
   ${If} $0 = 1
-    !insertmacro SetShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro SetShortcutTarget "$DESKTOP\${SHORTCUTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
     Return
+  ${EndIf}
+
+  ; Remove the old MyAgents shortcut after an upgrade.
+  !insertmacro IsShortcutTarget "$DESKTOP\${LEGACYPRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  Pop $0
+  ${If} $0 = 1
+    Rename "$DESKTOP\${LEGACYPRODUCTNAME}.lnk" "$DESKTOP\${SHORTCUTNAME}.lnk"
   ${EndIf}
 
   ; Skip creating shortcut if in update mode or no shortcut mode
@@ -1017,6 +1086,6 @@ Function CreateOrUpdateDesktopShortcut
     ${EndIf}
   ${EndIf}
 
-  CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-  !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
+  CreateShortcut "$DESKTOP\${SHORTCUTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  !insertmacro SetLnkAppUserModelId "$DESKTOP\${SHORTCUTNAME}.lnk"
 FunctionEnd

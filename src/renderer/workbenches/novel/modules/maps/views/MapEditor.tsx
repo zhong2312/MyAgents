@@ -9280,7 +9280,7 @@ export default function MapEditor({
           agentLaunching={agentLaunching}
           onLaunchAgent={async (request) => {
             if (!onLaunchMapAgent) {
-              throw new Error("MyAgents Agent Session 当前不可用");
+              throw new Error("MyNovelStudio Agent Session 当前不可用");
             }
             await onLaunchMapAgent(request);
           }}

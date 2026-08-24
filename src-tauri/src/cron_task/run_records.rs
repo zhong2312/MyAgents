@@ -33,9 +33,8 @@ fn sanitize_task_id(task_id: &str) -> String {
 /// Get the JSONL file path for a task's run records
 pub(super) fn run_record_path(task_id: &str) -> PathBuf {
     let safe_id = sanitize_task_id(task_id);
-    dirs::home_dir()
+    crate::app_dirs::myagents_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".myagents")
         .join("cron_runs")
         .join(format!("{}.jsonl", safe_id))
 }

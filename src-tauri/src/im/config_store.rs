@@ -42,10 +42,10 @@ struct PartialProjectEntry {
 }
 
 fn read_projects_for_agent_projection() -> Vec<PartialProjectEntry> {
-    let Some(home) = dirs::home_dir() else {
+    let Some(myagents_dir) = crate::app_dirs::myagents_data_dir() else {
         return Vec::new();
     };
-    let path = home.join(".myagents").join("projects.json");
+    let path = myagents_dir.join("projects.json");
     let Ok(content) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -175,11 +175,11 @@ fn project_agent_workspaces_with(
 }
 
 fn read_archived_agent_workspaces_from_disk() -> ArchivedAgentWorkspaces {
-    let home = match dirs::home_dir() {
+    let myagents_dir = match crate::app_dirs::myagents_data_dir() {
         Some(h) => h,
         None => return ArchivedAgentWorkspaces::default(),
     };
-    let path = home.join(".myagents").join("projects.json");
+    let path = myagents_dir.join("projects.json");
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return ArchivedAgentWorkspaces::default(),
@@ -1884,11 +1884,10 @@ pub fn schedule_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
 ///   2. config.json.bak — previous known-good version
 ///   3. config.json.tmp — in-progress write
 pub(super) fn read_im_configs_from_disk() -> Vec<(String, ImConfig)> {
-    let home = match dirs::home_dir() {
+    let config_dir = match crate::app_dirs::myagents_data_dir() {
         Some(h) => h,
         None => return Vec::new(),
     };
-    let config_dir = home.join(".myagents");
     let main_path = config_dir.join("config.json");
 
     // Try main → .bak → .tmp (same order as frontend safeLoadJson)
@@ -2748,11 +2747,10 @@ fn persist_agent_config_read_heal(config_path: &Path, reason: &str) {
 
 /// Read Agent configs from disk. Falls back to reading imBotConfigs and converting.
 pub(crate) fn read_agent_configs_from_disk() -> Vec<AgentConfigRust> {
-    let home = match dirs::home_dir() {
+    let config_dir = match crate::app_dirs::myagents_data_dir() {
         Some(h) => h,
         None => return Vec::new(),
     };
-    let config_dir = home.join(".myagents");
     let main_path = config_dir.join("config.json");
 
     let candidates = [
@@ -2873,8 +2871,9 @@ pub(super) fn persist_agent_config_patch(
     agent_id: &str,
     patch: &AgentConfigPatch,
 ) -> Result<(), String> {
-    let home = dirs::home_dir().ok_or("[agent] Home dir not found")?;
-    let config_path = home.join(".myagents").join("config.json");
+    let config_dir = crate::app_dirs::myagents_data_dir()
+        .ok_or("[agent] MyAgents data dir not found")?;
+    let config_path = config_dir.join("config.json");
 
     with_config_lock(&config_path, true, |config| {
         let agents = config
@@ -2940,8 +2939,9 @@ pub(super) fn persist_agent_channel_model(
     channel_id: &str,
     model: &str,
 ) -> Result<AgentConfigPatch, String> {
-    let home = dirs::home_dir().ok_or("[agent] Home dir not found")?;
-    let config_path = home.join(".myagents").join("config.json");
+    let config_dir = crate::app_dirs::myagents_data_dir()
+        .ok_or("[agent] MyAgents data dir not found")?;
+    let config_path = config_dir.join("config.json");
     let mut channel_owned = false;
     let updated = with_config_lock(&config_path, true, |config| {
         channel_owned = update_agent_channel_model_value(config, agent_id, channel_id, model)?;

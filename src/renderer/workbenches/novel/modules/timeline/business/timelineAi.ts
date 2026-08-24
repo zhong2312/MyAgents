@@ -73,7 +73,7 @@ export function buildTimelineAiAgentRequest({
     title: `时间线 · ${taskMeta.label}`,
     conversationKey: `novel.timeline.assist:${task}:${runId}`,
     historyGroupPath: ["时间线", taskMeta.label],
-    systemPrompt: `你是 MyAgents 小说工作台的“时间线 AI 助手”。
+    systemPrompt: `你是 MyNovelStudio 小说工作台的“时间线 AI 助手”。
 
 项目：${projectTitle}
 本次任务：${taskMeta.label}

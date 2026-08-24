@@ -1809,7 +1809,7 @@ function ManagementPanel({
                   title={
                     githubInstallEnabled
                       ? "从 GitHub 安装技能包"
-                      : "等待 MyAgents 平台安装能力接入"
+                      : "等待 MyNovelStudio 平台安装能力接入"
                   }
                   disabled={!githubInstallEnabled}
                   onClick={() => setInstalling((value) => !value)}
@@ -1840,7 +1840,7 @@ function ManagementPanel({
                   </label>
                   <div className="mt-2 flex items-center gap-1.5 text-xs text-[var(--ink-muted)]">
                     <ShieldCheck className="h-3.5 w-3.5 text-[var(--accent-cool)]" />
-                    skill-pack@1 · 由 MyAgents 平台安装器校验
+                    skill-pack@1 · 由 MyNovelStudio 平台安装器校验
                   </div>
                   {installPreview && (
                     <div className="mt-3 border-t border-[var(--line-subtle)] pt-3">

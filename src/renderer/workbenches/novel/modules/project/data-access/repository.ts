@@ -485,7 +485,7 @@ export function createNovelRepository(
   const repository: NovelRepository = {
     async load() {
       if (!storage.isAvailable) {
-        throw new Error("小说项目存储仅在 MyAgents 桌面端可用");
+        throw new Error("小说项目存储仅在 MyNovelStudio 桌面端可用");
       }
       const [metadataFile, chapterIndexFile, narrative] = await Promise.all([
         storage.readText(NOVEL_METADATA_PATH),

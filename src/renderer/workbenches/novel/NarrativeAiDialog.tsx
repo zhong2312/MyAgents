@@ -160,7 +160,7 @@ export default function NarrativeAiDialog({
         </label>
 
         <p className="mt-4 text-xs leading-5 text-[var(--ink-muted)]">
-          AI 会在 MyAgents
+          AI 会在 MyNovelStudio
           完整对话中按需读取剧情工程事实。线路、故事弧、卷篇组目录以及章内节段规划都会生成待审提案；不会修改正文。
         </p>
       </div>

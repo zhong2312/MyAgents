@@ -92,8 +92,8 @@ pub async fn cmd_list_slash_commands(workspace: String) -> Result<SlashCommandsR
     };
     let workspace_exists = workspace_root.is_dir();
 
-    let home_dir = dirs::home_dir().ok_or_else(|| "home dir unavailable".to_string())?;
-    let myagents_root = home_dir.join(".myagents");
+    let myagents_root = crate::app_dirs::myagents_data_dir()
+        .ok_or_else(|| "MyAgents data dir unavailable".to_string())?;
 
     let disabled = disabled_skill_names_for_slash(&myagents_root);
 

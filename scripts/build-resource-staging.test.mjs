@@ -239,7 +239,7 @@ test('macOS unsigned release is explicit, non-interactive, and DMG-only', () => 
   );
   assert.match(
     buildMacos,
-    /if \[ "\$NONINTERACTIVE" = "1" \]; then\n\s*exit 0/,
+    /if \[ "\$NONINTERACTIVE" = "1" \]; then\r?\n\s*exit 0/,
   );
   assert.match(
     buildMacos,
@@ -295,10 +295,12 @@ test('v0.5.0 macOS rebuild keeps project instructions during source restore', ()
   );
 });
 
-test('Windows NSIS separates display branding from its stable upgrade identity', () => {
+test('Windows NSIS uses MyNovelStudio branding and migrates the legacy identity', () => {
   assert.match(nsisInstaller, /^!define PRODUCTNAME "{{product_name}}"$/m);
-  assert.match(nsisInstaller, /^!define DISPLAYNAME "My Novel Studio"$/m);
+  assert.match(nsisInstaller, /^!define DISPLAYNAME "MyNovelStudio"$/m);
   assert.match(nsisInstaller, /^!define INSTALLDIRNAME "MyNovelStudio"$/m);
+  assert.match(nsisInstaller, /^!define SHORTCUTNAME "MyNovelStudio"$/m);
+  assert.match(nsisInstaller, /^!define LEGACYPRODUCTNAME "MyAgents"$/m);
   assert.match(nsisInstaller, /^Name "\$\{DISPLAYNAME\}"$/m);
   assert.match(
     nsisInstaller,
@@ -320,11 +322,26 @@ test('Windows NSIS separates display branding from its stable upgrade identity',
     nsisInstaller,
     /WriteRegStr SHCTX "\$\{UNINSTKEY\}" "DisplayName" "\$\{DISPLAYNAME\}"/,
   );
+  assert.match(nsisInstaller, /CreateShortcut "\$DESKTOP\\\$\{SHORTCUTNAME\}\.lnk"/);
+  assert.match(nsisInstaller, /Rename "\$DESKTOP\\\$\{LEGACYPRODUCTNAME\}\.lnk"/);
+  assert.match(nsisInstaller, /Function MigrateLegacyInstall/);
 
   for (const languageFile of [nsisSimpChinese, nsisEnglish]) {
     assert.match(languageFile, /\$\{DISPLAYNAME\}/);
     assert.doesNotMatch(languageFile, /MyAgents/);
   }
+});
+
+test('Windows release build strips inherited test-profile environment', () => {
+  for (const name of [
+    'MYAGENTS_DATA_DIR',
+    'MYAGENTS_TEST_ROOT',
+    'MYAGENTS_TEST_MODE',
+    'MYAGENTS_BROWSER_DEV_STORAGE',
+  ]) {
+    assert.match(buildWindows, new RegExp(`'${name}'`));
+  }
+  assert.match(buildWindows, /SetEnvironmentVariable\(\$name, \$null, 'Process'\)/);
 });
 
 test('Azgaar runtime verifies its staged bytes through the generated manifest', () => {

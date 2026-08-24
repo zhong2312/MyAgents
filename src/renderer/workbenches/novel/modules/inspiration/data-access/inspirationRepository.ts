@@ -57,7 +57,7 @@ export function createNovelInspirationRepository(
   return Object.freeze({
     async load() {
       if (!storage.isAvailable) {
-        throw new Error("灵感仅在 MyAgents 桌面端可用");
+        throw new Error("灵感仅在 MyNovelStudio 桌面端可用");
       }
       const [entry] = await storage.stat([INSPIRATION_INDEX_PATH]);
       if (!entry?.exists) {

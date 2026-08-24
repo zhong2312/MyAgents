@@ -493,9 +493,9 @@ export async function ensureSelfAwarenessWorkspace(
       project = await addProject(dir);
     }
     if (project && !project.internal) {
-      await patchProject(project.id, { internal: true, name: "MyAgents 诊断" });
+      await patchProject(project.id, { internal: true, name: "MyNovelStudio 诊断" });
       // patchProject updates both disk and React state; use the patched fields locally
-      project = { ...project, internal: true, name: "MyAgents 诊断" };
+      project = { ...project, internal: true, name: "MyNovelStudio 诊断" };
     }
     return project ?? null;
   } catch (err) {

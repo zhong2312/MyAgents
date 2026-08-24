@@ -69,8 +69,9 @@ fn now_secs() -> u64 {
 }
 
 fn cache_dir() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    Ok(home.join(".myagents").join("cache"))
+    Ok(crate::app_dirs::myagents_data_dir()
+        .ok_or("Cannot determine MyAgents data directory")?
+        .join("cache"))
 }
 
 /// Parse `liteLLMModelDataRefresh` out of a config.json string. PURE — testable.
@@ -90,10 +91,10 @@ fn parse_enabled_flag(config_json: &str) -> Option<bool> {
 /// Read the toggle from `~/.myagents/config.json`. Default ON: a missing file,
 /// missing key, or parse error all mean "enabled" — the feature opts users IN.
 fn is_enabled() -> bool {
-    let Some(home) = dirs::home_dir() else {
+    let Some(myagents_dir) = crate::app_dirs::myagents_data_dir() else {
         return true;
     };
-    let path = home.join(".myagents").join("config.json");
+    let path = myagents_dir.join("config.json");
     match fs::read_to_string(&path) {
         Ok(content) => parse_enabled_flag(&content).unwrap_or(true),
         Err(_) => true,

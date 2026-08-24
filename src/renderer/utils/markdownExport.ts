@@ -51,7 +51,7 @@ export function sanitizeFileName(name: string, maxLen = 60): string {
 
 /** Provenance header prepended to every exported document. */
 export function exportHeader(dateStr: string): string {
-    return `<!-- Exported from MyAgents · ${dateStr} -->`;
+    return `<!-- Exported from MyNovelStudio · ${dateStr} -->`;
 }
 
 /** Build a Markdown document for a single AI thinking block. Pure. */

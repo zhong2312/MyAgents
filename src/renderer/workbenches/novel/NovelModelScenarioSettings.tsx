@@ -391,7 +391,7 @@ export default function NovelModelScenarioSettings({
                 (item) => item.model === provider.primaryModel,
               ) ?? provider?.models[0];
             if (!provider || !model) {
-              setError("所选供应商没有可用模型，请先在 MyAgents 配置模型");
+              setError("所选供应商没有可用模型，请先在 MyNovelStudio 配置模型");
               return;
             }
             void saveDefaultModel({
@@ -493,7 +493,7 @@ export default function NovelModelScenarioSettings({
                     ) ?? provider?.models[0];
                   if (!provider || !model) {
                     setError(
-                      "所选供应商没有可用模型，请先在 MyAgents 配置模型",
+                      "所选供应商没有可用模型，请先在 MyNovelStudio 配置模型",
                     );
                     return;
                   }

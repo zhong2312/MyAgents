@@ -4,8 +4,8 @@ use super::*;
 
 /// Write the Global Sidecar port to ~/.myagents/sidecar.port so the CLI can discover it.
 pub(super) fn write_global_port_file(port: u16) {
-    if let Some(home) = dirs::home_dir() {
-        let port_file = home.join(".myagents").join(PORT_FILE_NAME);
+    if let Some(myagents_dir) = crate::app_dirs::myagents_data_dir() {
+        let port_file = myagents_dir.join(PORT_FILE_NAME);
         if let Err(e) = std::fs::write(&port_file, port.to_string()) {
             ulog_warn!("[sidecar] Failed to write port file {:?}: {}", port_file, e);
         } else {
@@ -16,8 +16,8 @@ pub(super) fn write_global_port_file(port: u16) {
 
 /// Remove the port file (called on app exit / sidecar shutdown).
 pub(super) fn remove_global_port_file() {
-    if let Some(home) = dirs::home_dir() {
-        let port_file = home.join(".myagents").join(PORT_FILE_NAME);
+    if let Some(myagents_dir) = crate::app_dirs::myagents_data_dir() {
+        let port_file = myagents_dir.join(PORT_FILE_NAME);
         let _ = std::fs::remove_file(&port_file);
     }
 }

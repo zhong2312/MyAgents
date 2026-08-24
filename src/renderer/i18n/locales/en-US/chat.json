@@ -1,7 +1,7 @@
 {
   "input": {
     "launcherPlaceholder": "What do you want to do today?",
-    "placeholder": "Message MyAgents, use @ for files and / for skills...",
+    "placeholder": "Message MyNovelStudio, use @ for files and / for skills...",
     "companionPlaceholder": "Ask Mino or delegate a task...",
     "addScreenshot": "Add screenshot",
     "send": "Send",
@@ -202,7 +202,7 @@
     "watchingAppWindow": "Mino · Watching {{appName}} — {{windowTitle}}",
     "chrome": {
       "openPetSettings": "Open Desktop Pet settings",
-      "openInMyAgents": "Open in MyAgents (continue in a new tab)",
+      "openInMyAgents": "Open in MyNovelStudio (continue in a new tab)",
       "closeEsc": "Close (Esc)"
     },
     "connecting": "Connecting to {{workspace}}...",
@@ -547,7 +547,7 @@
         "mcpServers": "MCP servers",
         "apps": "Apps",
         "effectiveEnv": "Effective env",
-        "extensions": "MyAgents extensions"
+        "extensions": "MyNovelStudio extensions"
       },
       "requiresLoginSuffix": " • login required",
       "appAccessible": "accessible ",
@@ -939,7 +939,7 @@
       "providerUnavailable": "The Provider pinned to this chat, \"{{providerId}}\", is unavailable because its API key is missing or it has been disabled. Add the key in Settings, or switch Provider in the model picker before sending.",
       "snapshotProviderIncomplete": "This historical chat is missing Provider information. Select the model again in the model picker first.",
       "previewWorkspaceUnavailable": "Cannot open preview because the workspace file service is unavailable.",
-      "previewUnsupportedType": "This file type is not supported by MyAgents preview yet.",
+      "previewUnsupportedType": "This file type is not supported by MyNovelStudio preview yet.",
       "previewOpenFailed": "Failed to open file preview.",
       "autoSendRestoredDraft": "Send failed. Your draft was restored; please try again.",
       "skillSyncedToGlobal": "Synced to global Skills.",
@@ -979,8 +979,8 @@
         "anchor_unavailable": "This history point has no usable Codex anchor, or the native history has changed.",
         "codex_update_required": "Update Codex CLI to version 0.143.0 or later.",
         "native_fork_failed": "Codex could not create the native conversation branch. Try again.",
-        "persistence_failed": "The native branch was created, but MyAgents could not safely save the local chat.",
-        "storage_consistency_error": "The chat storage is inconsistent. Restart MyAgents before trying again.",
+        "persistence_failed": "The native branch was created, but MyNovelStudio could not safely save the local chat.",
+        "storage_consistency_error": "The chat storage is inconsistent. Restart MyNovelStudio before trying again.",
         "restore_failed": "The operation took effect, but Codex must restart before you continue.",
         "unsupported_runtime": "The current Runtime does not support this operation."
       },

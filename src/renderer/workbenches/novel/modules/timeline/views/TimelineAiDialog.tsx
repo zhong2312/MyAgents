@@ -148,7 +148,7 @@ export default function TimelineAiDialog({
         </label>
 
         <p className="mt-4 text-xs leading-5 text-[var(--ink-muted)]">
-          AI 会在 MyAgents 完整对话中按需读取已保存的时间线与关联事实，并给出可由作者确认后录入的建议；不会直接修改时间线或正文。
+          AI 会在 MyNovelStudio 完整对话中按需读取已保存的时间线与关联事实，并给出可由作者确认后录入的建议；不会直接修改时间线或正文。
         </p>
       </div>
       <div className="flex shrink-0 justify-end gap-2 border-t border-[var(--line)] bg-[var(--paper-elevated)] px-5 py-3">

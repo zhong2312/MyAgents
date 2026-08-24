@@ -73,14 +73,16 @@ pub fn augmented_path() -> std::ffi::OsString {
         }
 
         // User-relative directories (expand $HOME)
-        if let Some(home) = dirs::home_dir() {
+        if let Some(myagents_dir) = crate::app_dirs::myagents_data_dir() {
             push_path_part(
                 &mut parts,
-                home.join(".myagents").join("npm-global").join("bin"),
+                myagents_dir.join("npm-global").join("bin"),
             );
-            push_path_part(&mut parts, home.join(".myagents").join("bin"));
+            push_path_part(&mut parts, myagents_dir.join("bin"));
             for rel in USER_RELATIVE_DIRS {
-                push_path_part(&mut parts, home.join(rel));
+                if let Some(home) = myagents_dir.parent() {
+                    push_path_part(&mut parts, home.join(rel));
+                }
             }
         }
 
@@ -173,11 +175,13 @@ fn push_env_dir(parts: &mut Vec<String>, key: &str, rel: &[&str]) {
 
 #[cfg(target_os = "windows")]
 fn append_windows_runtime_dirs(parts: &mut Vec<String>) {
-    if let Some(home) = dirs::home_dir() {
-        push_path_part(parts, home.join(".myagents").join("npm-global"));
-        push_path_part(parts, home.join(".myagents").join("bin"));
-        push_path_part(parts, home.join(".bun").join("bin"));
-        push_path_part(parts, home.join("AppData").join("Roaming").join("npm"));
+    if let Some(myagents_dir) = crate::app_dirs::myagents_data_dir() {
+        push_path_part(parts, myagents_dir.join("npm-global"));
+        push_path_part(parts, myagents_dir.join("bin"));
+        if let Some(home) = myagents_dir.parent() {
+            push_path_part(parts, home.join(".bun").join("bin"));
+            push_path_part(parts, home.join("AppData").join("Roaming").join("npm"));
+        }
     }
 
     push_env_dir(parts, "LOCALAPPDATA", &["MyAgents", "nodejs"]);

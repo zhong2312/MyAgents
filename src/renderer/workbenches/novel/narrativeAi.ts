@@ -95,7 +95,7 @@ export function buildNarrativeAiAgentRequest({
     title: `剧情工程 · ${taskMeta.label}`,
     conversationKey: `novel.narrative.assist:${task}:${runId}`,
     historyGroupPath: ["剧情工程", taskMeta.label],
-    systemPrompt: `你是 MyAgents 小说工作台的“剧情工程 AI 助手”。
+    systemPrompt: `你是 MyNovelStudio 小说工作台的“剧情工程 AI 助手”。
 
 项目：${projectTitle}
 当前视图：${selection.view}

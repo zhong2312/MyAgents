@@ -202,7 +202,7 @@
     "watchingAppWindow": "Mino · 正在看 {{appName}} — {{windowTitle}}",
     "chrome": {
       "openPetSettings": "打开桌面宠物设置",
-      "openInMyAgents": "在 MyAgents 中打开（新 Tab 接上这条会话）",
+      "openInMyAgents": "在 MyNovelStudio 中打开（新 Tab 接上这条会话）",
       "closeEsc": "关闭（Esc）"
     },
     "connecting": "正在连接 {{workspace}}…",
@@ -547,7 +547,7 @@
         "mcpServers": "MCP servers",
         "apps": "Apps",
         "effectiveEnv": "Effective env",
-        "extensions": "MyAgents 扩展"
+        "extensions": "MyNovelStudio 扩展"
       },
       "requiresLoginSuffix": " • 需登录",
       "appAccessible": "可访问 ",
@@ -939,7 +939,7 @@
       "providerUnavailable": "当前会话指定的 Provider「{{providerId}}」不可用（缺少 API Key 或已被禁用）。请在设置中补充密钥，或在模型选择器中切换 Provider 后再发送。",
       "snapshotProviderIncomplete": "这个历史会话缺少 Provider 信息，请先在模型选择器里重新选择一次模型。",
       "previewWorkspaceUnavailable": "无法打开预览：工作区文件服务不可用",
-      "previewUnsupportedType": "这个文件类型暂不支持 MyAgents 预览",
+      "previewUnsupportedType": "这个文件类型暂不支持 MyNovelStudio 预览",
       "previewOpenFailed": "打开文件预览失败",
       "autoSendRestoredDraft": "发送失败，已恢复草稿，请重试",
       "skillSyncedToGlobal": "已同步至全局技能",
@@ -979,8 +979,8 @@
         "anchor_unavailable": "这个历史点缺少可用的 Codex 锚点，或原生历史已发生变化。",
         "codex_update_required": "请将 Codex CLI 更新到 0.143.0 或更高版本。",
         "native_fork_failed": "Codex 无法创建原生对话分支，请重试。",
-        "persistence_failed": "分支已创建，但 MyAgents 无法安全保存本地会话。",
-        "storage_consistency_error": "会话存储状态不一致，请重启 MyAgents 后再试。",
+        "persistence_failed": "分支已创建，但 MyNovelStudio 无法安全保存本地会话。",
+        "storage_consistency_error": "会话存储状态不一致，请重启 MyNovelStudio 后再试。",
         "restore_failed": "操作已生效，但 Codex 需要重启后才能继续。",
         "unsupported_runtime": "当前 Runtime 不支持此操作。"
       },

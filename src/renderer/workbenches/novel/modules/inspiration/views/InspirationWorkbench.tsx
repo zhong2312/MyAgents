@@ -89,7 +89,7 @@ const SOURCE_LABELS: Readonly<
   Record<InspirationItem["source"]["kind"], string>
 > = {
   manual: "随手记录",
-  "myagents-thought": "来自 MyAgents 想法",
+  "myagents-thought": "来自 MyNovelStudio 想法",
   research: "研究记录",
   web: "网页摘录",
   other: "其它来源",
@@ -225,7 +225,7 @@ function CreateInspirationDialog({
               }
             >
               <option value="manual">随手记录</option>
-              <option value="myagents-thought">MyAgents 想法</option>
+              <option value="myagents-thought">MyNovelStudio 想法</option>
               <option value="research">研究记录</option>
               <option value="web">网页摘录</option>
               <option value="other">其它来源</option>
@@ -771,7 +771,7 @@ export default function InspirationWorkbench({
                     }}
                   >
                     <option value="manual">随手记录</option>
-                    <option value="myagents-thought">MyAgents 想法</option>
+                    <option value="myagents-thought">MyNovelStudio 想法</option>
                     <option value="research">研究记录</option>
                     <option value="web">网页摘录</option>
                     <option value="other">其它来源</option>

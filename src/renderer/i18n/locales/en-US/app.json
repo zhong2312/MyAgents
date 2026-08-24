@@ -16,7 +16,7 @@
   },
   "globalSidebar": {
     "navigation": "Global navigation",
-    "openWebsite": "Open the MyAgents website",
+    "openWebsite": "Open the MyNovelStudio project",
     "collapse": "Collapse sidebar",
     "expand": "Expand sidebar",
     "newChat": "New chat",
@@ -108,7 +108,7 @@
     "replyFailed": "Reply failed",
     "agentErrorOpenMainWindow": "Agent error. Click ↗ to view it in the main window.",
     "sessionExpiredNewChat": "The previous session expired. A new chat has been started.",
-    "noWorkspace": "No available workspace. Finish MyAgents setup first.",
+    "noWorkspace": "No available workspace. Finish MyNovelStudio setup first.",
     "switchWorkspaceFailed": "Failed to switch workspace. Try again.",
     "newConversationFailed": "Failed to start a new chat. Try again.",
     "engineNotReady": "AI engine is not ready yet. Try again shortly.",
@@ -293,7 +293,7 @@
     "copyFailed": "Copy failed",
     "reference": "Reference",
     "openContainingFolder": "Open containing folder",
-    "openMyAgentsPreview": "Open MyAgents preview",
+    "openMyAgentsPreview": "Open MyNovelStudio preview",
     "preview": "Preview",
     "open": "Open",
     "revealInTree": "Reveal in file tree",
@@ -350,11 +350,11 @@
     "moreActions": "More actions"
   },
   "notifications": {
-    "permissionTitle": "MyAgents - Permission request",
+    "permissionTitle": "MyNovelStudio - Permission request",
     "permissionBody": "AI requested tool access - {{toolName}}",
-    "askUserTitle": "MyAgents - Confirmation needed",
+    "askUserTitle": "MyNovelStudio - Confirmation needed",
     "askUserBody": "AI is waiting for your confirmation",
-    "planModeTitle": "MyAgents - Plan review",
+    "planModeTitle": "MyNovelStudio - Plan review",
     "planModeBody": "AI is waiting for you to review the plan"
   },
   "contextUsage": {
@@ -387,7 +387,7 @@
         "request": "Space request"
       },
       "templates": {
-        "relogin": "{{operation}} failed: sign in to MyAgents Community again",
+        "relogin": "{{operation}} failed: sign in to MyNovelStudio Community again",
         "permissionDenied": "{{operation}} failed: insufficient permission",
         "serviceUnavailable": "{{operation}} failed: service is temporarily unavailable. Try again later.",
         "withDetail": "{{operation}} failed: {{detail}}",
@@ -410,13 +410,13 @@
     },
     "login": {
       "eyebrow": "Official Space",
-      "title": "MyAgents Community",
+      "title": "MyNovelStudio Community",
       "description": "Sign in to the official Space with Google",
       "reauthDescription": "The sign-in for {{name}} is no longer valid. Sign in again to continue.",
       "forgetAccount": "Sign out and forget this account",
       "waiting": "Waiting for browser authorization",
       "continueWithGoogle": "Continue with Google",
-      "returnHint": "MyAgents will reopen automatically after authorization."
+      "returnHint": "MyNovelStudio will reopen automatically after authorization."
     },
     "sidebar": {
       "issues": "Issues",
@@ -512,7 +512,7 @@
       "closeIssue": "Close issue"
     },
     "toasts": {
-      "loginSuccess": "Signed in to MyAgents Community",
+      "loginSuccess": "Signed in to MyNovelStudio Community",
       "loginFailed": "Login failed",
       "loginSlow": "Login status sync is slow. Retrying...",
       "loginTimeout": "Login timed out. Start Google login again.",
@@ -569,7 +569,7 @@
       "claimHandler": "Handler: {{name}}"
     },
     "createIssue": {
-      "community": "MyAgents Community",
+      "community": "MyNovelStudio Community",
       "title": "New issue",
       "close": "Close",
       "titlePlaceholder": "Issue title",
@@ -785,12 +785,12 @@
       "offline": "Offline",
       "disabled": "Disabled",
       "connecting": "Connecting",
-      "clientOnline": "MyAgents client online",
+      "clientOnline": "MyNovelStudio client online",
       "lastOnline": "Last online",
       "lastOnlineAt": "Last online: {{time}}",
       "neverOnline": "Never online",
-      "offlineTroubleshooting": "Make sure the MyAgents client is running and can reach Space Cloud.",
-      "connectingHint": "Waiting for the MyAgents client to connect",
+      "offlineTroubleshooting": "Make sure the MyNovelStudio client is running and can reach Space Cloud.",
+      "connectingHint": "Waiting for the MyNovelStudio client to connect",
       "presenceMayBeStale": "Online status may be out of date. Check the network and retry.",
       "workspace": "Workspace",
       "localAgentWorkspace": "Local Agent workspace",
@@ -862,7 +862,7 @@
       "inviteEmailPlaceholder": "Enter the user's Google email",
       "inviteRoleLabel": "Choose role",
       "addMember": "Add",
-      "joinByShortSlug": "Invite users to join MyAgents with the short link:",
+      "joinByShortSlug": "Invite users to join MyNovelStudio with the short link:",
       "loadingMembers": "Loading...",
       "joinRequests": "Join requests",
       "pendingInvitations": "Pending invitations",

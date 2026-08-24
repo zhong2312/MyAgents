@@ -207,12 +207,18 @@ $PublicInstallerName = "MyNovelStudio_${Version}_x64-setup.exe"
 $PublicPortableName = "MyNovelStudio_${Version}_x86_64-portable.zip"
 
 if ($NsisExe) {
+    if ($NsisExe.Name -notlike "MyNovelStudio_*_x64-setup.exe") {
+        throw "NSIS 文件名不是 MyNovelStudio 产物：$($NsisExe.Name)；请先重新构建正式包"
+    }
     if ($NsisExe.Name -notlike "*$Version*") {
         throw "NSIS 文件名不包含待发布版本 $Version：$($NsisExe.Name)"
     }
     Assert-ExactFileVersion -File $NsisExe -ExpectedVersion $Version -Label "NSIS 安装包"
 }
 if ($PortableZip) {
+    if ($PortableZip.Name -notlike "MyNovelStudio_*_x86_64-portable.zip") {
+        throw "便携包文件名不是 MyNovelStudio 产物：$($PortableZip.Name)；请先重新构建正式包"
+    }
     if ($PortableZip.Name -notlike "*$Version*") {
         throw "便携包文件名不包含待发布版本 $Version：$($PortableZip.Name)"
     }
@@ -230,6 +236,9 @@ if ($PortableZip) {
     }
 }
 if ($UpdateZip) {
+    if ($UpdateZip.Name -notlike "MyNovelStudio_*_x86_64.nsis.zip") {
+        throw "更新包文件名不是 MyNovelStudio 产物：$($UpdateZip.Name)；请先重新构建正式包"
+    }
     if ($UpdateZip.Name -notlike "*$Version*") {
         throw "updater 文件名不包含待发布版本 $Version：$($UpdateZip.Name)"
     }
@@ -320,11 +329,11 @@ if ($SigFile) {
 if ($UpdateZip) {
     $UpdateFileName = $UpdateZip.Name
     # 重命名上传文件名，添加版本和架构标识
-    $UpdateUploadName = "MyAgents_${Version}_x86_64.nsis.zip"
+    $UpdateUploadName = "MyNovelStudio_${Version}_x86_64.nsis.zip"
 
     $manifest = @{
         version   = $Version
-        notes     = "MyAgents v$Version"
+        notes     = "MyNovelStudio v$Version"
         pub_date  = $PubDate
         signature = $Signature
         url       = "$GithubReleaseBaseUrl/$UpdateUploadName"
@@ -406,7 +415,7 @@ if ($UpdateZip) {
     $uploadFiles += $UpdateZip
 }
 if ($SigFile) {
-    Write-Host "    - MyAgents_${Version}_x86_64.nsis.zip.sig"
+    Write-Host "    - MyNovelStudio_${Version}_x86_64.nsis.zip.sig"
     $uploadFiles += $SigFile
 }
 
@@ -487,7 +496,7 @@ if ($UpdateZip) {
 # 上传签名文件
 if ($SigFile) {
     Write-Host "  上传签名文件..." -ForegroundColor Cyan
-    $sigUploadName = "MyAgents_${Version}_x86_64.nsis.zip.sig"
+    $sigUploadName = "MyNovelStudio_${Version}_x86_64.nsis.zip.sig"
     & $rclonePath --config=$rcloneConfig copyto $SigFile.FullName "r2:$R2Bucket/releases/v$Version/$sigUploadName" --s3-no-check-bucket --progress
     if ($LASTEXITCODE -eq 0) {
         Write-Host "    [OK] $sigUploadName" -ForegroundColor Green

@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "MyAgents",
+  "productName": "MyNovelStudio",
   "version": "0.5.0",
   "identifier": "com.myagents.app",
   "build": {

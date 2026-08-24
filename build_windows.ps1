@@ -1,5 +1,5 @@
 ﻿#!/usr/bin/env pwsh
-# MyAgents Windows 正式发布构建脚本
+# MyNovelStudio Windows 正式发布构建脚本
 # 构建 NSIS 安装包和便携版 ZIP
 # 支持 Windows x64
 
@@ -16,6 +16,27 @@ try {
     $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     Set-Location $ProjectDir
 
+    # A release build must not inherit the isolated test profile. The profile
+    # is runtime state (config.json, providers and API keys), never a bundle
+    # input; clear only the explicit test protocol before invoking npm/Tauri.
+    $testEnvironmentNames = @(
+        'MYAGENTS_DATA_DIR',
+        'MYAGENTS_TEST_ROOT',
+        'MYAGENTS_TEST_MODE',
+        'MYAGENTS_BROWSER_DEV_STORAGE',
+        'MYAGENTS_DEV_BACKEND_PORT'
+    )
+    $inheritedTestEnvironment = $false
+    foreach ($name in $testEnvironmentNames) {
+        if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name, 'Process'))) {
+            $inheritedTestEnvironment = $true
+            [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+        }
+    }
+    if ($inheritedTestEnvironment) {
+        Write-Host '  已清除继承的测试 profile 环境变量；正式包不会读取测试配置。' -ForegroundColor Yellow
+    }
+
     # 读取版本号
     $TauriConf = Get-Content "src-tauri\tauri.conf.json" -Raw | ConvertFrom-Json
     $Version = $TauriConf.version
@@ -24,7 +45,7 @@ try {
 
     Write-Host ""
     Write-Host "=========================================" -ForegroundColor Cyan
-    Write-Host "  MyAgents Windows 发布构建" -ForegroundColor Green
+    Write-Host "  MyNovelStudio Windows 发布构建" -ForegroundColor Green
     Write-Host "  Version: $Version" -ForegroundColor Blue
     Write-Host "=========================================" -ForegroundColor Cyan
     Write-Host ""
@@ -690,7 +711,7 @@ try {
 
         if (Test-Path $exePath) {
             $portableDir = Join-Path $targetDir "portable"
-            $zipName = "MyAgents_${Version}_x86_64-portable.zip"
+            $zipName = "MyNovelStudio_${Version}_x86_64-portable.zip"
             $zipPath = Join-Path $nsisDir $zipName
 
             if (Test-Path $portableDir) {

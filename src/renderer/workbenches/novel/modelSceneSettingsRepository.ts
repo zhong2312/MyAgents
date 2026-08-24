@@ -40,7 +40,7 @@ export function createNovelModelSceneSettingsRepository(
 ): NovelModelSceneSettingsRepository {
   const load = async (): Promise<LoadedModelSceneSettings> => {
     if (!storage.isAvailable) {
-      throw new Error("模型场景设置仅在 MyAgents 桌面端可用");
+      throw new Error("模型场景设置仅在 MyNovelStudio 桌面端可用");
     }
     const defaultSettings = createDefaultModelSceneSettings();
     const file = await ensureTextFile(

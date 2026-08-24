@@ -1011,7 +1011,7 @@ export default function FactionLibrary({
             title={
               onOpenBatchAgent
                 ? "打开势力批量设计 Agent"
-                : "MyAgents Agent Session 当前不可用"
+                : "MyNovelStudio Agent Session 当前不可用"
             }
             className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-warm-hover)] disabled:cursor-not-allowed disabled:opacity-50"
           >

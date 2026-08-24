@@ -39,7 +39,7 @@ export function createInspirationAiAgentRequest(
       ? `novel.inspiration.assist:${mode}:${context.focusId}:${runId}`
       : `novel.inspiration.coauthor:${context.focusId}`,
     historyGroupPath: ["灵感", historyLabel],
-    systemPrompt: `你是 MyAgents 小说工作台的灵感共创编辑。
+    systemPrompt: `你是 MyNovelStudio 小说工作台的灵感共创编辑。
 
 焦点灵感稳定 ID：${context.focusId}
 

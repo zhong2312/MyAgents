@@ -163,7 +163,7 @@ function createFiles(
       path: "README.md",
       content: `# ${projectName}
 
-本目录是小说项目的完整根目录，当前书名与创作目标以 \`novel.json\` 为准。Markdown 与 JSON 是可人工编辑、可由 Git 管理的事实源；向量索引和派生检索图谱由 MyAgents 在工作区外重建。
+本目录是小说项目的完整根目录，当前书名与创作目标以 \`novel.json\` 为准。Markdown 与 JSON 是可人工编辑、可由 Git 管理的事实源；向量索引和派生检索图谱由 MyNovelStudio 在工作区外重建。
 `,
     },
     {

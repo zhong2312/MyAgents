@@ -154,6 +154,7 @@ function Initialize-TestProfileEnv {
     $env:APPDATA = $roaming
     $env:LOCALAPPDATA = $local
     $env:MYAGENTS_TEST_ROOT = $script:TestRoot
+    $env:MYAGENTS_TEST_MODE = '1'
     $env:MYAGENTS_BROWSER_DEV_STORAGE = '1'
     # Vite's browser-mode proxy must target the same backend port selected
     # for this isolated development session.

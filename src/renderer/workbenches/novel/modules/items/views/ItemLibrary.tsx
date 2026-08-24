@@ -875,7 +875,7 @@ export default function ItemLibrary({
             title={
               onOpenBatchAgent
                 ? "AI 批量生产物品"
-                : "当前环境不可使用 MyAgents Agent"
+                : "当前环境不可使用 MyNovelStudio Agent"
             }
             className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] bg-[var(--paper)] px-2 text-xs font-medium text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-45"
           >

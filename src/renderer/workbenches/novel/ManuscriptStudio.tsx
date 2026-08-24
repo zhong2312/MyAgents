@@ -7091,7 +7091,7 @@ export function buildFullGenerationAgentSystemPrompt(
     readMode === "quick"
       ? "作者已经人工选择资料，并把同一份资料快照一次性附在用户消息中。禁止调用任何工具；只依据已附资料、当前章节和作者要求完成全部方案并一次性输出。未选择的资料不代表不存在，不得自行补造其中的事实。"
       : "开始构思前，先判断本章真正需要哪些项目事实，再按需使用小说工作台内置只读工具读取当前章节正文、前面章节、设定库、人物库、剧情工程、时间线和连续性状态。优先在一次调用中取得同一领域所需范围，同一个工具原则上只调用一次；资料读取完成后直接生成，不要边写边反复补查。不要为了遍历而调用无关工具，也不要调用任何写入工具。";
-  return `你是 MyAgents 小说工作台的正文方案 Agent。所有 Agent 职责相同，必须独立生成差异明显的正文方案，不区分角色分工。
+  return `你是 MyNovelStudio 小说工作台的正文方案 Agent。所有 Agent 职责相同，必须独立生成差异明显的正文方案，不区分角色分工。
 
 ${contextInstruction}当前章节和作者附加提示词优先级最高，项目事实用于约束方案而不是被改写。
 
@@ -7197,7 +7197,7 @@ export function buildFullGenerationTextRunRequest(input: {
   return {
     sceneId: "manuscript.generate",
     label: `${input.chapterTitle} · 完整生成正文`,
-    systemPrompt: `你是 MyAgents 小说工作台的中文长篇小说正文写作 Agent。${
+    systemPrompt: `你是 MyNovelStudio 小说工作台的中文长篇小说正文写作 Agent。${
       readMode === "quick"
         ? "作者已把人工选择的项目资料快照一次性附在用户消息中；禁止调用任何工具，直接依据已附资料一次性输出完整正文。未选择的资料不代表不存在，不得自行补造其中的事实。"
         : "开始写作前，按需使用小说工作台内置只读工具核对人物、设定、剧情工程、时间线、前文和连续性；不要遍历无关资料，同一个工具原则上只调用一次。"
@@ -9071,7 +9071,7 @@ function FullGenerationWorkflow({
         sceneId: "manuscript.brainstorm.synthesis",
         label: `${chapter.title} · AI 建议选片`,
         systemPrompt:
-          '你是 MyAgents 小说工作台的正文方案综合编辑。只输出 JSON：{"fragmentIds":["片段ID"],"reason":"选择理由"}。从候选中选择一组能够按顺序组成单章、彼此不矛盾且符合章节计划的片段；不要改写 ID，不要使用 Markdown 代码围栏。',
+          '你是 MyNovelStudio 小说工作台的正文方案综合编辑。只输出 JSON：{"fragmentIds":["片段ID"],"reason":"选择理由"}。从候选中选择一组能够按顺序组成单章、彼此不矛盾且符合章节计划的片段；不要改写 ID，不要使用 Markdown 代码围栏。',
         prompt: [
           `章节：第 ${chapter.displayNumber} 章 · ${chapter.title}`,
           formatFullGenerationChapterPlan(chapterPlan),
@@ -10301,7 +10301,7 @@ function FullGenerationWorkflow({
                           : "正在自主读取必要的设定、人物、剧情工程、时间线与前文，生成结果会直接显示在这里。"
                         : contextReadMode === "quick"
                           ? "使用作者选择的同一份资料快照直接生成，结果留在本窗口审阅。"
-                          : "复用 MyAgents 当前项目模型和小说只读工具，结果留在本窗口审阅，不再打开新的 Agent 对话。"}
+                          : "复用 MyNovelStudio 当前项目模型和小说只读工具，结果留在本窗口审阅，不再打开新的 Agent 对话。"}
                 </p>
                 {isStartingGeneration && (
                   <button

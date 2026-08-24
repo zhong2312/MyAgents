@@ -250,9 +250,8 @@ pub(crate) async fn persist_router_active_sessions(
 
 /// ~/.myagents/
 fn myagents_dir() -> PathBuf {
-    dirs::home_dir()
+    crate::app_dirs::myagents_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".myagents")
 }
 
 /// ~/.myagents/im_bots/{botId}/

@@ -30,7 +30,7 @@ export const NOVEL_CHARACTERS_ASSIST_PROMPT_TEMPLATE = `## 小说工作台人物
 /**
  * 这部分由工作台追加，不能被项目提示词正文覆盖或关闭。
  */
-export const NOVEL_CHARACTERS_ASSIST_PLATFORM_PROTOCOL = `## MyAgents 受控写回协议（平台规则）
+export const NOVEL_CHARACTERS_ASSIST_PLATFORM_PROTOCOL = `## MyNovelStudio 受控写回协议（平台规则）
 
 - 正式角色、种族、分组和灵魂文件只能通过小说工作台提案工具读取和写入；不得使用普通文件工具直接改写事实源。
 - 任何写入都必须经过 novel_characters_create_draft、novel_characters_validate_draft 和 novel_characters_submit_draft，并把候选交给作者审阅。

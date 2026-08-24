@@ -344,7 +344,7 @@ export function createNovelItemLibraryRepository(
   const repository: NovelItemLibraryRepository = {
     async load() {
       if (!storage.isAvailable) {
-        throw new Error("小说物品库存储仅在 MyAgents 桌面端可用");
+        throw new Error("小说物品库存储仅在 MyNovelStudio 桌面端可用");
       }
       const initialFiles = createItemLibraryInitializationFiles();
       const [metaFile, indexFile] = await Promise.all(

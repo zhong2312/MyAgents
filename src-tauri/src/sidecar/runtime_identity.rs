@@ -60,7 +60,7 @@ impl RuntimeIdentity {
 pub(crate) fn resolve_agent_runtime_identity_from_config(
     workspace_path: &std::path::Path,
 ) -> Option<RuntimeIdentity> {
-    let config_dir = dirs::home_dir()?.join(".myagents");
+    let config_dir = crate::app_dirs::myagents_data_dir()?;
     let config_path = config_dir.join("config.json");
     let content = std::fs::read_to_string(&config_path).ok()?;
     let cfg: serde_json::Value = serde_json::from_str(strip_bom(&content)).ok()?;
@@ -72,7 +72,7 @@ pub(crate) fn resolve_agent_runtime_identity_from_config(
 pub(crate) fn resolve_agent_runtime_identity_by_id_from_config(
     agent_id: &str,
 ) -> Option<RuntimeIdentity> {
-    let config_path = dirs::home_dir()?.join(".myagents").join("config.json");
+    let config_path = crate::app_dirs::myagents_data_dir()?.join("config.json");
     let content = std::fs::read_to_string(config_path).ok()?;
     let cfg: serde_json::Value = serde_json::from_str(strip_bom(&content)).ok()?;
     resolve_agent_runtime_identity_by_id_from_value(&cfg, agent_id)

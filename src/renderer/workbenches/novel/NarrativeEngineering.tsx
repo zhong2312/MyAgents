@@ -435,7 +435,7 @@ export default function NarrativeEngineering({
             disabled={!onOpenAiAgent}
             title={
               onOpenAiAgent
-                ? "在 MyAgents 对话中分析当前剧情工程"
+                ? "在 MyNovelStudio 对话中分析当前剧情工程"
                 : "当前环境暂不支持 AI 共创"
             }
             onClick={() => openAiDialog()}

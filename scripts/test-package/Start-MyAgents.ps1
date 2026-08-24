@@ -30,5 +30,6 @@ $env:USERPROFILE = $profileRoot
 $env:APPDATA = $roaming
 $env:LOCALAPPDATA = $local
 $env:MYAGENTS_TEST_ROOT = $root
+$env:MYAGENTS_TEST_MODE = '1'
 
 Start-Process -FilePath $exePath -WorkingDirectory $appDir

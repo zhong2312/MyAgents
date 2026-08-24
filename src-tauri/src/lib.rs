@@ -718,6 +718,11 @@ pub fn run() {
             wake_lock::cmd_set_force_wake_lock,
         ])
         .setup(|app| {
+            // A release app may be launched from a terminal that previously
+            // ran the isolated test package. Clear those overrides before any
+            // logger, sidecar, WebView, or config path is resolved.
+            app_dirs::sanitize_inherited_test_environment();
+
             // Initialize logging before acquire_lock() and cleanup_stale_sidecars()
             // because those paths need a logger backend for log::warn!/info! calls.
             use tauri_plugin_log::{Target, TargetKind};
@@ -872,7 +877,7 @@ pub fn run() {
             )
             .data_directory(webview_data_dir)
             .scroll_bar_style(crate::webview_policy::scroll_bar_style())
-            .title("MyAgents")
+            .title("MyNovelStudio")
             .inner_size(1200.0, 800.0)
             .min_inner_size(800.0, 600.0)
             .resizable(true)

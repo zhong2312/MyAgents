@@ -92,8 +92,8 @@ struct PendingUpdateMeta {
 /// Get the ~/.myagents/ directory path
 #[cfg(target_os = "windows")]
 fn get_myagents_dir() -> Result<std::path::PathBuf, String> {
-    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    Ok(home.join(".myagents"))
+    crate::app_dirs::myagents_data_dir()
+        .ok_or_else(|| "Cannot determine MyAgents data directory".to_string())
 }
 
 /// Atomically save pending update bytes + metadata to disk

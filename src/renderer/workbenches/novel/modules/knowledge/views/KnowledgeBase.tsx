@@ -90,7 +90,7 @@ function EmptyState({ enabled }: { readonly enabled: boolean }) {
         <p className="mt-2 text-sm leading-6 text-[var(--ink-muted)]">
           {enabled
             ? "项目中还没有可解析的设定、正文或知识事实。保存内容后，图谱会在后台重新构建。"
-            : "开启后，MyAgents 会从项目 Markdown 与 JSON 事实源派生实体、关系和来源索引，不会修改原始文件。"}
+            : "开启后，MyNovelStudio 会从项目 Markdown 与 JSON 事实源派生实体、关系和来源索引，不会修改原始文件。"}
         </p>
       </div>
     </div>

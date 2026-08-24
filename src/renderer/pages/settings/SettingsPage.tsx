@@ -640,52 +640,9 @@ export default function Settings({ mode = 'settings', initialSection, navigation
         getVersion().then(setAppVersion).catch(() => setAppVersion('unknown'));
     }, [mode]);
 
-    // QR code URL for user community section
-    // Tauri: Downloads on first launch and caches locally, CDN in browser
-    const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | null>(null);
-    const [qrCodeLoading, setQrCodeLoading] = useState(false);
     const [logExporting, setLogExporting] = useState(false);
     const [showBugReport, setShowBugReport] = useState(false);
     const helperAgentDefaults = useHelperAgentModelDefaults();
-
-    // Load QR code when entering about section
-    useEffect(() => {
-        if (activeSection !== 'about') return;
-
-        let cancelled = false;
-        setQrCodeLoading(true);
-
-        if (isTauriEnvironment()) {
-            // Tauri mode: Call backend API to download & cache QR code
-            // The API downloads from CDN on first call, then serves from cache
-            apiGetJson<{ success: boolean; dataUrl?: string }>('/api/assets/qr-code')
-                .then(result => {
-                    if (cancelled) return;
-                    if (result.success && result.dataUrl) {
-                        setQrCodeDataUrl(result.dataUrl);
-                    }
-                })
-                .catch((error) => {
-                    if (cancelled) return;
-                    console.error('[Settings] Failed to load QR code:', error);
-                    // Silently fail - QR code section will remain hidden
-                })
-                .finally(() => {
-                    if (!cancelled) setQrCodeLoading(false);
-                });
-        } else {
-            // Browser mode: Direct CDN URL
-            setQrCodeDataUrl('https://download.myagents.io/assets/feedback_qr_code.png');
-            setQrCodeLoading(false);
-        }
-
-        return () => {
-            cancelled = true;
-            setQrCodeDataUrl(null); // 统一清理，避免内存泄漏
-            setQrCodeLoading(false);
-        };
-    }, [activeSection]);
-
 
     // Collect React and Rust logs for Settings page (since we don't have TabProvider)
     // Limit to 3000 logs to prevent memory issues (matches UnifiedLogsPanel MAX_DISPLAY_LOGS)
@@ -4960,7 +4917,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                         className="theme-product-wordmark theme-launcher-hero-title cursor-default select-none"
                                         onClick={handleLogoTap}
                                     >
-                                        MyAgents
+                                        MyNovelStudio
                                     </h1>
                                     <div className="mt-1 flex items-center gap-2">
                                         <p className="text-sm font-medium text-[var(--ink-muted)]">
@@ -5159,27 +5116,6 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                 </div>
                             </div>
 
-                            {/* User Community QR Code - Show loading state, then image when ready */}
-                            {(qrCodeLoading || qrCodeDataUrl) && (
-                                <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
-                                    <div className="flex flex-col items-center text-center">
-                                        <p className="text-sm font-medium text-[var(--ink)]">{tSettings('about.communityTitle')}</p>
-                                        <p className="mt-1 text-xs text-[var(--ink-muted)]">{tSettings('about.communityDescription')}</p>
-                                        {qrCodeLoading ? (
-                                            <div className="mt-4 h-36 w-36 flex items-center justify-center">
-                                                <Loader2 className="h-8 w-8 animate-spin text-[var(--ink-muted)]" />
-                                            </div>
-                                        ) : (
-                                            <img
-                                                src={qrCodeDataUrl!}
-                                                alt={tSettings('about.communityQrAlt')}
-                                                className="mt-4 h-36 w-36 rounded-lg"
-                                            />
-                                        )}
-                                    </div>
-                                </div>
-                            )}
-
                             {/* Contact & Links */}
                             <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                                 <div className="grid grid-cols-2 gap-4 text-sm">
@@ -5188,12 +5124,12 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                         <p className="mt-1 text-[var(--ink)]">Ethan L</p>
                                     </div>
                                     <div>
-                                        <p className="text-xs font-medium uppercase tracking-wider text-[var(--ink-muted)]">Website</p>
+                                        <p className="text-xs font-medium uppercase tracking-wider text-[var(--ink-muted)]">Project</p>
                                         <ExternalLink
-                                            href="https://myagents.io"
+                                            href={MYAGENTS_GITHUB_URL}
                                             className="mt-1 block text-[var(--accent)] hover:underline"
                                         >
-                                            myagents.io
+                                            github.com/zhong2312/MyNovelStudio
                                         </ExternalLink>
                                     </div>
                                     <div>

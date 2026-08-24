@@ -281,10 +281,9 @@ pub fn resolve_existing_inside_workspace(
 /// dirs become trusted without a sidecar restart; the work is three
 /// `fs::canonicalize` calls, dwarfed by the file read that follows.
 fn trusted_managed_roots() -> Vec<PathBuf> {
-    let Some(home) = dirs::home_dir() else {
+    let Some(myagents) = crate::app_dirs::myagents_data_dir() else {
         return Vec::new();
     };
-    let myagents = home.join(".myagents");
     ["skills", "commands", "agents"]
         .iter()
         .filter_map(|sub| fs::canonicalize(myagents.join(sub)).ok())
@@ -315,13 +314,13 @@ pub fn reject_managed_global_skill_mutation(
     workspace_root: &Path,
     lexical_target: &Path,
 ) -> WfResult<()> {
-    let Some(home) = dirs::home_dir() else {
+    let Some(myagents) = crate::app_dirs::myagents_data_dir() else {
         return Ok(());
     };
     reject_managed_global_skill_mutation_with_root(
         workspace_root,
         lexical_target,
-        &home.join(".myagents").join("skills"),
+        &myagents.join("skills"),
     )
 }
 

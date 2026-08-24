@@ -297,9 +297,8 @@ pub(crate) async fn freeze_via_file_lock_status(
     session_id: &str,
     snapshot: &OwnedSessionSnapshot,
 ) -> Result<FileLockFreezeOutcome, String> {
-    let myagents_dir = dirs::home_dir()
-        .ok_or_else(|| "home_dir unavailable".to_string())?
-        .join(".myagents");
+    let myagents_dir = crate::app_dirs::myagents_data_dir()
+        .ok_or_else(|| "MyAgents data dir unavailable".to_string())?;
     let sessions_path = myagents_dir.join("sessions.json");
     let tmp_path = myagents_dir.join("sessions.json.tmp");
     let lock_path = myagents_dir.join("sessions.lock");

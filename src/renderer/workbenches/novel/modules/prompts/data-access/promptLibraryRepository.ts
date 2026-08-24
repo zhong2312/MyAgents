@@ -625,7 +625,7 @@ export function createNovelPromptLibraryRepository(
   const repository: NovelPromptLibraryRepository = {
     async load() {
       if (!storage.isAvailable) {
-        throw new Error("提示词存储仅在 MyAgents 桌面端可用");
+        throw new Error("提示词存储仅在 MyNovelStudio 桌面端可用");
       }
       await ensurePromptLibrary(storage);
       return loadFromRegistry(

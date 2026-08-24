@@ -735,9 +735,8 @@ fn task_session_id(task: &crate::task::Task) -> String {
 }
 
 fn load_legacy_tasks() -> Result<HashMap<String, CronTask>, String> {
-    let path = dirs::home_dir()
+    let path = crate::app_dirs::myagents_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".myagents")
         .join("cron_tasks.json");
     let content = match fs::read_to_string(&path) {
         Ok(content) => content,

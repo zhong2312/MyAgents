@@ -31,7 +31,7 @@ const RUNTIME_OPTIONS: {
   type: RuntimeType;
   name: string;
 }[] = [
-    { type: 'builtin', name: 'MyAgents (Claude Agent SDK)' },
+    { type: 'builtin', name: 'MyNovelStudio (Claude Agent SDK)' },
     { type: 'claude-code', name: 'Claude Code CLI' },
     { type: 'codex', name: 'Codex CLI' },
     { type: 'gemini', name: 'Gemini CLI' },

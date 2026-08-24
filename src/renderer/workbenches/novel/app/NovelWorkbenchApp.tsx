@@ -153,7 +153,7 @@ function WorldAgentButton({
       onClick={onClick}
       disabled={disabled || isLaunching}
       aria-label={isLaunching ? "正在启动 Agent" : label}
-      title={disabled ? "MyAgents Agent Session 当前不可用" : title}
+      title={disabled ? "MyNovelStudio Agent Session 当前不可用" : title}
       className="flex h-8 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-warm-hover)] disabled:cursor-not-allowed disabled:opacity-50"
     >
       {isLaunching ? (
@@ -1303,7 +1303,7 @@ export default function NovelWorkbenchRenderer({
   const launchCharacterAgent = async (target: CharacterAiTarget) => {
     if (isCharacterAgentLaunching) return;
     if (!context.agentSessions.isAvailable) {
-      throw new Error("MyAgents Agent Session 当前不可用");
+      throw new Error("MyNovelStudio Agent Session 当前不可用");
     }
     const scopeLabels: Record<CharacterAiTarget["scope"], string> = {
       character: "角色设计",
@@ -1378,7 +1378,7 @@ export default function NovelWorkbenchRenderer({
   const launchCultivationAgent = async () => {
     if (isCultivationAgentLaunching) return;
     if (!context.agentSessions.isAvailable) {
-      throw new Error("MyAgents Agent Session 当前不可用");
+      throw new Error("MyNovelStudio Agent Session 当前不可用");
     }
     setOperationError(null);
     setIsCultivationAgentLaunching(true);
@@ -1439,7 +1439,7 @@ export default function NovelWorkbenchRenderer({
   const launchMapAgent = async (request: MapAgentGenerationRequest) => {
     if (isMapAgentLaunching) return;
     if (!context.agentSessions.isAvailable) {
-      throw new Error("MyAgents Agent Session 当前不可用");
+      throw new Error("MyNovelStudio Agent Session 当前不可用");
     }
     setOperationError(null);
     setIsMapAgentLaunching(true);
@@ -1512,7 +1512,7 @@ export default function NovelWorkbenchRenderer({
   const launchFactionAgent = async (target: FactionAiTarget) => {
     if (factionAgentLaunchMode) return;
     if (!context.agentSessions.isAvailable) {
-      throw new Error("MyAgents Agent Session 当前不可用");
+      throw new Error("MyNovelStudio Agent Session 当前不可用");
     }
     const scopeLabels: Record<FactionAiTarget["scope"], string> = {
       organization: "组织架构设计",
@@ -1589,7 +1589,7 @@ export default function NovelWorkbenchRenderer({
   const launchFactionBatchAgent = async () => {
     if (factionAgentLaunchMode) return;
     if (!context.agentSessions.isAvailable) {
-      throw new Error("MyAgents Agent Session 当前不可用");
+      throw new Error("MyNovelStudio Agent Session 当前不可用");
     }
     setOperationError(null);
     setFactionAgentLaunchMode("batch");
@@ -1646,7 +1646,7 @@ export default function NovelWorkbenchRenderer({
   const launchItemBatchAgent = async (preferredCategoryId?: string) => {
     if (isItemAgentLaunching) return;
     if (!context.agentSessions.isAvailable) {
-      throw new Error("MyAgents Agent Session 当前不可用");
+      throw new Error("MyNovelStudio Agent Session 当前不可用");
     }
     setOperationError(null);
     setIsItemAgentLaunching(true);
@@ -1662,7 +1662,7 @@ export default function NovelWorkbenchRenderer({
         },
         async () => `## 小说工作台物品批量生产向导
 
-你正在协助作者批量设计并生产小说物品。使用完整 MyAgents 对话逐步确认需求，最终只能提交待审阅提案，不得直接修改正式物品库。
+你正在协助作者批量设计并生产小说物品。使用完整 MyNovelStudio 对话逐步确认需求，最终只能提交待审阅提案，不得直接修改正式物品库。
 
 项目：${project.metadata.title}
 ${preferredCategoryId ? `作者当前选中的分类 ID：${preferredCategoryId}` : "作者尚未指定目标分类。"}
@@ -1706,7 +1706,7 @@ ${preferredCategoryId ? `作者当前选中的分类 ID：${preferredCategoryId}
     localContext?: unknown,
   ): Promise<string | null> => {
     if (!context.agentSessions.isAvailable) {
-      setOperationError("MyAgents Agent Session 当前不可用");
+      setOperationError("MyNovelStudio Agent Session 当前不可用");
       return null;
     }
     setOperationError(null);

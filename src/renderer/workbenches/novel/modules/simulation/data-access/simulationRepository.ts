@@ -165,7 +165,7 @@ export function createNovelSimulationRepository(storage: WorkbenchStorage) {
 
   const load = async (): Promise<LoadedSimulationLibrary> => {
     if (!storage.isAvailable)
-      throw new Error("世界推演仅在 MyAgents 桌面端可用");
+      throw new Error("世界推演仅在 MyNovelStudio 桌面端可用");
     const [entry] = await storage.stat([SIMULATION_INDEX_PATH]);
     if (!entry?.exists) {
       const transaction = createStorageTransaction(storage);

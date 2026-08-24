@@ -24,7 +24,7 @@ export interface CompactAiRunWindowProps {
 
 const STATUS_TEXT: Record<CompactAiRunStatus, string> = {
   preparing: "正在装配上下文",
-  running: "MyAgents 正在生成",
+  running: "MyNovelStudio 正在生成",
   ready: "结果可以审阅",
   error: "生成失败",
 };

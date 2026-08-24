@@ -971,7 +971,7 @@ export default function Launcher({ onLaunchProject, onOpenHistorySession, isStar
             });
         } catch (cause) {
             const message = cause instanceof Error ? cause.message : String(cause);
-            throw new Error(`小说目录已创建，但加入 MyAgents 失败：${message}`);
+            throw new Error(`小说目录已创建，但加入 MyNovelStudio 失败：${message}`);
         }
         const normalizedPath = initialized.workspacePath.replace(/\\/g, '/');
         const parentPath = normalizedPath.split('/').slice(0, -1).join('/');

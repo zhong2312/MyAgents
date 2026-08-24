@@ -107,6 +107,7 @@ import { getFullSessionDisplayText } from '@/utils/sessionDisplay';
 import { copyPlainText } from '@/utils/clipboard';
 import { openExternal } from '@/utils/openExternal';
 import { OverflowNameTooltip } from '@/components/workspace-tree/OverflowNameTooltip';
+import { useResolvedTheme } from '@/theme';
 
 const loadHistorySearchOverlayContent = () => import('@/components/HistorySearchOverlayContent');
 const HistorySearchOverlayContent = lazy(loadHistorySearchOverlayContent);
@@ -117,7 +118,7 @@ const AUTO_RAIL_QUERY = '(max-width: 1080px)';
 const EMPTY_TAGS: SessionTag[] = [];
 const SIDEBAR_TRANSITION_MS = 200;
 const WORKSPACE_BRANCH_TRANSITION_MS = 200;
-const MYAGENTS_WEBSITE_URL = 'https://myagents.io';
+const MYNOVELSTUDIO_REPOSITORY_URL = 'https://github.com/zhong2312/MyNovelStudio';
 const FLYOUT_FOCUS_ENTRY_SELECTOR = [
   'button:not([disabled])',
   'a[href]',
@@ -347,6 +348,7 @@ export default memo(function GlobalSidebar({
 }: GlobalSidebarProps) {
   const { t } = useTranslation('app');
   const { t: tLauncher } = useTranslation('launcher');
+  const resolvedTheme = useResolvedTheme();
   const toast = useToast();
   const deleteSession = useSessionDeletion();
   const toastRef = useRef(toast);
@@ -958,7 +960,7 @@ export default memo(function GlobalSidebar({
         >
           <button
             type="button"
-            onClick={() => { void openExternal(MYAGENTS_WEBSITE_URL); }}
+            onClick={() => { void openExternal(MYNOVELSTUDIO_REPOSITORY_URL); }}
             aria-label={t('globalSidebar.openWebsite')}
             className={`global-sidebar-brand-link flex h-8 items-center pr-1 text-left cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
               expanded ? 'min-w-0 max-w-[calc(var(--global-sidebar-expanded-width)-var(--global-sidebar-rail-button-left)-var(--space-2))]' : 'w-10 overflow-hidden'
@@ -977,7 +979,7 @@ export default memo(function GlobalSidebar({
               aria-hidden={!expanded}
               data-global-sidebar-brand-name
             >
-              MyAgents
+              {resolvedTheme.hero.productName}
             </span>
           </button>
         </div>

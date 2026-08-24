@@ -25,6 +25,9 @@ use crate::{ulog_error, ulog_info, ulog_warn};
 
 const LAST_EXIT_FILE: &str = "last-exit.json";
 const MYAGENTS_DATA_DIR_ENV: &str = "MYAGENTS_DATA_DIR";
+const MYAGENTS_TEST_MODE_ENV: &str = "MYAGENTS_TEST_MODE";
+const MYAGENTS_TEST_ROOT_ENV: &str = "MYAGENTS_TEST_ROOT";
+const MYAGENTS_BROWSER_DEV_STORAGE_ENV: &str = "MYAGENTS_BROWSER_DEV_STORAGE";
 
 /// Record that the app exited cleanly — i.e. the user deliberately quit
 /// (Cmd+Q / Dock / tray "Exit"), as opposed to an update-restart or a crash.
@@ -124,6 +127,50 @@ pub fn myagents_data_dir() -> Option<PathBuf> {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
     resolve_myagents_data_dir(configured, dirs::home_dir())
+}
+
+/// Remove test-package overrides when a release build is launched from a
+/// shell that previously hosted the development/test app. The test launcher
+/// opts in explicitly via `MYAGENTS_TEST_MODE=1`; ordinary desktop launches
+/// must never inherit a test profile containing projects or provider secrets.
+pub fn sanitize_inherited_test_environment() {
+    let test_mode = std::env::var(MYAGENTS_TEST_MODE_ENV)
+        .map(|value| value == "1")
+        .unwrap_or(false);
+    if test_mode {
+        return;
+    }
+
+    let has_test_root = std::env::var_os(MYAGENTS_TEST_ROOT_ENV)
+        .is_some_and(|value| !value.is_empty());
+    let data_dir_looks_like_test = std::env::var_os(MYAGENTS_DATA_DIR_ENV)
+        .map(PathBuf::from)
+        .map(|path| {
+            path.to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("myagents-test")
+        })
+        .unwrap_or(false);
+    if !has_test_root && !data_dir_looks_like_test {
+        return;
+    }
+
+    // `dirs::home_dir()` uses the OS known-folder API on Windows, so capture
+    // the real profile before clearing process-local test overrides.
+    let real_home = dirs::home_dir();
+    for name in [
+        MYAGENTS_DATA_DIR_ENV,
+        MYAGENTS_TEST_ROOT_ENV,
+        MYAGENTS_BROWSER_DEV_STORAGE_ENV,
+        "MYAGENTS_DEV_BACKEND_PORT",
+    ] {
+        std::env::remove_var(name);
+    }
+    if let Some(home) = real_home {
+        let home = home.to_string_lossy().into_owned();
+        std::env::set_var("HOME", &home);
+        std::env::set_var("USERPROFILE", &home);
+    }
 }
 
 /// Path to the PID lock file.

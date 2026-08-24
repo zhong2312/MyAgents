@@ -243,9 +243,9 @@ pub async fn cmd_space_list_local_skills(
     input: SpaceListLocalSkillsInput,
 ) -> Result<Vec<SpaceLocalSkillSummary>, String> {
     let mut items = Vec::new();
-    if let Some(home) = dirs::home_dir() {
+    if let Some(myagents_dir) = crate::app_dirs::myagents_data_dir() {
         scan_local_skill_dir(
-            &home.join(".myagents").join("skills"),
+            &myagents_dir.join("skills"),
             "global",
             None,
             None,
@@ -490,7 +490,8 @@ struct SkillUploadPackage {
 }
 
 fn skill_url_export_root() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".myagents").join("tmp").join("skill-url-export"))
+    crate::app_dirs::myagents_data_dir()
+        .map(|myagents_dir| myagents_dir.join("tmp").join("skill-url-export"))
 }
 
 fn cleanup_skill_export_path(raw_path: &str) -> Result<(), String> {

@@ -257,7 +257,7 @@ function getRuntimeDisplayLabel(runtime: RuntimeType | undefined): string {
     case 'gemini': return 'Gemini CLI';
     case 'builtin':
     default:
-      return 'MyAgents';
+      return 'MyNovelStudio';
   }
 }
 

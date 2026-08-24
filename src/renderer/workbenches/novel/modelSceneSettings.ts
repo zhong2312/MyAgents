@@ -210,7 +210,7 @@ export const NOVEL_MODEL_SCENES: readonly NovelModelSceneDefinition[] = [
     id: "inspiration.coauthor",
     group: "灵感",
     label: "灵感深度共创",
-    description: "通过工作台工具读取当前灵感的完整 MyAgents 会话",
+    description: "通过工作台工具读取当前灵感的完整 MyNovelStudio 会话",
     execution: "agent",
   },
   {
