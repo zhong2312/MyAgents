@@ -263,6 +263,10 @@ test('v0.5.0 rebuild keeps cross-platform project instructions during source res
     rebuildV050Release,
     /git checkout "\$SOURCE_REF" -- \. ':\(exclude\)AGENTS\.md'/,
   );
+  assert.match(
+    rebuildV050Release,
+    /- name: Build unsigned DMG[\s\S]*NODE_OPTIONS: "--max-old-space-size=4096"/,
+  );
 });
 
 test('CLI bundle staging owns its complete mutable resource inventory', () => {
