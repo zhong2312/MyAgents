@@ -111,100 +111,9 @@ jobs:
           if-no-files-found: error
           path: ${{ steps.dmg.outputs.path }}
 
-  build-linux:
-    name: Linux x86_64
-    runs-on: ubuntu-22.04
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Restore the v0.5.0 application source
-        shell: bash
-        run: |
-          set -euo pipefail
-          git checkout "$SOURCE_REF" -- . ':(exclude)AGENTS.md'
-          git checkout HEAD -- \
-            build_linux.sh \
-            package.json \
-            package-lock.json \
-            scripts/prepare-azgaar-runtime.mjs \
-            src-tauri/tauri.linux.conf.json
-          release_version="$(grep '"version"' package.json | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')"
-          test "$release_version" = "${RELEASE_TAG#v}"
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-
-      - uses: dtolnay/rust-toolchain@1.92.0
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: Install Linux bundle dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            file \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libwebkit2gtk-4.1-dev \
-            patchelf
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build AppImage and deb
-        shell: bash
-        run: ./build_linux.sh x86_64-unknown-linux-gnu
-
-      - name: Verify Linux packages
-        id: packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          bundle_dir=src-tauri/target/x86_64-unknown-linux-gnu/release/bundle
-          appimages=("$bundle_dir"/appimage/*.AppImage)
-          debs=("$bundle_dir"/deb/*.deb)
-          test "${#appimages[@]}" -eq 1
-          test "${#debs[@]}" -eq 1
-          test -s "${appimages[0]}"
-          test -s "${debs[0]}"
-          test "$(dpkg-deb -f "${debs[0]}" Version)" = "${RELEASE_TAG#v}"
-
-          extract_dir="$(mktemp -d)"
-          (
-            cd "$extract_dir"
-            chmod +x "${GITHUB_WORKSPACE}/${appimages[0]}"
-            "${GITHUB_WORKSPACE}/${appimages[0]}" --appimage-extract >/dev/null
-            test -d squashfs-root
-            test -n "$(find squashfs-root -type f \( -name MyAgents -o -name myagents \) -print -quit)"
-          )
-          rm -rf "$extract_dir"
-
-          echo "appimage=${appimages[0]}" >> "$GITHUB_OUTPUT"
-          echo "deb=${debs[0]}" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-x86_64
-          if-no-files-found: error
-          path: |
-            ${{ steps.packages.outputs.appimage }}
-            ${{ steps.packages.outputs.deb }}
-
   publish:
     name: Publish v0.5.0
-    needs: [build-macos, build-linux]
+    needs: [build-macos]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -214,7 +123,7 @@ jobs:
         with:
           path: artifacts
 
-      - name: Recreate the release with all desktop packages
+      - name: Recreate the release with Windows and macOS packages
         shell: bash
         run: |
           set -euo pipefail
@@ -243,23 +152,17 @@ jobs:
           windows_portable="$(resolve_one previous-windows '*.zip' 'Windows portable archive')"
           macos_arm="$(resolve_one artifacts/macos-aarch64 '*.dmg' 'Apple Silicon DMG')"
           macos_intel="$(resolve_one artifacts/macos-x86_64 '*.dmg' 'Intel DMG')"
-          linux_appimage="$(resolve_one artifacts/linux-x86_64 '*.AppImage' 'Linux AppImage')"
-          linux_deb="$(resolve_one artifacts/linux-x86_64 '*.deb' 'Linux deb package')"
 
           cp "$windows_setup" release-assets/MyAgents_0.5.0_x64-setup.exe
           cp "$windows_portable" release-assets/MyAgents_0.5.0_x86_64-portable.zip
           cp "$macos_arm" release-assets/MyAgents_0.5.0_macos_aarch64.dmg
           cp "$macos_intel" release-assets/MyAgents_0.5.0_macos_x86_64.dmg
-          cp "$linux_appimage" release-assets/MyAgents_0.5.0_linux_x86_64.AppImage
-          cp "$linux_deb" release-assets/MyAgents_0.5.0_linux_x86_64.deb
 
           expected=(
             MyAgents_0.5.0_x64-setup.exe
             MyAgents_0.5.0_x86_64-portable.zip
             MyAgents_0.5.0_macos_aarch64.dmg
             MyAgents_0.5.0_macos_x86_64.dmg
-            MyAgents_0.5.0_linux_x86_64.AppImage
-            MyAgents_0.5.0_linux_x86_64.deb
           )
           for asset in "${expected[@]}"; do test -s "release-assets/$asset"; done
 
