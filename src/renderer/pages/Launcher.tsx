@@ -28,7 +28,7 @@ import type { WorkbenchCreateAction } from '@/components/launcher/AddWorkspaceMe
 const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPanel'));
 import { useConfig } from '@/hooks/useConfig';
 import { useTaskCenterData } from '@/hooks/useTaskCenterData';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID, type Project, type PermissionMode, type McpServerDefinition, type WorkspaceTemplate, isProviderEnabled, isProjectActiveForUser, isProjectArchived, isProjectVisibleToUser, isSystemPresetProject } from '@/config/types';
+import { type Project, type PermissionMode, type McpServerDefinition, type WorkspaceTemplate, isProviderEnabled, isProjectActiveForUser, isProjectArchived, isProjectVisibleToUser, isSystemPresetProject } from '@/config/types';
 import { CUSTOM_EVENTS } from '../../shared/constants';
 import { normalizeWorkspacePathIdentity, workspacePathsEqual } from '../../shared/workspacePath';
 import {
@@ -984,9 +984,8 @@ export default function Launcher({ onLaunchProject, onOpenHistorySession, isStar
         handleLaunch(project, session.id, historyEntrySource);
     }, [handleLaunch]);
 
-    const [overlayMode, setOverlayMode] = useState<'default' | 'search'>('default');
-    const handleOpenOverlay = useCallback((mode: 'default' | 'search' = 'default') => { track('task_center_open', {}); setOverlayMode(mode); setShowOverlay(true); }, []);
-    const handleCloseOverlay = useCallback(() => { setShowOverlay(false); setOverlayMode('default'); }, []);
+    const handleOpenOverlay = useCallback(() => { track('task_center_open', {}); setShowOverlay(true); }, []);
+    const handleCloseOverlay = useCallback(() => { setShowOverlay(false); }, []);
 
     // Stable callback for overlay session open (avoids inline function in render)
     const handleOverlayOpenTask = useCallback((session: SessionMetadata, project: Project) => {

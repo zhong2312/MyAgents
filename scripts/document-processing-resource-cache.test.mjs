@@ -81,7 +81,7 @@ test('build fingerprint is deterministic and invalidates source or metadata chan
   );
 });
 
-function createPreparedBundle(root, fingerprint) {
+function createPreparedBundle(root, fingerprint, platform, architecture) {
   const files = {
     worker: 'myagents-document-worker',
     onnxRuntime: 'native/onnxruntime.dylib',
@@ -137,8 +137,8 @@ function createPreparedBundle(root, fingerprint) {
     JSON.stringify({
       schemaVersion: 1,
       pipelineVersion: 'pipeline-v1',
-      platform: 'macos',
-      architecture: 'arm64',
+      platform,
+      architecture,
       buildFingerprint: fingerprint,
       worker: resource(files.worker),
       files: {
@@ -155,11 +155,13 @@ function createPreparedBundle(root, fingerprint) {
 
 test('prepared bundle validation closes warm-cache corruption and target drift', () => {
   const root = scratch();
-  createPreparedBundle(root, 'a'.repeat(64));
+  const platform = process.platform === 'win32' ? 'windows' : 'macos';
+  const architecture = process.platform === 'win32' ? 'x64' : 'arm64';
+  createPreparedBundle(root, 'a'.repeat(64), platform, architecture);
   const expected = {
     pipelineVersion: 'pipeline-v1',
-    platform: 'macos',
-    architecture: 'arm64',
+    platform,
+    architecture,
     buildFingerprint: 'a'.repeat(64),
     requiredLegalFiles: [
       'NOTICE',
@@ -172,7 +174,10 @@ test('prepared bundle validation closes warm-cache corruption and target drift',
   };
   assert.equal(validatePreparedBundle(root, expected), true);
   assert.equal(
-    validatePreparedBundle(root, { ...expected, architecture: 'x64' }),
+    validatePreparedBundle(
+      root,
+      { ...expected, architecture: architecture === 'x64' ? 'arm64' : 'x64' },
+    ),
     false,
   );
 
@@ -190,9 +195,11 @@ test('prepared bundle validation closes warm-cache corruption and target drift',
   manifest.worker.signing.identity = 'fixture';
   writeFileSync(manifestPath, JSON.stringify(manifest));
 
-  chmodSync(join(root, manifest.worker.path), 0o644);
-  assert.equal(validatePreparedBundle(root, expected), false);
-  chmodSync(join(root, manifest.worker.path), 0o755);
+  if (platform !== 'windows') {
+    chmodSync(join(root, manifest.worker.path), 0o644);
+    assert.equal(validatePreparedBundle(root, expected), false);
+    chmodSync(join(root, manifest.worker.path), 0o755);
+  }
 
   writeFileSync(join(root, 'legal', 'NOTICE'), 'corrupt but nonempty');
   assert.equal(validatePreparedBundle(root, expected), false);

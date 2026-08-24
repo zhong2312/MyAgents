@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { useToastOptional } from "@/components/Toast";
+import { useWorkbenchToastOptional } from "@/workbench-sdk/toast";
 
 import {
   MAP_COMPONENT_DRAG_MIME,
@@ -1480,7 +1480,7 @@ export default function MapSceneCanvas({
   onGeometryChange,
   onBatchMove,
 }: MapSceneCanvasProps) {
-  const toast = useToastOptional();
+  const toast = useWorkbenchToastOptional();
   const [isExporting, setIsExporting] = useState(false);
   const [contextMenu, setContextMenu] = useState<MapSceneContextMenu | null>(
     null,

@@ -130,6 +130,19 @@ export default function WorkspaceGeneralTab({
           </div>
         </div>
 
+        {/* Channels are configured independently of the proactive Agent mode. */}
+        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+          {agent && (
+            <AgentChannelsSection
+              agent={agent}
+              status={status}
+              onAgentChanged={handleAgentChanged}
+              initialAddPlatform={initialAddChannelPlatform}
+              onInitialAddPlatformConsumed={onInitialAddChannelPlatformConsumed}
+            />
+          )}
+        </div>
+
         <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0 flex-1">

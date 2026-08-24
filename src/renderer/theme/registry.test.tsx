@@ -104,8 +104,8 @@ describe('ThemeRegistry', () => {
     for (const definition of themeRegistry.getAcceptedDefinitions()) {
       for (const scheme of ['light', 'dark'] as const) {
         const resolved = themeRegistry.resolve(definition.id, scheme, false);
-        expect(resolved.hero.productName).toBe('MyAgents');
-        expect(resolved.hero.slogans['zh-CN']).toBe('每个人都应享受智能的推背感，欢迎来到言出法随的世界');
+        expect(resolved.hero.productName).toBe('MyNovelStudio');
+        expect(resolved.hero.slogans['zh-CN']).toBe('基于MyAgents的小说创作平台');
         expect(resolved.hero.slogans['en-US']).toBe('Your intent, amplified');
         expect(resolved.adapters.xterm.palette.cursor).toBeTruthy();
         expect(resolved.adapters.monaco.data.colors['editorCursor.foreground']).toBeTruthy();

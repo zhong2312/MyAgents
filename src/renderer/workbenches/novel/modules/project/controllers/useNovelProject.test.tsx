@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { renderHook, waitFor } from "@testing-library/react";
 
 import { createNovelRepository } from "../data-access/repository";
 import {
@@ -7,7 +7,6 @@ import {
   type NovelMemoryStorage,
 } from "../../../shared/infrastructure/testStorage";
 import { useNovelProject } from "./useNovelProject";
-import { createNarrativeEngineeringRepository } from "../../../narrativeEngineeringRepository";
 
 const CHAPTER_INDEX_PATH = "manuscript/index.json";
 

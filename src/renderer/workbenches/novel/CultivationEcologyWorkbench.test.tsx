@@ -264,6 +264,33 @@ async function renderProgression() {
 }
 
 describe("CultivationEcologyWorkbench 境界检查器", () => {
+  it("将运行拓扑的编辑操作放在画布工具栏中并保留前置条件", async () => {
+    await renderProgression();
+
+    fireEvent.click(screen.getByRole("button", { name: "法门" }));
+    fireEvent.click(await screen.findByRole("button", { name: "新增法门" }));
+    fireEvent.click(await screen.findByRole("button", { name: "新增拓扑" }));
+
+    const toolbar = document.querySelector(".ce-topology-canvas-toolbar");
+    const flowSurface = document.querySelector(".ce-topology-flow-surface");
+    expect(toolbar).not.toBeNull();
+    expect(flowSurface).not.toBeNull();
+    expect(toolbar?.compareDocumentPosition(flowSurface as Node)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+
+    const actions = within(toolbar as HTMLElement).getByRole("group", {
+      name: "运行拓扑编辑操作",
+    });
+    expect(
+      within(actions).getByRole("button", { name: "添加节点" }),
+    ).toBeDisabled();
+    expect(
+      within(actions).getByRole("button", { name: "添加流向" }),
+    ).toBeDisabled();
+    expect(document.querySelector(".ce-topology-footer button")).toBeNull();
+  });
+
   it("体系内每个模块页签都不再重复显示页面标题块", async () => {
     await renderProgression();
 

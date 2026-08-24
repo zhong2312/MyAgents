@@ -33,6 +33,7 @@ import {
 import { validateCultivationEcology } from "../../shared/workbenches/novel/cultivationEcologyValidation";
 import {
   FACTION_INDEX_PATH as FACTION_LIBRARY_PATH,
+  factionRecordSchema,
   loadFactionFiles,
   serializeFactionFileSnapshot,
 } from "../../shared/workbenches/novel/factionStorage";
@@ -76,6 +77,8 @@ import {
   loadTimelineFiles,
   serializeTimelineFileSnapshot,
 } from "../../shared/workbenches/novel/timelineStorage";
+import { timelineEventSchema } from "../../shared/workbenches/novel/timelineEventSchema";
+import { readNovelIndexIdSet } from "../utils/novel-id-set";
 import {
   bindFantasyPlanToFeatures,
   artworkComponentForRole,
@@ -301,6 +304,8 @@ type NarrativeDirectoryInput = {
   description?: string;
   status?: NarrativeDirectoryStatus;
   order: number;
+  /** 目录直接承载的章节规划额度；有子目录时必须为 0。 */
+  plannedChapterCount?: number;
 };
 
 type NarrativeParagraphInput = {
@@ -351,10 +356,17 @@ type NarrativeDraftPayload = {
   title: string;
   description: string;
   baseSourceHash: string;
+  planningScope: "partial" | "full-novel";
   lines: NarrativeLineInput[];
   arcs: NarrativeStoryArcInput[];
   directories: NarrativeDirectoryInput[];
   chapters: NarrativeChapterInput[];
+};
+
+type NarrativePlanningScale = {
+  targetWordCountMin: number;
+  targetWordCountMax: number;
+  chapterWordCount: number;
 };
 
 type CharacterProposalOperation = {
@@ -2844,26 +2856,12 @@ async function loadFactionSource(workspace: string) {
 }
 
 /** 读取工作区 JSON 文件并返回其 id 集合；文件缺失时返回空集。 */
-export async function readIdSet(
+async function readIdSet(
   workspace: string,
   path: string,
   field: string,
 ): Promise<Set<string>> {
-  const content = await readOptional(workspaceFile(workspace, path));
-  if (!content) return new Set();
-  const document = JSON.parse(content) as unknown;
-  const list = arrayField(
-    document && typeof document === "object"
-      ? (document as Record<string, unknown>)
-      : {},
-    field,
-  );
-  const ids = new Set<string>();
-  for (const item of list ?? []) {
-    const record = objectValue(item, path);
-    if (typeof record.id === "string") ids.add(record.id);
-  }
-  return ids;
+  return readNovelIndexIdSet(workspaceFile(workspace, path), field, path);
 }
 
 /** 校验势力候选：结构、正式库存在性、跨库引用（角色/物品/空间节点）。 */
@@ -2944,15 +2942,19 @@ async function validateFactionDraftPayload(
       errors.push(
         `势力候选“${operation.candidateId}”包含非正式字段：${unknownFields.join("、")}。核心目标和演化钩子请写入 links，层级写入 organizationUnits，关键成员写入 members，权利写入 rights，地域写入 territories`,
       );
-    }
-    const id = faction.id;
-    if (typeof id !== "string" || !ID_PATTERN.test(id)) {
-      errors.push(`${operation.candidateId}的势力 id 非法`);
       continue;
     }
-    if (typeof faction.name !== "string" || !faction.name.trim()) {
-      errors.push(`势力“${id}”缺少名称`);
+    const parsed = factionRecordSchema.safeParse(faction);
+    if (!parsed.success) {
+      errors.push(
+        `势力候选“${operation.candidateId}”格式无效：${parsed.error.issues
+          .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
+          .join("；")}`,
+      );
+      continue;
     }
+    const candidate = parsed.data;
+    const id = candidate.id;
     if (operation.action === "create" && existingIds.has(id)) {
       errors.push(`势力 id 已存在：${id}`);
       continue;
@@ -2967,48 +2969,29 @@ async function validateFactionDraftPayload(
       );
       continue;
     }
-    for (const member of arrayField(faction, "members") ?? []) {
-      const record = objectValue(member, "成员");
-      if (
-        typeof record.characterId === "string" &&
-        record.characterId &&
-        !characterIds.has(record.characterId)
-      ) {
+    for (const member of candidate.members) {
+      if (member.characterId && !characterIds.has(member.characterId)) {
         errors.push(
-          `势力“${id}”的成员“${record.name ?? "未命名"}”关联了不存在的角色：${record.characterId}`,
+          `势力“${id}”的成员“${member.name}”关联了不存在的角色：${member.characterId}`,
         );
       }
     }
-    for (const resource of arrayField(faction, "resources") ?? []) {
-      const record = objectValue(resource, "资源");
-      if (
-        typeof record.itemId === "string" &&
-        record.itemId &&
-        !itemIds.has(record.itemId)
-      ) {
+    for (const resource of candidate.resources) {
+      if (resource.itemId && !itemIds.has(resource.itemId)) {
         errors.push(
-          `势力“${id}”的资源“${record.name ?? "未命名"}”关联了不存在的物品：${record.itemId}`,
+          `势力“${id}”的资源“${resource.name}”关联了不存在的物品：${resource.itemId}`,
         );
       }
-      if (
-        typeof record.worldNodeId === "string" &&
-        record.worldNodeId &&
-        !spatialNodeIds.has(record.worldNodeId)
-      ) {
+      if (resource.worldNodeId && !spatialNodeIds.has(resource.worldNodeId)) {
         errors.push(
-          `势力“${id}”的资源“${record.name ?? "未命名"}”关联了不存在的空间节点：${record.worldNodeId}`,
+          `势力“${id}”的资源“${resource.name}”关联了不存在的空间节点：${resource.worldNodeId}`,
         );
       }
     }
-    for (const territory of arrayField(faction, "territories") ?? []) {
-      const record = objectValue(territory, "领地");
-      if (
-        typeof record.worldNodeId === "string" &&
-        record.worldNodeId &&
-        !spatialNodeIds.has(record.worldNodeId)
-      ) {
+    for (const territory of candidate.territories) {
+      if (territory.worldNodeId && !spatialNodeIds.has(territory.worldNodeId)) {
         errors.push(
-          `势力“${id}”的领地“${record.name ?? "未命名"}”关联了不存在的空间节点：${record.worldNodeId}`,
+          `势力“${id}”的领地“${territory.name}”关联了不存在的空间节点：${territory.worldNodeId}`,
         );
       }
     }
@@ -3071,6 +3054,38 @@ async function attachTimelineGenerationBaselines(
     }
     return { ...operation, baseValue: { ...baseValue } };
   });
+}
+
+function auditTimestamp(
+  value: Record<string, unknown> | undefined,
+  field: "createdAt" | "updatedAt",
+  fallback: string,
+): string {
+  return typeof value?.[field] === "string" ? value[field] : fallback;
+}
+
+/** 审计字段由系统维护，模型只能增量撰写时间线事实。 */
+function normalizeTimelineDraftOperation(
+  operation: TimelineProposalOperation,
+  previous: TimelineProposalOperation | undefined,
+  current: Record<string, unknown> | undefined,
+  updatedAt: string,
+): TimelineProposalOperation {
+  const value = previous
+    ? mergeRecord(previous.value, operation.value)
+    : { ...operation.value };
+  const createdAt =
+    operation.action === "update"
+      ? auditTimestamp(
+          current,
+          "createdAt",
+          auditTimestamp(previous?.value, "createdAt", updatedAt),
+        )
+      : auditTimestamp(previous?.value, "createdAt", updatedAt);
+  return {
+    ...operation,
+    value: { ...value, createdAt, updatedAt },
+  };
 }
 
 async function validateTimelineDraftPayload(
@@ -3141,16 +3156,18 @@ async function validateTimelineDraftPayload(
       errors.push(`${operation.candidateId}更新候选缺少 targetId`);
       continue;
     }
-    const event = operation.value;
-    const id = event.id;
-    if (typeof id !== "string" || !ID_PATTERN.test(id)) {
-      errors.push(`${operation.candidateId}的事件 id 非法`);
+    const parsed = timelineEventSchema.safeParse(operation.value);
+    if (!parsed.success) {
+      errors.push(
+        `时间线候选“${operation.candidateId}”格式无效：${parsed.error.issues
+          .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
+          .join("；")}`,
+      );
       continue;
     }
-    if (typeof event.title !== "string" || !event.title.trim()) {
-      errors.push(`事件“${id}”缺少标题`);
-    }
-    if (typeof event.branchId === "string" && !branchIds.has(event.branchId)) {
+    const event = parsed.data;
+    const id = event.id;
+    if (!branchIds.has(event.branchId)) {
       errors.push(`事件“${id}”所属分支不存在：${event.branchId}`);
     }
     if (operation.action === "create" && existingIds.has(id)) {
@@ -3172,8 +3189,8 @@ async function validateTimelineDraftPayload(
       available: Set<string>,
       label: string,
     ) => {
-      for (const ref of arrayField(event, field) ?? []) {
-        if (typeof ref === "string" && ref && !available.has(ref)) {
+      for (const ref of event[field as keyof typeof event] as string[]) {
+        if (ref && !available.has(ref)) {
           errors.push(`事件“${id}”关联了不存在的${label}：${ref}`);
         }
       }
@@ -3571,6 +3588,14 @@ async function upsertTimelineDraftOperationsHandler(args: {
   try {
     assertIncrementalBatch(args.operations, "时间线候选");
     const { workspace } = requireDraftMode("timeline");
+    const current = await loadTimelineSource(workspace);
+    const eventsById = new Map(
+      current.library.events.flatMap((event) => {
+        const value = objectValue(event, "事件");
+        return typeof value.id === "string" ? [[value.id, value] as const] : [];
+      }),
+    );
+    const updatedAt = new Date().toISOString();
     const draft = await updateNovelWorkbenchDraft<TimelineDraftPayload>(
       workspace,
       "timeline",
@@ -3584,14 +3609,20 @@ async function upsertTimelineDraftOperationsHandler(args: {
         );
         for (const operation of args.operations) {
           const previous = operations.get(operation.candidateId);
+          const targetId =
+            operation.action === "update"
+              ? operation.targetId
+              : typeof operation.value.id === "string"
+                ? operation.value.id
+                : undefined;
           operations.set(
             operation.candidateId,
-            previous
-              ? {
-                  ...operation,
-                  value: mergeRecord(previous.value, operation.value),
-                }
-              : operation,
+            normalizeTimelineDraftOperation(
+              operation,
+              previous,
+              targetId ? eventsById.get(targetId) : undefined,
+              updatedAt,
+            ),
           );
         }
         return { ...payload, operations: [...operations.values()] };
@@ -6862,6 +6893,17 @@ function narrativeNullableId(
   return typeof value === "string" ? value : null;
 }
 
+function narrativeNonnegativeInteger(
+  record: Record<string, unknown> | undefined,
+  field: string,
+  fallback = 0,
+): number {
+  const value = record?.[field];
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? value
+    : fallback;
+}
+
 function narrativeIdList(
   record: Record<string, unknown> | undefined,
   field: string,
@@ -6927,6 +6969,7 @@ function narrativeKeyNodeErrors(
 function validateNarrativeDraftPayload(
   payload: NarrativeDraftPayload,
   library: Record<string, unknown>,
+  planningScale: NarrativePlanningScale | null,
 ): string[] {
   const errors: string[] = [];
   const directoryInputs = payload.directories ?? [];
@@ -7019,6 +7062,12 @@ function validateNarrativeDraftPayload(
       narrativeNullableId(directory, "parentId"),
     ]),
   );
+  const effectiveDirectoryPlannedCounts = new Map<number | string, number>(
+    existingDirectories.map((directory) => [
+      String(directory.id),
+      narrativeNonnegativeInteger(directory, "plannedChapterCount"),
+    ]),
+  );
   for (const [index, directory] of directoryInputs.entries()) {
     if (
       !ID_PATTERN.test(directory.candidateId) ||
@@ -7046,6 +7095,18 @@ function validateNarrativeDraftPayload(
       : null;
     effectiveDirectoryKinds.set(effectiveId, directory.kind);
     effectiveDirectoryParents.set(effectiveId, effectiveParentId);
+    effectiveDirectoryPlannedCounts.set(
+      effectiveId,
+      directory.plannedChapterCount ??
+        narrativeNonnegativeInteger(
+          directory.targetId
+            ? existingDirectories.find(
+                (existing) => String(existing.id) === directory.targetId,
+              )
+            : undefined,
+          "plannedChapterCount",
+        ),
+    );
   }
   for (const [index, directory] of directoryInputs.entries()) {
     const effectiveId = directory.targetId ?? directory.candidateId;
@@ -7080,6 +7141,56 @@ function validateNarrativeDraftPayload(
       }
       visited.add(ancestorId);
       ancestorId = effectiveDirectoryParents.get(ancestorId) ?? null;
+    }
+  }
+  if (payload.planningScope === "full-novel") {
+    if (!planningScale) {
+      errors.push(
+        "全书规划需要在 novel.json 中设置有效的目标总字数和每章目标字数",
+      );
+    } else {
+      const childDirectoryIds = new Set<string>();
+      effectiveDirectoryParents.forEach((parentId) => {
+        if (parentId && effectiveDirectoryKinds.has(parentId)) {
+          childDirectoryIds.add(parentId);
+        }
+      });
+      let plannedChapterCount = 0;
+      let leafCount = 0;
+      effectiveDirectoryKinds.forEach((_kind, directoryId) => {
+        const count = effectiveDirectoryPlannedCounts.get(directoryId) ?? 0;
+        if (childDirectoryIds.has(directoryId)) {
+          if (count !== 0) {
+            errors.push(
+              `非叶子目录“${directoryId}”有子目录，直接规划章节数必须为 0`,
+            );
+          }
+          return;
+        }
+        leafCount += 1;
+        if (count <= 0) {
+          errors.push(`叶子目录“${directoryId}”必须填写大于 0 的规划章节数`);
+          return;
+        }
+        plannedChapterCount += count;
+      });
+      if (leafCount === 0) {
+        errors.push("全书规划至少需要一个叶子目录承载章节额度");
+      }
+      const minimumChapterCount = Math.ceil(
+        planningScale.targetWordCountMin / planningScale.chapterWordCount,
+      );
+      const maximumChapterCount = Math.ceil(
+        planningScale.targetWordCountMax / planningScale.chapterWordCount,
+      );
+      if (
+        plannedChapterCount < minimumChapterCount ||
+        plannedChapterCount > maximumChapterCount
+      ) {
+        errors.push(
+          `全书规划 ${plannedChapterCount} 章，与目标 ${planningScale.targetWordCountMin} 至 ${planningScale.targetWordCountMax} 字（每章 ${planningScale.chapterWordCount} 字）不匹配；需规划 ${minimumChapterCount} 至 ${maximumChapterCount} 章`,
+        );
+      }
     }
   }
   const allLineIds = new Set([
@@ -7476,6 +7587,9 @@ function materializeNarrativeDraft(
           : input.description,
       status: input.status ?? narrativeString(existing, "status", "idea"),
       order: input.order,
+      plannedChapterCount:
+        input.plannedChapterCount ??
+        narrativeNonnegativeInteger(existing, "plannedChapterCount"),
     };
   });
   const chapterIds = new Map<string, string>();
@@ -7614,6 +7728,43 @@ async function readNarrativeSource(): Promise<{
   return { workspace, content, library };
 }
 
+async function readNarrativePlanningScale(
+  workspace: string,
+): Promise<NarrativePlanningScale | null> {
+  const content = await readOptional(workspaceFile(workspace, "novel.json"));
+  if (content === null) return null;
+  let metadata: Record<string, unknown>;
+  try {
+    metadata = narrativeRecord(JSON.parse(content), "小说项目配置");
+  } catch {
+    return null;
+  }
+  const targetWordCount = metadata.targetWordCount;
+  const targetWordCountMin =
+    typeof metadata.targetWordCountMin === "number"
+      ? metadata.targetWordCountMin
+      : targetWordCount;
+  const targetWordCountMax =
+    typeof metadata.targetWordCountMax === "number"
+      ? metadata.targetWordCountMax
+      : targetWordCount;
+  const chapterWordCount = metadata.chapterWordCount;
+  if (
+    typeof targetWordCountMin !== "number" ||
+    !Number.isInteger(targetWordCountMin) ||
+    targetWordCountMin <= 0 ||
+    typeof targetWordCountMax !== "number" ||
+    !Number.isInteger(targetWordCountMax) ||
+    targetWordCountMax < targetWordCountMin ||
+    typeof chapterWordCount !== "number" ||
+    !Number.isInteger(chapterWordCount) ||
+    chapterWordCount <= 0
+  ) {
+    return null;
+  }
+  return { targetWordCountMin, targetWordCountMax, chapterWordCount };
+}
+
 function narrativeProposalId(draftId: string): string {
   return `narrative-${draftId}`;
 }
@@ -7623,6 +7774,7 @@ async function createNarrativeDraftHandler(args: {
   title: string;
   description?: string;
   baseSourceHash: string;
+  planningScope?: "partial" | "full-novel";
 }): Promise<CallToolResult> {
   try {
     const { workspace, context } = requireDraftMode("narrative");
@@ -7634,6 +7786,7 @@ async function createNarrativeDraftHandler(args: {
         title: args.title.trim(),
         description: args.description?.trim() ?? "",
         baseSourceHash: args.baseSourceHash,
+        planningScope: args.planningScope ?? "partial",
         lines: [],
         arcs: [],
         directories: [],
@@ -7917,7 +8070,11 @@ async function validateNarrativeDraftHandler(args: {
     const source = await readNarrativeSource();
     if (narrativeSourceHash(source.content) !== draft.payload.baseSourceHash)
       throw new Error("剧情工程事实源已变化，请重新读取上下文并创建新草稿");
-    const errors = validateNarrativeDraftPayload(draft.payload, source.library);
+    const errors = validateNarrativeDraftPayload(
+      draft.payload,
+      source.library,
+      await readNarrativePlanningScale(workspace),
+    );
     if (errors.length > 0) return result({ valid: false, errors }, true);
     const saved = await saveNovelWorkbenchDraftValidation(
       workspace,
@@ -8062,7 +8219,11 @@ async function submitNarrativeDraftHandler(args: {
     const source = await readNarrativeSource();
     if (narrativeSourceHash(source.content) !== draft.payload.baseSourceHash)
       throw new Error("剧情工程事实源已变化，请重新读取上下文");
-    const errors = validateNarrativeDraftPayload(draft.payload, source.library);
+    const errors = validateNarrativeDraftPayload(
+      draft.payload,
+      source.library,
+      await readNarrativePlanningScale(workspace),
+    );
     if (errors.length > 0) return result({ submitted: false, errors }, true);
     const materialized = materializeNarrativeDraft(
       draft.payload,
@@ -9950,6 +10111,7 @@ export async function createNovelWorkbenchServer() {
     description: z.string().max(160_000).optional(),
     status: z.enum(["idea", "planned", "drafting", "complete"]).optional(),
     order: z.number().int().nonnegative().max(100_000),
+    plannedChapterCount: z.number().int().nonnegative().max(100_000).optional(),
   });
   const narrativeParagraphInputSchema = z.object({
     candidateId: z.string().regex(ID_PATTERN).describe("本草稿内的段候选 ID"),
@@ -10280,7 +10442,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_factions_upsert_draft_operations",
-        "按候选 id 增量新增或替换势力候选；可分批生成，不需要一次提供整批势力。",
+        "按候选 id 增量新增或替换势力候选；value 必须最终构成完整正式势力记录，草稿校验会检查 status、state、每项领地/成员及全部集合字段。可分批生成，不需要一次提供整批势力。",
         {
           draftId: z.string().regex(ID_PATTERN),
           operations: z
@@ -10364,7 +10526,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_timeline_upsert_draft_operations",
-        "按候选 id 增量新增或替换时间线事件候选；可分批生成，不需要一次提供整批事件。",
+        "按候选 id 增量新增或替换时间线事件候选；value 必须最终构成完整正式事件记录，createdAt/updatedAt 由系统维护。可分批生成，不需要一次提供整批事件。",
         {
           draftId: z.string().regex(ID_PATTERN),
           operations: z
@@ -10385,7 +10547,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_timeline_validate_draft",
-        "校验时间线草稿的事件标题、分支与角色/地点/章节/势力/物品引用；成功后返回 validationToken。",
+        "校验时间线草稿的完整事件结构、分支与角色/地点/章节/势力/物品引用；成功后返回 validationToken。",
         { draftId: z.string().regex(ID_PATTERN) },
         validateTimelineDraftHandler,
       ),
@@ -10588,6 +10750,7 @@ export async function createNovelWorkbenchServer() {
           title: z.string().trim().min(1).max(160),
           description: z.string().max(20_000).optional(),
           baseSourceHash: narrativeExpectedSourceHashSchema,
+          planningScope: z.enum(["partial", "full-novel"]).optional(),
         },
         createNarrativeDraftHandler,
       ),
@@ -10626,7 +10789,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_narrative_upsert_draft_directories",
-        "向剧情工程草稿增量写入卷、篇、组目录候选。父目录可引用同一草稿中的 candidateId 或已有目录稳定 ID；卷必须位于根层，篇必须归属于卷。不得用故事弧代替目录。",
+        "向剧情工程草稿增量写入卷、篇、组目录候选。父目录可引用同一草稿中的 candidateId 或已有目录稳定 ID；卷必须位于根层，篇必须归属于卷。全书规划中叶子目录必须提供 plannedChapterCount，非叶子目录必须为 0。不得用故事弧代替目录。",
         {
           draftId: z.string().regex(ID_PATTERN),
           directories: z
@@ -10650,7 +10813,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_narrative_validate_draft",
-        "校验剧情草稿的候选 id、目录父子关系、章节目结构、关键节点关联及线路故事弧引用；成功后返回 validationToken。",
+        "校验剧情草稿的候选 id、目录父子关系、章节目结构、关键节点关联及线路故事弧引用；全书规划还会校验叶子目录章节额度是否符合小说目标字数。成功后返回 validationToken。",
         { draftId: z.string().regex(ID_PATTERN) },
         validateNarrativeDraftHandler,
       ),

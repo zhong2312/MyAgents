@@ -107,7 +107,7 @@ import type {
   WorkbenchNavigationGuard,
   WorkbenchRendererContext,
 } from "@/workbench-sdk";
-import { dismissTopmost } from "@/utils/closeLayer";
+import { dismissTopmost } from "@/workbench-sdk/lifecycle";
 
 import novelWorkbenchDefinition from "./index";
 import {

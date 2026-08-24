@@ -219,9 +219,9 @@ export const myAgentsDefaultTheme: ThemeDefinition = {
   description: 'MyAgents warm paper / warm night visual language',
   stylesheetText,
   hero: {
-    productName: 'MyAgents',
+    productName: 'MyNovelStudio',
     slogans: {
-      'zh-CN': '每个人都应享受智能的推背感，欢迎来到言出法随的世界',
+      'zh-CN': '基于MyAgents的小说创作平台',
       'en-US': 'Your intent, amplified',
     },
     backgrounds: { light: noHeroBackground, dark: noHeroBackground },

@@ -783,9 +783,32 @@ pre code {
    Launcher Page Styles
    ============================================ */
 
+.launcher-layout {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: minmax(0, 3fr) minmax(var(--sidebar-min-width), 2fr);
+  grid-template-areas: 'brand workspaces';
+}
 
 .launcher-brand {
+  grid-area: brand;
   min-width: 0; /* Allow shrinking */
+}
+
+.launcher-workspaces {
+  grid-area: workspaces;
+  min-width: 0;
+  min-height: 0;
+}
+
+@media (max-width: 639px) {
+  .launcher-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(200px, auto) minmax(0, 1fr);
+    grid-template-areas:
+      'brand'
+      'workspaces';
+  }
 }
 
 /* Settings sidebar floating divider */

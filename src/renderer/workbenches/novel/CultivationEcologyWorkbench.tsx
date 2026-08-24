@@ -4468,6 +4468,36 @@ function TopologyCard({
           <Route className="h-3.5 w-3.5" />
           环形布局
         </Button>
+        <div
+          className="ce-topology-canvas-actions"
+          role="group"
+          aria-label="运行拓扑编辑操作"
+        >
+          <Button
+            variant="ghost"
+            onClick={addEdge}
+            disabled={topology.nodes.length < 2}
+            title={
+              topology.nodes.length < 2 ? "至少需要两个节点" : "添加有向边"
+            }
+          >
+            <GitBranch className="h-3.5 w-3.5" />
+            添加流向
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={addNode}
+            disabled={system.theoryModel.nodeCatalog.length === 0}
+            title={
+              system.theoryModel.nodeCatalog.length === 0
+                ? "请先在「理论模型」中添加理论节点，再建立运行拓扑"
+                : undefined
+            }
+          >
+            <Plus className="h-3.5 w-3.5" />
+            添加节点
+          </Button>
+        </div>
       </div>
       <div
         className={`ce-topology-flow-surface is-${mode} ${connecting ? "is-connecting" : ""}`}
@@ -4577,28 +4607,6 @@ function TopologyCard({
       </div>
       <div className="ce-topology-footer">
         <span>运行拓扑属于法门，不属于体系顶层</span>
-        <Button
-          variant="secondary"
-          onClick={addNode}
-          disabled={system.theoryModel.nodeCatalog.length === 0}
-          title={
-            system.theoryModel.nodeCatalog.length === 0
-              ? "请先在「理论模型」中添加理论节点，再建立运行拓扑"
-              : undefined
-          }
-        >
-          <Plus className="h-3.5 w-3.5" />
-          添加节点
-        </Button>
-        <Button
-          variant="ghost"
-          onClick={addEdge}
-          disabled={topology.nodes.length < 2}
-          title={topology.nodes.length < 2 ? "至少需要两个节点" : "添加有向边"}
-        >
-          <GitBranch className="h-3.5 w-3.5" />
-          添加流向
-        </Button>
       </div>
     </div>
   );

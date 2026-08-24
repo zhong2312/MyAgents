@@ -27,6 +27,12 @@ export function formatNovelOverviewContext(
     metadata.targetWordCountMin === metadata.targetWordCountMax
       ? formatWordCount(metadata.targetWordCountMin)
       : `${formatWordCount(metadata.targetWordCountMin)} 至 ${formatWordCount(metadata.targetWordCountMax)}`;
+  const chapterRange =
+    metadata.targetWordCountMin !== null &&
+    metadata.targetWordCountMax !== null &&
+    metadata.chapterWordCount !== null
+      ? `${Math.ceil(metadata.targetWordCountMin / metadata.chapterWordCount)} 至 ${Math.ceil(metadata.targetWordCountMax / metadata.chapterWordCount)} 章`
+      : "未设置";
   return [
     "【小说总览：所有生成必须遵守】",
     `书名：${metadata.title}`,
@@ -34,6 +40,7 @@ export function formatNovelOverviewContext(
     `创作语言：${metadata.language}`,
     `总字数目标：${totalWordCount}`,
     `每章目标字数：${formatWordCount(metadata.chapterWordCount)}`,
+    `预计章节规模：${chapterRange}`,
     `写作视角：${perspective.label}。${perspective.instruction}`,
     metadata.description?.trim()
       ? `本书简介：${metadata.description.trim()}`

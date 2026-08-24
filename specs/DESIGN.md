@@ -1366,14 +1366,14 @@ rail 64px:
 `text-sm / font-medium` 的紧凑角色。小尺寸不会机械继承 250/300 的展示字重，三处也不会复制品牌配色。
 
 ```
-标题 "MyAgents":
+标题 "MyNovelStudio":
   - 字号: 3.5rem (桌面) / 2.5rem (窄窗口)
   - 字重: 250（保持品牌独特感）
   - 字间距: 0.02em
   - 渐变: linear-gradient(155deg, var(--ink) 30%, var(--accent-warm) 100%)
 
 标语（zh-CN / en-US 由 Theme 提供）:
-  - 当前中文: "每个人都应享受智能的推背感，欢迎来到言出法随的世界"
+  - 当前中文: "基于MyAgents的小说创作平台"
   - 当前英文: "Your intent, amplified"
   - 字号: 17px (桌面) / 15px (移动)
   - 字重: 300 (font-light)

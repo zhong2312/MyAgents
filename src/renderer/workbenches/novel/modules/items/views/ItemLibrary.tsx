@@ -860,11 +860,12 @@ export default function ItemLibrary({
             type="button"
             onClick={() => void openProposalReview()}
             disabled={!onOpenProposalReview || isSaving}
-            aria-label="审阅批量物品提案"
-            title="审阅批量物品提案"
-            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-45"
+            aria-label="审阅物品提案"
+            title="审阅 AI 提交的物品提案"
+            className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <GitCompareArrows className="h-4 w-4" />
+            <span className="max-lg:hidden">审阅提案</span>
           </button>
           <button
             type="button"

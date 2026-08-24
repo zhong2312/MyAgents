@@ -250,4 +250,55 @@ describe("势力库目录化工具", () => {
       expect.stringContaining("包含非正式字段：aliases、coreGoals"),
     ]);
   });
+
+  it("在提交前拒绝无法进入势力审阅器的半结构化候选", async () => {
+    await callTool("novel_factions_create_draft", {
+      draftId: "faction-incomplete-record",
+      title: "不完整候选",
+    });
+    await callTool("novel_factions_upsert_draft_operations", {
+      draftId: "faction-incomplete-record",
+      operations: [
+        {
+          candidateId: "candidate-incomplete-record",
+          kind: "faction",
+          action: "create",
+          summary: "曦光域水月剑派，主角沈夜明出身地",
+          value: {
+            id: "faction-water-moon",
+            name: "水月剑派",
+            type: "宗门",
+            status: "筹备",
+            summary: "曦光域剑修宗门。",
+            territories: [{ name: "水月峰", kind: "mountain" }],
+            members: [{ name: "内门弟子" }],
+            assets: [],
+            resources: [],
+            organizationUnits: [],
+            relations: [],
+            rights: [],
+            links: [],
+          },
+        },
+      ],
+    });
+
+    const validation = await callTool("novel_factions_validate_draft", {
+      draftId: "faction-incomplete-record",
+    });
+
+    expect(validation).toMatchObject({ valid: false });
+    expect(validation.errors).toEqual([
+      expect.stringContaining("势力候选“candidate-incomplete-record”格式无效"),
+    ]);
+    expect(validation.errors).toEqual([
+      expect.stringContaining("status: Invalid option"),
+    ]);
+    expect(validation.errors).toEqual([
+      expect.stringContaining("state: Invalid input"),
+    ]);
+    expect(validation.errors).toEqual([
+      expect.stringContaining("territories.0.id: Invalid input"),
+    ]);
+  });
 });

@@ -2257,6 +2257,12 @@
   border-left: 1px solid var(--line-strong);
   padding-left: 0.8rem;
 }
+.ce-topology-canvas-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.4rem;
+}
 .ce-topology-flow-surface {
   position: relative;
   width: 100%;
@@ -3713,6 +3719,9 @@
   .ce-topology-canvas-stats {
     width: 100%;
     order: 3;
+  }
+  .ce-topology-canvas-actions {
+    margin-left: 0;
   }
   .ce-topology-flow-surface {
     height: 32rem;

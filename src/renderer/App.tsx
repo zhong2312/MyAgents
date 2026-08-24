@@ -122,6 +122,7 @@ import {
   createNewTab,
   getFolderName,
   buildChatFlipPatch,
+  buildHistoryChatFlipPatch,
   generateTabId,
   isWorkbenchAgentSurfaceTab,
   MAX_TABS,
@@ -486,10 +487,6 @@ interface TabContentProps {
    * tabs' SSE/poll updates → 1-2s blank; see openNewTabDeferred.)
    */
   isDeferredMount: boolean;
-  onLauncherWorkspaceSelectionChange: (
-    tabId: string,
-    workspacePath: string | null,
-  ) => void;
   settingsInitialSection: string | undefined;
   capabilityInitialSection: CapabilitySection;
   capabilityNavigationNonce: number;
@@ -620,7 +617,6 @@ export const MemoizedTabContent = memo(
     onSubscribeWorkbenchAiRunProgress,
     onProvideWorkbenchSearch,
     onProvideWorkbenchProjection,
-    onLauncherWorkspaceSelectionChange,
     settingsInitialSection,
     capabilityInitialSection,
     capabilityNavigationNonce,
@@ -641,11 +637,6 @@ export const MemoizedTabContent = memo(
     taskCenterCurrentSessionId,
   }: TabContentProps) {
     const kind = tabContentKind(tab, isDeferredMount);
-    const handleLauncherWorkspaceChange = useCallback(
-      (workspacePath: string | null) =>
-        onLauncherWorkspaceSelectionChange(tab.id, workspacePath),
-      [onLauncherWorkspaceSelectionChange, tab.id],
-    );
     const claimTabSessionOpeningTransition = useCallback(
       (sessionId: string) => claimSessionOpeningTransition(sessionId, tab.id),
       [claimSessionOpeningTransition, tab.id],
@@ -791,13 +782,16 @@ export const MemoizedTabContent = memo(
                   compactAgentSurface={
                     tab.workbenchAgentSurface?.presentation ===
                       "compact-review" ||
-                    tab.workbenchAgentSurface?.presentation === "embedded-review"
+                    tab.workbenchAgentSurface?.presentation ===
+                      "embedded-review"
                   }
                   isWindowFocused={isWindowFocused}
                   workbenchSurface={
-                    tab.workbenchAgentSurface?.workbenchId === NOVEL_WORKBENCH_ID
+                    tab.workbenchAgentSurface?.workbenchId ===
+                    NOVEL_WORKBENCH_ID
                       ? {
-                          promptId: tab.workbenchAgentSurface.bootstrap?.promptId,
+                          promptId:
+                            tab.workbenchAgentSurface.bootstrap?.promptId,
                           title: tab.workbenchAgentSurface.bootstrap?.title,
                           promptContent:
                             tab.workbenchAgentSurface.bootstrap?.systemPrompt,
@@ -816,7 +810,11 @@ export const MemoizedTabContent = memo(
                       historyEntrySource,
                     )
                   }
-                  onOpenSessionInCurrentTab={(sessionId, title, historyEntrySource) =>
+                  onOpenSessionInCurrentTab={(
+                    sessionId,
+                    title,
+                    historyEntrySource,
+                  ) =>
                     onOpenHistorySessionInCurrentTab(
                       tab.id,
                       sessionId,
@@ -861,7 +859,9 @@ export const MemoizedTabContent = memo(
                       initialMessage,
                     )
                   }
-                  sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
+                  sessionNotificationBadgeCounts={
+                    sessionNotificationBadgeCounts
+                  }
                 />
               </Suspense>
             )}
@@ -1181,21 +1181,6 @@ export default function App() {
         persistedWorkbenchHistoryGroupsRef.current.delete(tabId);
     }
   }, [tabs]);
-
-  const handleLauncherWorkspaceSelectionChange = useCallback(
-    (tabId: string, workspacePath: string | null) => {
-      setTabs((current) =>
-        current.map((tab) =>
-          tab.id === tabId &&
-          tab.view === "launcher" &&
-          tab.launcherWorkspacePath !== workspacePath
-            ? { ...tab, launcherWorkspacePath: workspacePath }
-            : tab,
-        ),
-      );
-    },
-    [],
-  );
 
   const syncRendererCorrelationForTab = useCallback(
     (
@@ -1966,15 +1951,15 @@ export default function App() {
             const openingRevision =
               sessionResourceTransitionsRef.current.openingRevision;
             if (
-              isSessionOpening(
-                sessionResourceTransitionsRef.current,
-                sessionId,
-              )
+              isSessionOpening(sessionResourceTransitionsRef.current, sessionId)
             )
               return;
 
             const currentGeneration = await getSessionGeneration(sessionId);
-            if (currentGeneration !== null && currentGeneration !== generation) {
+            if (
+              currentGeneration !== null &&
+              currentGeneration !== generation
+            ) {
               console.log(
                 `[App] Ignoring stale terminal event for ${sessionId} (event gen=${generation}, current gen=${currentGeneration})`,
               );
@@ -1986,7 +1971,9 @@ export default function App() {
               );
               return;
             }
-            if (isSessionOpening(sessionResourceTransitionsRef.current, sessionId))
+            if (
+              isSessionOpening(sessionResourceTransitionsRef.current, sessionId)
+            )
               return;
             if (
               sessionResourceTransitionsRef.current.openingRevision !==
@@ -2063,10 +2050,7 @@ export default function App() {
               continue;
             const stableGoneIds = goneIds.filter(
               (sid) =>
-                !isSessionOpening(
-                  sessionResourceTransitionsRef.current,
-                  sid,
-                ),
+                !isSessionOpening(sessionResourceTransitionsRef.current, sid),
             );
             if (stableGoneIds.length === 0) return;
 
@@ -2468,9 +2452,8 @@ export default function App() {
       }
 
       void performCloseTab(tabId);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- callbacks stabilized via tabsRef
     },
-    [setActiveTabId, t],
+    [performCloseTab, t],
   );
 
   // Close current active tab (for Cmd+W)
@@ -3638,7 +3621,7 @@ export default function App() {
           );
         }
         // Not owned anywhere → open in THIS tab instead of spawning a top-level tab.
-        const patch = buildChatFlipPatch(sourceTab, {
+        const patch = buildHistoryChatFlipPatch(sourceTab, {
           agentDir,
           sessionId,
           title,
@@ -5744,9 +5727,6 @@ export default function App() {
                   isLoading={loadingTabs[tab.id] ?? false}
                   error={tabErrors[tab.id] ?? null}
                   isDeferredMount={deferredMountTabIds.has(tab.id)}
-                  onLauncherWorkspaceSelectionChange={
-                    handleLauncherWorkspaceSelectionChange
-                  }
                   settingsInitialSection={
                     tab.view === "settings" ? settingsInitialSection : undefined
                   }
@@ -5828,9 +5808,6 @@ export default function App() {
                     isLoading={loadingTabs[tab.id] ?? false}
                     error={tabErrors[tab.id] ?? null}
                     isDeferredMount={deferredMountTabIds.has(tab.id)}
-                    onLauncherWorkspaceSelectionChange={
-                      handleLauncherWorkspaceSelectionChange
-                    }
                     settingsInitialSection={undefined}
                     capabilityInitialSection={capabilityInitialSection}
                     capabilityNavigationNonce={capabilityNavigationNonce}

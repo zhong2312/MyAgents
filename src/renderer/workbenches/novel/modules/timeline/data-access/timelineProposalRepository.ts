@@ -93,9 +93,14 @@ function operationTargetPath(
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function parseTimelineCandidate(
   operation: TimelineProposalOperation,
   fallback: TimelineEvent | undefined,
+  proposalCreatedAt?: string,
   override?: unknown,
 ): TimelineEvent {
   let source: unknown = override;
@@ -105,6 +110,26 @@ function parseTimelineCandidate(
         ? operation.baseValue
         : fallback;
     source = base ? { ...base, ...operation.value } : operation.value;
+  }
+  if (isRecord(source)) {
+    if (operation.action === "create") {
+      source = {
+        ...source,
+        createdAt: source.createdAt ?? proposalCreatedAt,
+        updatedAt: source.updatedAt ?? proposalCreatedAt,
+      };
+    } else {
+      const auditSource =
+        fallback ??
+        (isRecord(operation.baseValue) ? operation.baseValue : undefined);
+      source = {
+        ...source,
+        createdAt:
+          auditSource?.createdAt ?? source.createdAt ?? proposalCreatedAt,
+        updatedAt:
+          auditSource?.updatedAt ?? source.updatedAt ?? proposalCreatedAt,
+      };
+    }
   }
   const parsed = timelineEventSchema.safeParse(source);
   if (!parsed.success) {
@@ -125,13 +150,19 @@ function parseTimelineCandidate(
 
 function parseBaseEvent(
   operation: TimelineProposalOperation,
+  proposalCreatedAt?: string,
 ): TimelineEvent | null | undefined {
   if (operation.action === "create") return null;
   if (operation.baseValue === undefined) return undefined;
   if (operation.baseValue === null) {
     throw new Error(`更新候选“${operation.summary}”的生成基准不能为空`);
   }
-  return parseTimelineCandidate(operation, undefined, operation.baseValue);
+  return parseTimelineCandidate(
+    operation,
+    undefined,
+    proposalCreatedAt,
+    operation.baseValue,
+  );
 }
 
 function findCurrentEvent(
@@ -213,8 +244,12 @@ function asFileProposal(
       try {
         targetId = operationTargetId(operation);
         currentEvent = findCurrentEvent(operation, current);
-        const base = parseBaseEvent(operation);
-        const after = parseTimelineCandidate(operation, base ?? currentEvent);
+        const base = parseBaseEvent(operation, proposal.manifest.createdAt);
+        const after = parseTimelineCandidate(
+          operation,
+          base ?? currentEvent,
+          proposal.manifest.createdAt,
+        );
         beforeContent = base ? json(base) : "";
         afterContent = json(after);
         conflict =
@@ -428,9 +463,21 @@ export function createNovelTimelineProposalRepository(
     for (const operation of operations) {
       const targetId = operationTargetId(operation);
       const existing = events.find((event) => event.id === targetId);
-      const value =
+      const candidate =
         overrides.get(operation.candidateId) ??
-        parseTimelineCandidate(operation, existing);
+        parseTimelineCandidate(
+          operation,
+          existing,
+          proposal.manifest.createdAt,
+        );
+      const value =
+        operation.action === "update" && existing
+          ? {
+              ...candidate,
+              createdAt: existing.createdAt,
+              updatedAt: new Date().toISOString(),
+            }
+          : candidate;
       if (operation.action === "create") {
         if (existing) {
           if (!resolvedConflictIds.has(operation.candidateId)) {
@@ -547,9 +594,18 @@ export function createNovelTimelineProposalRepository(
         } catch (error) {
           throw new Error(`合并结果不是有效 JSON：${errorMessage(error)}`);
         }
-        value = parseTimelineCandidate(operation, currentEvent, merged);
+        value = parseTimelineCandidate(
+          operation,
+          currentEvent,
+          proposal.manifest.createdAt,
+          merged,
+        );
       } else {
-        value = parseTimelineCandidate(operation, currentEvent);
+        value = parseTimelineCandidate(
+          operation,
+          currentEvent,
+          proposal.manifest.createdAt,
+        );
       }
       return applyOperations(
         proposal,

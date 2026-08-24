@@ -4,7 +4,7 @@ import { join } from "path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { readIdSet } from "./novel-workbench-tool";
+import { readNovelIndexIdSet } from "../utils/novel-id-set";
 
 const temporaryRoots: string[] = [];
 
@@ -43,7 +43,11 @@ describe("readIdSet 人物分片索引", () => {
     );
 
     await expect(
-      readIdSet(workspace, "characters/index.json", "characters"),
+      readNovelIndexIdSet(
+        join(characterDirectory, "index.json"),
+        "characters",
+        "characters/index.json",
+      ),
     ).resolves.toEqual(new Set(["character-a", "character-b"]));
   });
 });

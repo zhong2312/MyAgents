@@ -1553,7 +1553,8 @@ export default function NovelWorkbenchRenderer({
 2. 组织层级必须区分势力内部单元与对外独立势力：堂口、分支、官署、商号归入内部组织树；隶属、联盟、敌对、竞争、依附使用势力关系。
 3. 资源建议必须写清控制权等级、争夺方和变化原因；法统、名分、通行权、采购权等必须写明授予方、范围、条件和有效状态。
 4. 势力库只保存当前状态快照；历史事件应建议作者关联或补充到时间线，不能制造第二份相互矛盾的历史。
-5. 作者确认候选后调用 novel_factions_create_draft 创建草稿，用 novel_factions_upsert_draft_operations 分批写入候选，novel_factions_validate_draft 校验通过后用返回的 validationToken 调用 novel_factions_submit_draft；随后调用 novel_factions_get_proposal_status 确认 exists=true，再告知作者在势力组织页点击“审阅提案”。不得直接修改项目文件。`,
+5. 写入候选的 value 必须是完整正式势力记录：status 只能是 active、neutral、declining 或 dissolved；state 必须包含 governance、military、economy、publicSupport、territorialIntegrity 五项字符串；所有领地必须有 id、name、worldNodeId（未关联时为 null）和 description；所有成员必须有 id、name、characterId（未关联时为 null）、role、正整数 count 和 description；createdAt 和 updatedAt 必须是 ISO 8601 UTC 时间戳；其它集合即使为空也必须提供，且不得使用 kind、aliases、location、coreGoals 等非正式字段替代正式字段。
+6. 作者确认候选后调用 novel_factions_create_draft 创建草稿，用 novel_factions_upsert_draft_operations 分批写入候选，novel_factions_validate_draft 校验通过后用返回的 validationToken 调用 novel_factions_submit_draft；随后调用 novel_factions_get_proposal_status 确认 exists=true，再告知作者在势力组织页点击“审阅提案”。不得直接修改项目文件。`,
       );
       const modelSelection = await resolveSceneModelSelection(
         sceneIds[target.scope],
@@ -1612,7 +1613,8 @@ export default function NovelWorkbenchRenderer({
 2. 设计时必须避开现有势力与同批候选的名称、功能和资源控制重复；优先补足世界格局中的空位，而不是机械堆叠组织。
 3. 每个候选至少提供：名称、势力类型、当前状态、势力概要、核心目标、组织层级、关键成员类别、控制地盘或资源、对外关系、权限或名分，以及可接入时间线的演化钩子。
 4. 势力内部单元与独立势力关系必须区分：堂口、官署、分号、支脉属于组织层级；隶属、联盟、敌对、竞争、依附属于势力关系。禁止做全库 N×N 关系或冲突分析。
-5. 作者确认候选后调用 novel_factions_create_draft 创建草稿，用 novel_factions_upsert_draft_operations 分批写入候选，novel_factions_validate_draft 校验通过后用返回的 validationToken 调用 novel_factions_submit_draft；随后调用 novel_factions_get_proposal_status 确认 exists=true，再告知作者在势力组织页点击“审阅提案”。可按需使用普通命令和文件工具读取外部素材或处理辅助文件；正式势力变更仍必须通过上述提案协议。`,
+5. 写入候选的 value 必须是完整正式势力记录：status 只能是 active、neutral、declining 或 dissolved；state 必须包含 governance、military、economy、publicSupport、territorialIntegrity 五项字符串；所有领地必须有 id、name、worldNodeId（未关联时为 null）和 description；所有成员必须有 id、name、characterId（未关联时为 null）、role、正整数 count 和 description；createdAt 和 updatedAt 必须是 ISO 8601 UTC 时间戳；其它集合即使为空也必须提供，且不得使用 kind、aliases、location、coreGoals 等非正式字段替代正式字段。
+6. 作者确认候选后调用 novel_factions_create_draft 创建草稿，用 novel_factions_upsert_draft_operations 分批写入候选，novel_factions_validate_draft 校验通过后用返回的 validationToken 调用 novel_factions_submit_draft；随后调用 novel_factions_get_proposal_status 确认 exists=true，再告知作者在势力组织页点击“审阅提案”。可按需使用普通命令和文件工具读取外部素材或处理辅助文件；正式势力变更仍必须通过上述提案协议。`,
       );
       const modelSelection = await resolveSceneModelSelection("factions.batch");
       await openNovelAgentSession({

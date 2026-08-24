@@ -590,14 +590,8 @@ import {
   getAttachmentPath,
 } from "./SessionStore";
 import {
-  decodeProviderEnvSnapshot,
   findAgentByWorkspacePath,
   findProjectAgentByWorkspacePath,
-  findProvider,
-  getAllMcpServers,
-  getEffectiveMcpServers,
-  getEnabledMcpServerIds,
-  isProviderDisabled,
   loadConfig,
   resolveImProviderRouting,
   resolveProviderEnv,

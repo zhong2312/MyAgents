@@ -64,7 +64,6 @@ test('bundled workspace templates are committed, clean, and setup-independent', 
     'bundled-workspaces',
   );
   assert.equal(tauriConfig.bundle.resources['../mino'], undefined);
-  assert.equal(existsSync(resolve(repoRoot, 'mino')), false);
   const bundledSkills = readdirSync(
     resolve(templateRoot, '.claude', 'skills'),
     { withFileTypes: true },

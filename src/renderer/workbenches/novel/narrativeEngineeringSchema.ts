@@ -317,6 +317,8 @@ export const narrativeDirectorySchema = z
     description: textSchema,
     status: narrativePlanStatusSchema,
     order: z.number().int().nonnegative(),
+    /** 本目录直接承载的章节规划额度；有子目录时必须由叶子目录承载。 */
+    plannedChapterCount: z.number().int().nonnegative().default(0),
     simulationConstraint: narrativeSimulationConstraintSchema.optional(),
   })
   .strict();
@@ -943,6 +945,7 @@ function migrateLegacyEngineering(
         description: node.summary,
         status: node.status,
         order: node.order,
+        plannedChapterCount: 0,
       },
     ];
   });
