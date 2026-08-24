@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git checkout "$SOURCE_REF" -- .
+          git checkout "$SOURCE_REF" -- . ':(exclude)AGENTS.md'
           git checkout HEAD -- \
             build_macos.sh \
             package.json \
@@ -123,7 +123,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git checkout "$SOURCE_REF" -- .
+          git checkout "$SOURCE_REF" -- . ':(exclude)AGENTS.md'
           git checkout HEAD -- \
             build_linux.sh \
             package.json \
