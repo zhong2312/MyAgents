@@ -177,7 +177,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           DOWNLOAD_BASE_URL: https://download.myagents.io
-          UPDATE_BASE_URL: https://github.com/zhong2312/MyAgents/releases/download/v${{ steps.version.outputs.version }}
+          UPDATE_BASE_URL: https://github.com/zhong2312/MyNovelStudio/releases/download/v${{ steps.version.outputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Create update directory
@@ -281,12 +281,12 @@ jobs:
           # The desktop updater reads the project-owned GitHub Release assets.
           # Keep the R2 copy above for the website and historical compatibility.
           gh release upload "v${VERSION}" update-manifests/*.json github-release-assets/* \
-            --repo zhong2312/MyAgents --clobber
+            --repo zhong2312/MyNovelStudio --clobber
 
           echo "Upload complete!"
           echo "Update endpoints:"
-          echo "  - https://github.com/zhong2312/MyAgents/releases/latest/download/darwin-aarch64.json (updater)"
-          echo "  - https://github.com/zhong2312/MyAgents/releases/latest/download/darwin-x86_64.json (updater)"
+          echo "  - https://github.com/zhong2312/MyNovelStudio/releases/latest/download/darwin-aarch64.json (updater)"
+          echo "  - https://github.com/zhong2312/MyNovelStudio/releases/latest/download/darwin-x86_64.json (updater)"
           echo "  - ${DOWNLOAD_BASE_URL}/update/latest.json (website)"
 
       - name: Summary
