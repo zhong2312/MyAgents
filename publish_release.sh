@@ -41,6 +41,13 @@ get_arch_suffix() {
     fi
 }
 
+# 对外下载文件使用产品名；DMG 内的 MyAgents.app 与自动更新包名称保持兼容。
+get_public_dmg_upload_name() {
+    local target="$1"
+    local suffix=$(get_arch_suffix "$target")
+    echo "MyNovelStudio_${VERSION}_macos_${suffix}.dmg"
+}
+
 # 获取带架构后缀的 tar.gz 文件名
 # 用法: get_tar_upload_name "MyAgents.app.tar.gz" "aarch64-apple-darwin"
 # 输出: MyAgents_aarch64.app.tar.gz
@@ -260,7 +267,7 @@ echo -e "  ${CYAN}├───────────────────�
 # ARM 版本
 echo -e "  ${CYAN}│${NC}  ${YELLOW}Apple Silicon (ARM64)${NC}                                  ${CYAN}│${NC}"
 if [ -n "$ARM_DMG" ]; then
-    echo -e "  ${CYAN}│${NC}    ${GREEN}✓${NC} DMG:    $(basename "$ARM_DMG")              ${CYAN}│${NC}"
+    echo -e "  ${CYAN}│${NC}    ${GREEN}✓${NC} DMG:    $(get_public_dmg_upload_name "aarch64-apple-darwin")              ${CYAN}│${NC}"
 else
     echo -e "  ${CYAN}│${NC}    ${RED}✗${NC} DMG:    缺失                                     ${CYAN}│${NC}"
 fi
@@ -280,7 +287,7 @@ echo -e "  ${CYAN}│${NC}                                                      
 # Intel 版本
 echo -e "  ${CYAN}│${NC}  ${YELLOW}Intel (x86_64)${NC}                                         ${CYAN}│${NC}"
 if [ -n "$INTEL_DMG" ]; then
-    echo -e "  ${CYAN}│${NC}    ${GREEN}✓${NC} DMG:    $(basename "$INTEL_DMG")                 ${CYAN}│${NC}"
+    echo -e "  ${CYAN}│${NC}    ${GREEN}✓${NC} DMG:    $(get_public_dmg_upload_name "x86_64-apple-darwin")                 ${CYAN}│${NC}"
 else
     echo -e "  ${CYAN}│${NC}    ${RED}✗${NC} DMG:    缺失                                     ${CYAN}│${NC}"
 fi
@@ -432,7 +439,7 @@ for TARGET in "${FOUND_TARGETS[@]}"; do
 
     # 记录 DMG 文件名
     if [ -n "$DMG" ]; then
-        DMG_BASENAME=$(basename "$DMG")
+        DMG_BASENAME=$(get_public_dmg_upload_name "$TARGET")
         if [ "$TARGET" = "aarch64-apple-darwin" ]; then
             DMG_ARM64="$DMG_BASENAME"
         else
@@ -576,8 +583,9 @@ for TARGET in "${FOUND_TARGETS[@]}"; do
 
     # 上传 DMG (官网下载用)
     if [ -n "$DMG" ] && [ -f "$DMG" ]; then
-        if rclone --config="$RCLONE_CONFIG" copy "$DMG" "r2:${R2_BUCKET}/releases/v${VERSION}/" --s3-no-check-bucket --progress; then
-            echo -e "    ${GREEN}✓${NC} DMG: $(basename "$DMG")"
+        DMG_DEST_NAME=$(get_public_dmg_upload_name "$TARGET")
+        if rclone --config="$RCLONE_CONFIG" copyto "$DMG" "r2:${R2_BUCKET}/releases/v${VERSION}/${DMG_DEST_NAME}" --s3-no-check-bucket --progress; then
+            echo -e "    ${GREEN}✓${NC} DMG: ${DMG_DEST_NAME}"
             ((UPLOAD_SUCCESS++))
         else
             echo -e "    ${RED}✗${NC} DMG 上传失败"
@@ -684,7 +692,7 @@ if [ -n "$CF_ZONE_ID" ] && [ -n "$CF_API_TOKEN" ]; then
         ARM_SIG_PURGE=$(get_sig_upload_name "${ARM_TAR_BASE}.sig" "aarch64-apple-darwin")
         PURGE_URLS+=("${DOWNLOAD_BASE_URL}/releases/v${VERSION}/${ARM_TAR_PURGE}")
         [ -n "$ARM_SIG" ] && PURGE_URLS+=("${DOWNLOAD_BASE_URL}/releases/v${VERSION}/${ARM_SIG_PURGE}")
-        [ -n "$ARM_DMG" ] && PURGE_URLS+=("${DOWNLOAD_BASE_URL}/releases/v${VERSION}/$(basename "$ARM_DMG")")
+        [ -n "$ARM_DMG" ] && PURGE_URLS+=("${DOWNLOAD_BASE_URL}/releases/v${VERSION}/$(get_public_dmg_upload_name "aarch64-apple-darwin")")
     fi
     if [ -n "$INTEL_TAR" ]; then
         INTEL_TAR_BASE=$(basename "$INTEL_TAR")
@@ -692,7 +700,7 @@ if [ -n "$CF_ZONE_ID" ] && [ -n "$CF_API_TOKEN" ]; then
         INTEL_SIG_PURGE=$(get_sig_upload_name "${INTEL_TAR_BASE}.sig" "x86_64-apple-darwin")
         PURGE_URLS+=("${DOWNLOAD_BASE_URL}/releases/v${VERSION}/${INTEL_TAR_PURGE}")
         [ -n "$INTEL_SIG" ] && PURGE_URLS+=("${DOWNLOAD_BASE_URL}/releases/v${VERSION}/${INTEL_SIG_PURGE}")
-        [ -n "$INTEL_DMG" ] && PURGE_URLS+=("${DOWNLOAD_BASE_URL}/releases/v${VERSION}/$(basename "$INTEL_DMG")")
+        [ -n "$INTEL_DMG" ] && PURGE_URLS+=("${DOWNLOAD_BASE_URL}/releases/v${VERSION}/$(get_public_dmg_upload_name "x86_64-apple-darwin")")
     fi
 
     # 构建 JSON 数组
@@ -773,7 +781,7 @@ fi
 # 验证 DMG 文件
 if [ -n "$ARM_DMG" ]; then
     echo -n "    检查 ARM DMG... "
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -I "${DOWNLOAD_BASE_URL}/releases/v${VERSION}/$(basename "$ARM_DMG")" 2>/dev/null || echo "000")
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -I "${DOWNLOAD_BASE_URL}/releases/v${VERSION}/$(get_public_dmg_upload_name "aarch64-apple-darwin")" 2>/dev/null || echo "000")
     if [ "$HTTP_CODE" = "200" ]; then
         echo -e "${GREEN}✓${NC}"
     else
@@ -784,7 +792,7 @@ fi
 
 if [ -n "$INTEL_DMG" ]; then
     echo -n "    检查 Intel DMG... "
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -I "${DOWNLOAD_BASE_URL}/releases/v${VERSION}/$(basename "$INTEL_DMG")" 2>/dev/null || echo "000")
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -I "${DOWNLOAD_BASE_URL}/releases/v${VERSION}/$(get_public_dmg_upload_name "x86_64-apple-darwin")" 2>/dev/null || echo "000")
     if [ "$HTTP_CODE" = "200" ]; then
         echo -e "${GREEN}✓${NC}"
     else

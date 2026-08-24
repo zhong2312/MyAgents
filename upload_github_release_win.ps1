@@ -35,11 +35,26 @@ if (-not $ghCmd) {
 # 查找 NSIS .exe 文件
 $TargetDir = Join-Path $ProjectDir "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis"
 $NsisExe = Get-ChildItem -Path $TargetDir -Filter "*.exe" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch "portable" } | Select-Object -First 1
+$PortableZip = Get-ChildItem -Path $TargetDir -Filter "*portable*.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
 $UpdateZip = Get-ChildItem -Path $TargetDir -Filter "*.nsis.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
 $SigFile = Get-ChildItem -Path $TargetDir -Filter "*.nsis.zip.sig" -ErrorAction SilentlyContinue | Select-Object -First 1
+
+if (-not $NsisExe) {
+    Write-Host "[X] 未找到 NSIS 安装包" -ForegroundColor Red
+    Write-Host "    请先运行 .\build_windows.ps1 完成构建" -ForegroundColor Yellow
+    throw "未找到 NSIS 安装包"
+}
+
 $UploadTempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("myagents-release-" + [Guid]::NewGuid().ToString("N"))
 $null = New-Item -ItemType Directory -Path $UploadTempDir -Force
-$UploadFiles = @($NsisExe)
+$publicInstaller = Join-Path $UploadTempDir "MyNovelStudio_${Version}_x64-setup.exe"
+Copy-Item -LiteralPath $NsisExe.FullName -Destination $publicInstaller
+$UploadFiles = @(Get-Item -LiteralPath $publicInstaller)
+if ($PortableZip) {
+    $publicPortable = Join-Path $UploadTempDir "MyNovelStudio_${Version}_x86_64-portable.zip"
+    Copy-Item -LiteralPath $PortableZip.FullName -Destination $publicPortable
+    $UploadFiles += Get-Item -LiteralPath $publicPortable
+}
 if ($UpdateZip) {
     $renamedUpdate = Join-Path $UploadTempDir "MyAgents_${Version}_x86_64.nsis.zip"
     Copy-Item -LiteralPath $UpdateZip.FullName -Destination $renamedUpdate
@@ -55,14 +70,7 @@ if ($ManifestDir -and (Test-Path -LiteralPath $ManifestDir)) {
     if (Test-Path -LiteralPath $Manifest) { $UploadFiles += Get-Item -LiteralPath $Manifest }
 }
 
-if (-not $NsisExe) {
-    Remove-Item -LiteralPath $UploadTempDir -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "[X] 未找到 NSIS 安装包" -ForegroundColor Red
-    Write-Host "    请先运行 .\build_windows.ps1 完成构建" -ForegroundColor Yellow
-    throw "未找到 NSIS 安装包"
-}
-
-Write-Host "  [OK] $($NsisExe.Name)" -ForegroundColor Green
+Write-Host "  [OK] $(Split-Path -Leaf $publicInstaller)" -ForegroundColor Green
 Write-Host ""
 
 # 检查 Release 是否存在 (临时放宽 ErrorAction，gh stderr 输出不应触发终止)

@@ -10,8 +10,8 @@ MyAgents Windows 版本支持 **x86_64 (64位)** 架构，提供两种分发格�
 
 | 格式 | 文件 | 用途 |
 |------|------|------|
-| **NSIS 安装包** | `MyAgents_x.x.x_x64-setup.exe` | 标准安装，有向导界面 |
-| **便携版** | `MyAgents_x.x.x_x86_64-portable.zip` | 解压即用，无需安装 |
+| **NSIS 安装包** | `MyNovelStudio_x.x.x_x64-setup.exe` | 标准安装，有向导界面 |
+| **便携版** | `MyNovelStudio_x.x.x_x86_64-portable.zip` | 解压即用，无需安装 |
 
 ### 存储位置
 
@@ -27,11 +27,13 @@ myagents-releases/
 │   └── latest_win.json         # Windows 网站下载 API
 └── releases/
     └── v{VERSION}/
-        ├── MyAgents_{VERSION}_x64-setup.exe       # NSIS 安装包
-        ├── MyAgents_{VERSION}_x86_64-portable.zip # 便携版
+        ├── MyNovelStudio_{VERSION}_x64-setup.exe       # NSIS 安装包（对外下载）
+        ├── MyNovelStudio_{VERSION}_x86_64-portable.zip # 便携版（对外下载）
         ├── MyAgents_{VERSION}_x86_64.nsis.zip     # 自动更新包
         └── MyAgents_{VERSION}_x86_64.nsis.zip.sig # 更新签名
 ```
+
+`src-tauri/target` 中由 Tauri 直接生成的源文件仍使用 `MyAgents` 前缀；发布脚本会在上传到 GitHub Release 和官网下载目录时重命名为 `MyNovelStudio`。自动更新包也保留 `MyAgents` 前缀，确保旧安装版本的升级链路稳定。
 
 ---
 
@@ -143,8 +145,8 @@ src-tauri/target/x86_64-pc-windows-msvc/debug/myagents.exe
 
 ```
 src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/
-├── MyAgents_x.x.x_x64-setup.exe       # NSIS 安装包
-├── MyAgents_x.x.x_x86_64-portable.zip # 便携版
+├── MyAgents_x.x.x_x64-setup.exe       # NSIS 安装包（构建源文件）
+├── MyAgents_x.x.x_x86_64-portable.zip # 便携版（构建源文件）
 ├── MyAgents_x.x.x_x64-setup.nsis.zip  # 自动更新包
 └── MyAgents_x.x.x_x64-setup.nsis.zip.sig  # 更新签名
 ```
