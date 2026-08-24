@@ -132,8 +132,8 @@ jobs:
           grep -Fq 'My Novel Studio 0.5.0' release-notes.md
 
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern 'MyAgents_0.5.0_x64-setup.exe' \
-            --pattern 'MyAgents_0.5.0_x86_64-portable.zip' \
+            --pattern 'MyNovelStudio_0.5.0_x64-setup.exe' \
+            --pattern 'MyNovelStudio_0.5.0_x86_64-portable.zip' \
             --dir previous-windows
 
           resolve_one() {
@@ -153,16 +153,16 @@ jobs:
           macos_arm="$(resolve_one artifacts/macos-aarch64 '*.dmg' 'Apple Silicon DMG')"
           macos_intel="$(resolve_one artifacts/macos-x86_64 '*.dmg' 'Intel DMG')"
 
-          cp "$windows_setup" release-assets/MyAgents_0.5.0_x64-setup.exe
-          cp "$windows_portable" release-assets/MyAgents_0.5.0_x86_64-portable.zip
-          cp "$macos_arm" release-assets/MyAgents_0.5.0_macos_aarch64.dmg
-          cp "$macos_intel" release-assets/MyAgents_0.5.0_macos_x86_64.dmg
+          cp "$windows_setup" release-assets/MyNovelStudio_0.5.0_x64-setup.exe
+          cp "$windows_portable" release-assets/MyNovelStudio_0.5.0_x86_64-portable.zip
+          cp "$macos_arm" release-assets/MyNovelStudio_0.5.0_macos_aarch64.dmg
+          cp "$macos_intel" release-assets/MyNovelStudio_0.5.0_macos_x86_64.dmg
 
           expected=(
-            MyAgents_0.5.0_x64-setup.exe
-            MyAgents_0.5.0_x86_64-portable.zip
-            MyAgents_0.5.0_macos_aarch64.dmg
-            MyAgents_0.5.0_macos_x86_64.dmg
+            MyNovelStudio_0.5.0_x64-setup.exe
+            MyNovelStudio_0.5.0_x86_64-portable.zip
+            MyNovelStudio_0.5.0_macos_aarch64.dmg
+            MyNovelStudio_0.5.0_macos_x86_64.dmg
           )
           for asset in "${expected[@]}"; do test -s "release-assets/$asset"; done
 

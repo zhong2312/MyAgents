@@ -203,6 +203,8 @@ $NsisExe = $NsisCandidates | Select-Object -First 1
 $PortableZip = $PortableCandidates | Select-Object -First 1
 $UpdateZip = $UpdateCandidates | Select-Object -First 1
 $SigFile = $SigCandidates | Select-Object -First 1
+$PublicInstallerName = "MyNovelStudio_${Version}_x64-setup.exe"
+$PublicPortableName = "MyNovelStudio_${Version}_x86_64-portable.zip"
 
 if ($NsisExe) {
     if ($NsisExe.Name -notlike "*$Version*") {
@@ -331,10 +333,10 @@ if ($UpdateZip) {
     # 添加下载链接
     $downloads = @{}
     if ($NsisExe) {
-        $downloads["installer"] = "$DownloadBaseUrl/releases/v$Version/$($NsisExe.Name)"
+        $downloads["installer"] = "$DownloadBaseUrl/releases/v$Version/$PublicInstallerName"
     }
     if ($PortableZip) {
-        $downloads["portable"] = "$DownloadBaseUrl/releases/v$Version/$($PortableZip.Name)"
+        $downloads["portable"] = "$DownloadBaseUrl/releases/v$Version/$PublicPortableName"
     }
     if ($downloads.Count -gt 0) {
         $manifest["downloads"] = $downloads
@@ -360,7 +362,7 @@ if ($NsisExe) {
     $latestWinDownloads = @{
         "win_x64" = @{
             name = "Windows x64"
-            url  = "$DownloadBaseUrl/releases/v$Version/$($NsisExe.Name)"
+            url  = "$DownloadBaseUrl/releases/v$Version/$PublicInstallerName"
         }
     }
 
@@ -390,12 +392,12 @@ Write-Host "  即将上传的文件:" -ForegroundColor Cyan
 $uploadFiles = @()
 if ($NsisExe) {
     $size = "{0:N2} MB" -f ($NsisExe.Length / 1MB)
-    Write-Host "    - $($NsisExe.Name) ($size)"
+    Write-Host "    - $PublicInstallerName ($size)"
     $uploadFiles += $NsisExe
 }
 if ($PortableZip) {
     $size = "{0:N2} MB" -f ($PortableZip.Length / 1MB)
-    Write-Host "    - $($PortableZip.Name) ($size)"
+    Write-Host "    - $PublicPortableName ($size)"
     $uploadFiles += $PortableZip
 }
 if ($UpdateZip) {
@@ -443,9 +445,9 @@ $uploadFailed = 0
 # 上传 NSIS 安装包
 if ($NsisExe) {
     Write-Host "  上传 NSIS 安装包..." -ForegroundColor Cyan
-    & $rclonePath --config=$rcloneConfig copy $NsisExe.FullName "r2:$R2Bucket/releases/v$Version/" --s3-no-check-bucket --progress
+    & $rclonePath --config=$rcloneConfig copyto $NsisExe.FullName "r2:$R2Bucket/releases/v$Version/$PublicInstallerName" --s3-no-check-bucket --progress
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "    [OK] $($NsisExe.Name)" -ForegroundColor Green
+        Write-Host "    [OK] $PublicInstallerName" -ForegroundColor Green
         $uploadSuccess++
     }
     else {
@@ -457,9 +459,9 @@ if ($NsisExe) {
 # 上传便携版 ZIP
 if ($PortableZip) {
     Write-Host "  上传便携版 ZIP..." -ForegroundColor Cyan
-    & $rclonePath --config=$rcloneConfig copy $PortableZip.FullName "r2:$R2Bucket/releases/v$Version/" --s3-no-check-bucket --progress
+    & $rclonePath --config=$rcloneConfig copyto $PortableZip.FullName "r2:$R2Bucket/releases/v$Version/$PublicPortableName" --s3-no-check-bucket --progress
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "    [OK] $($PortableZip.Name)" -ForegroundColor Green
+        Write-Host "    [OK] $PublicPortableName" -ForegroundColor Green
         $uploadSuccess++
     }
     else {
@@ -536,10 +538,10 @@ if ($CfZoneId -and $CfApiToken) {
     )
 
     if ($NsisExe) {
-        $purgeUrls += "$DownloadBaseUrl/releases/v$Version/$($NsisExe.Name)"
+        $purgeUrls += "$DownloadBaseUrl/releases/v$Version/$PublicInstallerName"
     }
     if ($PortableZip) {
-        $purgeUrls += "$DownloadBaseUrl/releases/v$Version/$($PortableZip.Name)"
+        $purgeUrls += "$DownloadBaseUrl/releases/v$Version/$PublicPortableName"
     }
     if ($UpdateZip) {
         $purgeUrls += "$DownloadBaseUrl/releases/v$Version/$UpdateUploadName"
